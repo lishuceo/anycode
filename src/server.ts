@@ -1,8 +1,8 @@
 import express from 'express';
-import { config } from './config';
-import { logger } from './utils/logger';
-import { handleFeishuEvent } from './feishu/event-handler';
-import type { FeishuEventBody } from './feishu/types';
+import { config } from './config.js';
+import { logger } from './utils/logger.js';
+import { handleFeishuEvent } from './feishu/event-handler.js';
+import type { FeishuEventBody } from './feishu/types.js';
 
 export function createServer(): express.Application {
   const app = express();

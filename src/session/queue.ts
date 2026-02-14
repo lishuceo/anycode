@@ -1,5 +1,5 @@
-import { logger } from '../utils/logger';
-import type { QueueTask } from './types';
+import { logger } from '../utils/logger.js';
+import type { QueueTask } from './types.js';
 
 /**
  * 任务队列

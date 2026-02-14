@@ -1,6 +1,6 @@
-import { config } from '../config';
-import { logger } from '../utils/logger';
-import type { Session } from './types';
+import { config } from '../config.js';
+import { logger } from '../utils/logger.js';
+import type { Session } from './types.js';
 
 /**
  * 会话管理器

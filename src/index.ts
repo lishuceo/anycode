@@ -1,8 +1,8 @@
-import { config, validateConfig } from './config';
-import { logger } from './utils/logger';
-import { startServer } from './server';
-import { sessionManager } from './session/manager';
-import { claudeExecutor } from './claude/executor';
+import { config, validateConfig } from './config.js';
+import { logger } from './utils/logger.js';
+import { startServer } from './server.js';
+import { sessionManager } from './session/manager.js';
+import { claudeExecutor } from './claude/executor.js';
 
 function main(): void {
   logger.info('Starting Feishu Claude Code Bridge...');

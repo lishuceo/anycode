@@ -2,6 +2,7 @@
   "name": "feishu-claude-bridge",
   "version": "0.1.0",
   "description": "通过飞书对话控制 Linux 服务器上的 Claude Code",
+  "type": "module",
   "main": "dist/index.js",
   "scripts": {
     "dev": "tsx watch src/index.ts",
@@ -22,12 +23,13 @@
     "node": ">=18.0.0"
   },
   "dependencies": {
-    "@anthropic-ai/claude-code": "^2.1.42",
+    "@anthropic-ai/claude-agent-sdk": "^0.2.42",
     "@larksuiteoapi/node-sdk": "^1.40.0",
     "dotenv": "^16.4.0",
     "express": "^4.21.0",
     "pino": "^9.6.0",
-    "pino-pretty": "^13.0.0"
+    "pino-pretty": "^13.0.0",
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "@types/express": "^5.0.0",
