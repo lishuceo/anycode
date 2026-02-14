@@ -30,7 +30,7 @@
 |------|------|---------|
 | **HTTP Server** | 接收飞书 Webhook 事件 | Express + TypeScript |
 | **Feishu Client** | 飞书 API 交互（收发消息、卡片） | @larksuiteoapi/node-sdk |
-| **Claude Executor** | 管理 Claude Code 长连接进程 (双向流式 JSON) | 子进程 + stream-json 协议 |
+| **Claude Executor** | 调用 Claude Agent SDK 执行任务 | @anthropic-ai/claude-agent-sdk |
 | **Session Manager** | 管理用户会话、上下文隔离 | 内存 + 可选持久化 |
 | **Message Formatter** | 飞书富文本 ↔ Claude 文本转换 | 自定义 |
 | **Queue Manager** | 任务排队，防止并发冲突 | 内存队列 |
@@ -59,11 +59,11 @@ Session Manager 查找/创建会话
 Queue Manager 排队执行
         │
         ▼
-Claude Executor 通过长连接进程执行
+Claude Executor 调用 Agent SDK
         │
-        ├─ 持久进程: claude --print --input-format stream-json --output-format stream-json
-        ├─ 通过 stdin 发送 JSON 消息
-        ├─ 通过 stdout 接收流式 JSON 事件
+        ├─ 调用 query() 启动 Claude Agent
+        ├─ SDK 自动管理工具执行、权限、流式输出
+        ├─ 通过 session_id 实现会话续接 (--resume)
         │
         ▼
 捕获 Claude Code 输出 (流式)
@@ -102,63 +102,61 @@ interface Session {
 // - 可通过命令切换工作目录: /cd /path/to/project
 ```
 
-### 4. Claude Code 调用方式 — 双向流式 JSON 长连接
+### 4. Claude Agent SDK 集成
 
-本项目采用 Claude Code CLI 的**双向流式 JSON 模式**，这是最接近 SDK 级别的使用方式：
+本项目使用 **[@anthropic-ai/claude-agent-sdk](https://platform.claude.com/docs/en/agent-sdk/overview)** — 官方 Agent SDK，将 Claude Code 的全部能力作为库使用。
 
-```bash
-# 启动持久进程，通过 stdin/stdout 双向流式 JSON 通信
-claude --print \
-  --output-format stream-json \
-  --input-format stream-json \
-  --dangerously-skip-permissions
-```
+> Claude Code SDK 已更名为 Claude Agent SDK。
 
-**工作原理：**
-
-```
-          stdin (JSON)                    stdout (JSON)
-  ┌──────────────────┐            ┌───────────────────────┐
-  │ {"type":          │            │ {"type":"system",...}  │
-  │   "user_message", │ ────────► │ {"type":"assistant",...}│
-  │   "content":"..." │            │ {"type":"tool_use",...}│
-  │ }                 │            │ {"type":"result",...}  │
-  └──────────────────┘            └───────────────────────┘
-```
-
-**为什么选择长连接模式而非每次 spawn 新进程：**
-
-| 对比 | 每次 spawn 新进程 | 长连接持久进程 (本项目) |
-|------|------------------|----------------------|
-| 启动开销 | 每次 ~2-3s | 仅首次启动 |
-| 对话上下文 | 需要 `--resume` 手动续接 | 进程自动维护上下文 |
-| 流式输出 | 需要捕获 stdout | 天然的双向流式通信 |
-| 多轮对话 | 每轮独立进程 | 单进程内多轮 |
-| 资源占用 | 频繁创建/销毁进程 | 一个常驻进程 |
-
-**核心代码 (简化)：**
+**核心 API: `query()`**
 
 ```typescript
-// 每个飞书会话对应一个持久的 Claude Code 子进程
-const proc = spawn('claude', [
-  '--print',
-  '--output-format', 'stream-json',
-  '--input-format', 'stream-json',
-], { cwd: workingDir });
+import { query } from '@anthropic-ai/claude-agent-sdk';
 
-// 发送用户消息 → stdin
-proc.stdin.write(JSON.stringify({
-  type: 'user_message',
-  content: '帮我看看这个 bug'
-}) + '\n');
-
-// 接收流式事件 ← stdout (逐行 JSON)
-proc.stdout.on('data', (chunk) => {
-  // {"type":"assistant","content":"让我看看..."}
-  // {"type":"tool_use","tool_name":"Read",...}
-  // {"type":"result","result":"已修复!"}
+const q = query({
+  prompt: "帮我修复 auth.py 中的 bug",
+  options: {
+    cwd: "/home/user/my-project",
+    permissionMode: 'bypassPermissions',
+    allowDangerouslySkipPermissions: true,
+    systemPrompt: {
+      type: 'preset',
+      preset: 'claude_code',
+      append: '你正在通过飞书消息与用户交互。请保持回复简洁。',
+    },
+    settingSources: ['project'],  // 加载 CLAUDE.md
+    maxTurns: 50,
+    maxBudgetUsd: 5,
+    resume: previousSessionId,    // 会话续接
+  },
 });
+
+// query() 返回 AsyncGenerator<SDKMessage>
+for await (const message of q) {
+  switch (message.type) {
+    case 'system':     // 初始化信息 (model, tools, session_id)
+    case 'assistant':  // Claude 的回复文本
+    case 'result':     // 最终结果 (成功/失败, 耗时, 花费)
+    case 'tool_progress': // 工具执行进度
+    // ...
+  }
+}
 ```
+
+**SDK 的优势 (对比直接调用 CLI)：**
+
+| 特性 | CLI 子进程 | Agent SDK (本项目) |
+|------|-----------|-------------------|
+| 集成方式 | spawn + stdin/stdout | `import { query }` 直接调用 |
+| 类型安全 | 需要手动解析 JSON | 完整 TypeScript 类型 |
+| 工具执行 | 需要自己解析 stream-json | SDK 自动管理 |
+| 权限控制 | CLI 参数 | `permissionMode` / `canUseTool` 回调 |
+| 会话续接 | `--resume` 手动传参 | `resume` option |
+| 中断操作 | `process.kill()` | `query.close()` / `AbortController` |
+| 花费追踪 | 需要自己解析 | `result.total_cost_usd` |
+| Hooks | 不支持 | `PreToolUse` / `PostToolUse` 等 |
+| MCP | 命令行配置 | `mcpServers` 编程配置 |
+| 子 Agent | 不支持 | `agents` 定义 |
 
 ### 5. 飞书消息交互设计
 
@@ -281,9 +279,8 @@ proc.stdout.on('data', (chunk) => {
 │   │   ├── message-builder.ts   # 消息/卡片构建器
 │   │   └── types.ts             # 飞书相关类型定义
 │   ├── claude/
-│   │   ├── executor.ts          # Claude Code 执行器
-│   │   ├── output-parser.ts     # 输出解析与格式化
-│   │   └── types.ts             # Claude 相关类型定义
+│   │   ├── executor.ts          # Claude Agent SDK 执行器
+│   │   └── types.ts             # Claude SDK 类型重导出 + 自定义类型
 │   ├── session/
 │   │   ├── manager.ts           # 会话管理器
 │   │   ├── queue.ts             # 任务队列
@@ -313,11 +310,11 @@ proc.stdout.on('data', (chunk) => {
    - 订阅事件: `im.message.receive_v1` (接收消息)
 5. 记录 App ID、App Secret、Encrypt Key、Verification Token
 
-### 2. 安装 Claude Code
+### 2. 设置 Anthropic API Key
 
 ```bash
-npm install -g @anthropic-ai/claude-code
-claude  # 首次运行进行认证
+# 从 https://console.anthropic.com/ 获取 API Key
+export ANTHROPIC_API_KEY=sk-ant-xxxxxxxx
 ```
 
 ### 3. 部署本项目
@@ -345,7 +342,7 @@ ngrok http 3000
 - **Runtime**: Node.js 18+ / TypeScript 5
 - **HTTP**: Express
 - **飞书 SDK**: @larksuiteoapi/node-sdk
-- **Claude Code**: CLI 双向流式 JSON 长连接 (--input-format stream-json)
+- **Claude Agent SDK**: @anthropic-ai/claude-agent-sdk (官方 SDK)
 - **日志**: pino
 - **进程管理**: PM2 (生产环境)
 

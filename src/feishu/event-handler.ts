@@ -1,11 +1,11 @@
-import { logger } from '../utils/logger';
-import { isUserAllowed, containsDangerousCommand } from '../utils/security';
-import { sessionManager } from '../session/manager';
-import { taskQueue } from '../session/queue';
-import { claudeExecutor } from '../claude/executor';
-import { buildProgressCard, buildResultCard, buildStatusCard } from './message-builder';
-import { feishuClient } from './client';
-import type { FeishuEventBody, FeishuMessageEvent, ParsedMessage } from './types';
+import { logger } from '../utils/logger.js';
+import { isUserAllowed, containsDangerousCommand } from '../utils/security.js';
+import { sessionManager } from '../session/manager.js';
+import { taskQueue } from '../session/queue.js';
+import { claudeExecutor } from '../claude/executor.js';
+import { buildProgressCard, buildResultCard, buildStatusCard } from './message-builder.js';
+import { feishuClient } from './client.js';
+import type { FeishuEventBody, FeishuMessageEvent, ParsedMessage } from './types.js';
 
 /** 已处理的事件 ID 集合 (去重) */
 const processedEvents = new Set<string>();
@@ -161,8 +161,10 @@ async function handleSlashCommand(
 /**
  * 执行 Claude Code 任务
  *
- * 使用长连接模式: 每个 chatId:userId 对应一个持久的 Claude Code 进程。
- * 多轮对话的上下文由 Claude Code 进程自身维护，无需手动传递 conversationId。
+ * 使用 Claude Agent SDK:
+ *   - 每次调用 query() 启动一个独立的 Claude Code agent
+ *   - 通过 session.conversationId (即 SDK session_id) 实现会话续接 (--resume)
+ *   - SDK 自动管理工具执行、权限、流式输出
  */
 async function executeClaudeTask(
   prompt: string,
@@ -183,18 +185,19 @@ async function executeClaudeTask(
   sessionManager.setStatus(chatId, userId, 'busy');
 
   try {
-    // 通过长连接执行 Claude Code (自动创建/复用进程)
+    // 调用 Claude Agent SDK
     const result = await claudeExecutor.execute(
       sessionKey,
       prompt,
       session.workingDir,
+      session.conversationId, // 传入上次的 session_id 用于 resume
       // 进度回调 - 可用于实时更新卡片
-      (event) => {
-        logger.debug({ eventType: event.type }, 'Claude stream event');
+      (message) => {
+        logger.debug({ messageType: message.type }, 'Claude SDK message');
       },
     );
 
-    // 保存 Claude Code 的 session_id (备用)
+    // 保存 SDK session_id 用于下次续接
     if (result.sessionId) {
       sessionManager.setConversationId(chatId, userId, result.sessionId);
     }
@@ -202,13 +205,17 @@ async function executeClaudeTask(
     // 格式化耗时
     const durationStr = formatDuration(result.durationMs);
 
+    // 构建花费信息
+    const costInfo = result.costUsd
+      ? ` | 💰 $${result.costUsd.toFixed(4)}`
+      : '';
+
     // 更新卡片为结果
     const resultCard = buildResultCard(
       prompt,
       result.output || result.error || '(无输出)',
       result.success,
-      durationStr,
-      result.timedOut,
+      durationStr + costInfo,
     );
 
     if (progressMsgId) {
@@ -222,7 +229,7 @@ async function executeClaudeTask(
       await feishuClient.sendText(chatId, result.output);
     }
   } catch (err) {
-    logger.error({ err }, 'Error executing Claude Code task');
+    logger.error({ err }, 'Error executing Claude Agent SDK query');
     await feishuClient.replyText(messageId, `❌ 执行出错: ${(err as Error).message}`);
   } finally {
     sessionManager.setStatus(chatId, userId, 'idle');

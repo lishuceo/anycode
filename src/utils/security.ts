@@ -1,5 +1,5 @@
-import { config } from '../config';
-import { logger } from './logger';
+import { config } from '../config.js';
+import { logger } from './logger.js';
 
 /**
  * 检查用户是否在白名单中

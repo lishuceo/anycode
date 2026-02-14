@@ -1,6 +1,6 @@
 import * as lark from '@larksuiteoapi/node-sdk';
-import { config } from '../config';
-import { logger } from '../utils/logger';
+import { config } from '../config.js';
+import { logger } from '../utils/logger.js';
 
 /**
  * 飞书 API 客户端封装
