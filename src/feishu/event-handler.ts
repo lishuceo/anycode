@@ -1,3 +1,4 @@
+import * as lark from '@larksuiteoapi/node-sdk';
 import { logger } from '../utils/logger.js';
 import { isUserAllowed, containsDangerousCommand } from '../utils/security.js';
 import { sessionManager } from '../session/manager.js';
@@ -5,55 +6,113 @@ import { taskQueue } from '../session/queue.js';
 import { claudeExecutor } from '../claude/executor.js';
 import { buildProgressCard, buildResultCard, buildStatusCard } from './message-builder.js';
 import { feishuClient } from './client.js';
-import type { FeishuEventBody, FeishuMessageEvent, ParsedMessage } from './types.js';
+import { config } from '../config.js';
 
-/** 已处理的事件 ID 集合 (去重) */
-const processedEvents = new Set<string>();
-const MAX_PROCESSED_EVENTS = 10000;
+// ============================================================
+// 使用飞书 SDK 的 EventDispatcher 处理事件
+//
+// EventDispatcher 自动处理:
+//   - URL verification (challenge)
+//   - 事件签名验证 (encryptKey / verificationToken)
+//   - 事件去重 (内置 cache)
+//   - 事件解密
+//   - 类型安全的事件回调
+//
+// 配合 adaptExpress 可以一行代码接入 Express
+// ============================================================
 
 /**
- * 处理飞书事件回调
+ * 创建飞书事件分发器
  */
-export async function handleFeishuEvent(body: FeishuEventBody): Promise<Record<string, unknown> | null> {
-  // 1. 处理 URL 验证请求
-  if (body.challenge) {
-    logger.info('Received URL verification challenge');
-    return { challenge: body.challenge };
-  }
+export function createEventDispatcher(): lark.EventDispatcher {
+  const dispatcher = new lark.EventDispatcher({
+    encryptKey: config.feishu.encryptKey || undefined,
+    verificationToken: config.feishu.verifyToken || undefined,
+  });
 
-  // 2. 事件去重
-  const eventId = body.header?.event_id;
-  if (eventId) {
-    if (processedEvents.has(eventId)) {
-      logger.debug({ eventId }, 'Duplicate event, skipping');
-      return null;
-    }
-    processedEvents.add(eventId);
-    // 防止内存泄漏
-    if (processedEvents.size > MAX_PROCESSED_EVENTS) {
-      const iter = processedEvents.values();
-      for (let i = 0; i < MAX_PROCESSED_EVENTS / 2; i++) {
-        processedEvents.delete(iter.next().value!);
+  // 注册消息接收事件 (im.message.receive_v1)
+  dispatcher.register({
+    'im.message.receive_v1': async (data) => {
+      try {
+        await handleMessageEvent(data);
+      } catch (err) {
+        logger.error({ err }, 'Error handling message event');
       }
-    }
-  }
+    },
+  });
 
-  // 3. 处理消息事件
-  const eventType = body.header?.event_type;
-  if (eventType === 'im.message.receive_v1' && body.event) {
-    await handleMessageEvent(body.event);
-  } else {
-    logger.debug({ eventType }, 'Unhandled event type');
-  }
-
-  return null;
+  logger.info('Feishu EventDispatcher created with im.message.receive_v1 handler');
+  return dispatcher;
 }
 
 /**
- * 处理消息事件
+ * 创建飞书卡片交互处理器
  */
-async function handleMessageEvent(event: FeishuMessageEvent): Promise<void> {
-  const parsed = parseMessage(event);
+export function createCardActionHandler(): lark.CardActionHandler {
+  const handler = new lark.CardActionHandler({
+    encryptKey: config.feishu.encryptKey || undefined,
+    verificationToken: config.feishu.verifyToken || undefined,
+  }, async (data: Record<string, unknown>) => {
+    logger.debug({ action: data }, 'Card action received');
+    // TODO: 处理卡片按钮点击等交互
+    return {};
+  });
+
+  return handler;
+}
+
+// ============================================================
+// 消息处理逻辑
+// ============================================================
+
+/** SDK 回调的事件数据类型 */
+interface MessageEventData {
+  sender: {
+    sender_id?: {
+      union_id?: string;
+      user_id?: string;
+      open_id?: string;
+    };
+    sender_type: string;
+    tenant_key?: string;
+  };
+  message: {
+    message_id: string;
+    root_id?: string;
+    parent_id?: string;
+    create_time: string;
+    chat_id: string;
+    chat_type: string;
+    message_type: string;
+    content: string;
+    mentions?: Array<{
+      key: string;
+      id: {
+        union_id?: string;
+        user_id?: string;
+        open_id?: string;
+      };
+      name: string;
+      tenant_key?: string;
+    }>;
+  };
+}
+
+/** 解析后的消息 */
+interface ParsedMessage {
+  text: string;
+  messageId: string;
+  userId: string;
+  chatId: string;
+  chatType: string;
+  mentionedBot: boolean;
+}
+
+/**
+ * 处理消息事件 (由 EventDispatcher 回调)
+ */
+async function handleMessageEvent(data: MessageEventData): Promise<void> {
+  const parsed = parseMessage(data);
   if (!parsed) return;
 
   const { text, messageId, userId, chatId, chatType, mentionedBot } = parsed;
@@ -82,13 +141,12 @@ async function handleMessageEvent(event: FeishuMessageEvent): Promise<void> {
     return;
   }
 
-  // 执行 Claude Code
+  // 执行 Claude Agent
   await executeClaudeTask(text, chatId, userId, messageId);
 }
 
 /**
  * 处理斜杠命令
- * @returns true 如果是斜杠命令且已处理
  */
 async function handleSlashCommand(
   text: string,
@@ -118,12 +176,12 @@ async function handleSlashCommand(
     return true;
   }
 
-  // /reset - 重置会话 (同时终止 Claude Code 长连接进程)
+  // /reset - 重置会话
   if (trimmed === '/reset') {
     const sessionKey = `${chatId}:${userId}`;
     claudeExecutor.killSession(sessionKey);
     sessionManager.reset(chatId, userId);
-    await feishuClient.replyText(messageId, '🔄 会话已重置 (Claude Code 进程已终止)');
+    await feishuClient.replyText(messageId, '🔄 会话已重置');
     return true;
   }
 
@@ -159,12 +217,7 @@ async function handleSlashCommand(
 }
 
 /**
- * 执行 Claude Code 任务
- *
- * 使用 Claude Agent SDK:
- *   - 每次调用 query() 启动一个独立的 Claude Code agent
- *   - 通过 session.conversationId (即 SDK session_id) 实现会话续接 (--resume)
- *   - SDK 自动管理工具执行、权限、流式输出
+ * 执行 Claude Agent SDK 任务
  */
 async function executeClaudeTask(
   prompt: string,
@@ -190,8 +243,7 @@ async function executeClaudeTask(
       sessionKey,
       prompt,
       session.workingDir,
-      session.conversationId, // 传入上次的 session_id 用于 resume
-      // 进度回调 - 可用于实时更新卡片
+      session.conversationId,
       (message) => {
         logger.debug({ messageType: message.type }, 'Claude SDK message');
       },
@@ -202,10 +254,8 @@ async function executeClaudeTask(
       sessionManager.setConversationId(chatId, userId, result.sessionId);
     }
 
-    // 格式化耗时
+    // 格式化耗时和花费
     const durationStr = formatDuration(result.durationMs);
-
-    // 构建花费信息
     const costInfo = result.costUsd
       ? ` | 💰 $${result.costUsd.toFixed(4)}`
       : '';
@@ -237,10 +287,10 @@ async function executeClaudeTask(
 }
 
 /**
- * 解析飞书消息
+ * 解析飞书消息 (使用 SDK 类型化的事件数据)
  */
-function parseMessage(event: FeishuMessageEvent): ParsedMessage | null {
-  const { message, sender } = event;
+function parseMessage(data: MessageEventData): ParsedMessage | null {
+  const { message, sender } = data;
 
   // 只处理文本消息
   if (message.message_type !== 'text') {
@@ -262,9 +312,7 @@ function parseMessage(event: FeishuMessageEvent): ParsedMessage | null {
   let mentionedBot = false;
   if (message.mentions) {
     for (const mention of message.mentions) {
-      // @机器人 的 key 格式为 @_user_1 等
       text = text.replace(mention.key, '').trim();
-      // 判断是否 @了机器人 (sender_type 为 app 或 bot)
       mentionedBot = true;
     }
   }
@@ -274,7 +322,7 @@ function parseMessage(event: FeishuMessageEvent): ParsedMessage | null {
   return {
     text: text.trim(),
     messageId: message.message_id,
-    userId: sender.sender_id.open_id,
+    userId: sender.sender_id?.open_id || '',
     chatId: message.chat_id,
     chatType: message.chat_type,
     mentionedBot,
