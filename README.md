@@ -296,45 +296,244 @@ for await (const message of q) {
 
 ## 快速开始
 
-### 1. 创建飞书应用
+### 第一步：创建飞书应用
 
-1. 访问 [飞书开放平台](https://open.feishu.cn/app)
-2. 创建企业自建应用
-3. 开通权限：
-   - `im:message` - 获取与发送单聊、群组消息
-   - `im:message:send_as_bot` - 以应用身份发送消息
-   - `im:chat` - 获取群组信息
-4. 配置事件订阅：
-   - 请求地址: `https://your-server.com/feishu/webhook`
-   - 订阅事件: `im.message.receive_v1` (接收消息)
-5. 记录 App ID、App Secret、Encrypt Key、Verification Token
+#### 1.1 进入飞书开放平台
 
-### 2. 设置 Anthropic API Key
+打开 [飞书开放平台](https://open.feishu.cn/app)，登录你的飞书账号。
+
+#### 1.2 创建应用
+
+1. 点击 **「创建企业自建应用」**
+2. 填写应用名称（如 `Claude Code Bot`）和描述
+3. 选择应用图标，点击 **「创建」**
+
+#### 1.3 记录凭证信息
+
+进入应用后，在 **「凭证与基础信息」** 页面记录以下信息：
+
+| 字段 | 位置 | 对应 .env 变量 |
+|------|------|---------------|
+| App ID | 凭证与基础信息 → App ID | `FEISHU_APP_ID` |
+| App Secret | 凭证与基础信息 → App Secret（点击显示） | `FEISHU_APP_SECRET` |
+
+#### 1.4 开启机器人能力
+
+1. 左侧菜单 → **「添加应用能力」**
+2. 找到 **「机器人」**，点击 **「添加」**
+3. 这一步让你的应用可以作为机器人与用户对话
+
+#### 1.5 配置权限
+
+左侧菜单 → **「权限管理」**，搜索并开通以下权限：
+
+| 权限名称 | 权限标识 | 用途 |
+|---------|---------|------|
+| 获取与发送单聊、群组消息 | `im:message` | 读取用户消息 |
+| 以应用的身份发消息 | `im:message:send_as_bot` | 机器人发送消息 |
+| 获取用户发给机器人的单聊消息 | `im:message.p2p_msg:readonly` | 接收私聊消息 |
+| 获取群组中所有消息 | `im:message.group_msg:readonly` | 接收群聊消息 |
+| 获取用户在群组中@机器人的消息 | `im:message.group_at_msg:readonly` | 接收群聊中 @机器人的消息 |
+| 更新应用发送的消息卡片 | `im:message:send_as_bot` | 更新进度卡片 |
+
+> 开通后需要由管理员审批，如果你本身是管理员则自动通过。
+
+#### 1.6 配置事件订阅
+
+这是最关键的一步，让飞书把用户消息推送到你的服务器。
+
+1. 左侧菜单 → **「事件与回调」** → **「事件配置」**
+2. 选择 **事件订阅方式**：
+
+   **方式 A：HTTP Webhook（需要公网地址）**
+   - 请求地址填写：`https://your-domain.com/feishu/webhook`
+   - 飞书会发送一个 challenge 请求验证地址，本项目会自动处理
+
+   **方式 B：WebSocket 长连接（无需公网，推荐开发阶段）**
+   - 不需要填请求地址，SDK 会主动连接飞书
+   - 适合没有公网 IP 的开发环境
+
+3. 在 **「Encrypt Key」** 和 **「Verification Token」** 区域：
+   - 记录 **Encrypt Key** → 填入 `.env` 的 `FEISHU_ENCRYPT_KEY`
+   - 记录 **Verification Token** → 填入 `.env` 的 `FEISHU_VERIFY_TOKEN`
+
+4. 点击 **「添加事件」**，搜索并添加：
+
+   | 事件名称 | 事件标识 | 说明 |
+   |---------|---------|------|
+   | 接收消息 | `im.message.receive_v1` | 用户发消息时触发 |
+
+#### 1.7 发布应用
+
+1. 左侧菜单 → **「版本管理与发布」**
+2. 点击 **「创建版本」**，填写版本号和更新说明
+3. 提交审核（企业管理员审批通过后生效）
+
+> 开发测试阶段，可以在 **「应用发布范围」** 中先只选择自己，不需要等审批。
+
+#### 1.8 验证：在飞书中找到机器人
+
+应用发布后：
+- **私聊**：在飞书搜索框搜索你的应用名称，点击发起对话
+- **群聊**：在群设置中添加机器人，选择你的应用
+
+---
+
+### 第二步：准备服务器环境
+
+#### 2.1 安装 Node.js
 
 ```bash
-# 从 https://console.anthropic.com/ 获取 API Key
-export ANTHROPIC_API_KEY=sk-ant-xxxxxxxx
+# 使用 nvm 安装 Node.js 18+
+curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.0/install.sh | bash
+source ~/.bashrc
+nvm install 22
+node -v  # 确认 v22.x
 ```
 
-### 3. 部署本项目
+#### 2.2 获取 Anthropic API Key
+
+1. 访问 [Anthropic Console](https://console.anthropic.com/)
+2. 注册/登录账号
+3. 进入 **API Keys** 页面，创建一个新的 API Key
+4. 复制保存 Key（格式为 `sk-ant-api03-...`）
+
+---
+
+### 第三步：部署本项目
+
+#### 3.1 克隆项目
 
 ```bash
-git clone <repo-url>
-cd feishu-claude-bridge
-cp .env.example .env
-# 编辑 .env 填入配置
+git clone https://github.com/lishuceo/anywhere-code.git
+cd anywhere-code
+```
+
+#### 3.2 安装依赖
+
+```bash
 npm install
-npm run dev   # 开发模式
-npm start     # 生产模式
 ```
 
-### 4. 配置网络
+#### 3.3 配置环境变量
 
 ```bash
-# 方式1: nginx 反代 (推荐生产环境)
-# 方式2: ngrok 内网穿透 (开发测试)
+cp .env.example .env
+```
+
+编辑 `.env` 文件，填入你在第一步记录的信息：
+
+```bash
+# === 飞书应用配置 ===
+FEISHU_APP_ID=cli_xxxxxxxxxx          # 第1.3步的 App ID
+FEISHU_APP_SECRET=xxxxxxxxxxxxxxxx     # 第1.3步的 App Secret
+FEISHU_ENCRYPT_KEY=xxxxxxxxxxxx        # 第1.6步的 Encrypt Key
+FEISHU_VERIFY_TOKEN=xxxxxxxxxxxx       # 第1.6步的 Verification Token
+
+# === Claude 配置 ===
+ANTHROPIC_API_KEY=sk-ant-api03-xxxxx   # 第2.2步的 API Key
+DEFAULT_WORK_DIR=/home/ubuntu/projects # 默认工作目录
+
+# === 安全配置 ===
+ALLOWED_USER_IDS=                      # 留空=所有人可用, 或填 open_id 逗号分隔
+```
+
+#### 3.4 启动服务
+
+```bash
+# 开发模式 (自动重载)
+npm run dev
+
+# 生产模式
+npm run build
+npm start
+```
+
+启动成功会看到：
+```
+Server started on port 3000
+Feishu webhook URL: http://localhost:3000/feishu/webhook
+```
+
+---
+
+### 第四步：配置网络（让飞书能访问你的服务器）
+
+飞书需要能通过公网访问你的 `/feishu/webhook` 接口。
+
+#### 方式 A：ngrok 内网穿透（开发测试推荐）
+
+```bash
+# 安装 ngrok
+npm install -g ngrok
+# 或者从 https://ngrok.com/download 下载
+
+# 启动穿透
 ngrok http 3000
 ```
+
+ngrok 会输出一个公网地址，如：
+```
+Forwarding  https://abc123.ngrok-free.app -> http://localhost:3000
+```
+
+将 `https://abc123.ngrok-free.app/feishu/webhook` 填入飞书后台的事件订阅请求地址。
+
+#### 方式 B：nginx 反向代理 + HTTPS（生产环境推荐）
+
+```nginx
+# /etc/nginx/sites-available/feishu-claude
+server {
+    listen 443 ssl;
+    server_name your-domain.com;
+
+    ssl_certificate     /path/to/cert.pem;
+    ssl_certificate_key /path/to/key.pem;
+
+    location /feishu/ {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_read_timeout 300s;  # Claude 执行可能耗时较长
+    }
+}
+```
+
+```bash
+sudo ln -s /etc/nginx/sites-available/feishu-claude /etc/nginx/sites-enabled/
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+将 `https://your-domain.com/feishu/webhook` 填入飞书后台。
+
+#### 方式 C：使用 PM2 守护进程（生产环境）
+
+```bash
+npm install -g pm2
+npm run build
+pm2 start dist/index.js --name feishu-claude
+pm2 save
+pm2 startup  # 设置开机自启
+```
+
+---
+
+### 第五步：验证
+
+1. 在飞书中找到你的机器人，发送一条消息：`你好`
+2. 如果一切正常，你会收到一张卡片回复，包含 Claude 的回复内容
+3. 试试发送 `/help` 查看可用命令
+4. 发送 `/status` 查看当前会话状态
+
+#### 常见问题排查
+
+| 问题 | 可能原因 | 解决方法 |
+|------|---------|---------|
+| 发消息没有回复 | 事件订阅地址不可达 | 检查 ngrok/nginx 是否正常，飞书后台能否验证通过 |
+| 回复 "你没有权限" | `ALLOWED_USER_IDS` 设置了但不包含你 | 清空该变量或添加你的 open_id |
+| 回复 "执行出错" | Anthropic API Key 无效 | 检查 `ANTHROPIC_API_KEY` 是否正确 |
+| 群聊中不响应 | 没有 @机器人 | 群聊中需要 @机器人 才会触发 |
+| 超时无回复 | 飞书 3 秒超时重试 | 本项目已异步处理，检查服务日志 |
 
 ## 技术栈
 
