@@ -10,17 +10,24 @@
     "lint": "eslint src/",
     "typecheck": "tsc --noEmit"
   },
-  "keywords": ["feishu", "lark", "claude-code", "ai", "bridge"],
+  "keywords": [
+    "feishu",
+    "lark",
+    "claude-code",
+    "ai",
+    "bridge"
+  ],
   "license": "MIT",
   "engines": {
     "node": ">=18.0.0"
   },
   "dependencies": {
+    "@anthropic-ai/claude-code": "^2.1.42",
     "@larksuiteoapi/node-sdk": "^1.40.0",
+    "dotenv": "^16.4.0",
     "express": "^4.21.0",
     "pino": "^9.6.0",
-    "pino-pretty": "^13.0.0",
-    "dotenv": "^16.4.0"
+    "pino-pretty": "^13.0.0"
   },
   "devDependencies": {
     "@types/express": "^5.0.0",
