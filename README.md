@@ -243,26 +243,29 @@ for await (const message of q) {
 
 前置条件:
   - Node.js >= 18
-  - Claude Code CLI 已安装并认证
-  - 飞书开放平台应用已创建
+  - 飞书开放平台应用已创建 (开启机器人能力 + 长连接事件订阅)
+  - Anthropic API Key
 
 运行方式:
-  开发: npm run dev (ts-node + nodemon)
+  开发: npm run dev (tsx watch)
   生产: npm run build && npm start (PM2 管理)
 
 网络要求:
-  - 服务器需有公网 IP 或使用内网穿透 (ngrok/frp)
-  - 飞书 Webhook 回调需要 HTTPS (可用 nginx 反代 + Let's Encrypt)
+  - WebSocket 模式 (默认): 无需公网 IP，SDK 主动连接飞书
+  - Webhook 模式 (可选): 需要公网 HTTPS 地址
 
-环境变量:
+环境变量 (必填):
   FEISHU_APP_ID:        飞书应用 App ID
   FEISHU_APP_SECRET:    飞书应用 App Secret
-  FEISHU_ENCRYPT_KEY:   飞书事件加密 Key (可选)
-  FEISHU_VERIFY_TOKEN:  飞书验证 Token
+  ANTHROPIC_API_KEY:    Anthropic API Key
+
+环境变量 (可选):
+  FEISHU_EVENT_MODE:    事件接收模式 (websocket | webhook，默认 websocket)
   ALLOWED_USER_IDS:     允许使用的飞书用户 ID 列表
   DEFAULT_WORK_DIR:     默认工作目录
   PORT:                 服务监听端口 (默认 3000)
-  ANTHROPIC_API_KEY:    Anthropic API Key (Claude Code 需要)
+  FEISHU_ENCRYPT_KEY:   仅 webhook 模式需要
+  FEISHU_VERIFY_TOKEN:  仅 webhook 模式需要
 ```
 
 ## 项目结构
@@ -349,60 +352,26 @@ for await (const message of q) {
 
 #### 1.6 配置事件订阅
 
-这是最关键的一步，让飞书把用户消息推送到你的服务器。本项目支持两种方式，选其中一种即可：
-
----
-
-**方式 A：WebSocket 长连接（推荐，无需公网 IP）**
-
-适合开发调试、内网服务器、没有域名的场景。SDK 主动连接飞书，不需要飞书能访问到你。
+让飞书把用户消息推送给你。本项目使用飞书官方 SDK 的 **WebSocket 长连接模式**，无需注册公网域名、无需配置加密策略。
 
 1. 左侧菜单 → **「事件与回调」**
-2. 选择 **「使用长连接接收事件」**（这一步很重要，不要选 HTTP）
-3. 点击 **「添加事件」**，搜索并添加 `im.message.receive_v1`（接收消息）
-4. 在 `.env` 中设置：
-   ```
-   FEISHU_EVENT_MODE=websocket
-   ```
-5. 启动项目，SDK 会自动通过 WebSocket 连接飞书接收事件
-6. **不需要**填写回调地址，**不需要** Encrypt Key / Verification Token
+2. 选择 **「使用长连接接收事件」**
 
----
+   > 这一步很重要。飞书提供两种事件推送方式，选「长连接」就对了。
+   > 飞书官方说明：*无需注册公网域名或配置加密策略，仅需使用官方 SDK 启动长连接客户端即可。*
 
-**方式 B：HTTP Webhook（需要公网 HTTPS 地址）**
+3. 点击 **「添加事件」**，搜索并添加：
 
-适合生产环境、有固定域名的服务器。
+   | 事件名称 | 事件标识 |
+   |---------|---------|
+   | 接收消息 | `im.message.receive_v1` |
 
-> **注意先后顺序**：填写回调地址时，飞书会立刻发送一个 challenge 验证请求。所以你必须**先部署好服务并确保地址可访问**，然后再来飞书后台配置。
+4. 完成。不需要填写回调 URL，不需要 Encrypt Key，不需要 Verification Token
 
-1. 先完成 **第三步（部署项目）** 和 **第四步（配置网络）**，确保服务已启动
-2. 回到飞书后台 → **「事件与回调」** → **「事件配置」**
-3. 选择 **「将事件发送至开发者服务器」**
-4. 在 **请求地址** 中填入：`https://your-domain.com/feishu/webhook`
-   - 填入后飞书会立刻发送 challenge 请求验证
-   - 本项目会自动响应 challenge（SDK 的 `autoChallenge: true` 处理）
-   - 如果验证失败，检查地址是否可通过公网 HTTPS 访问
-5. 记录页面上的：
-   - **Encrypt Key** → 填入 `.env` 的 `FEISHU_ENCRYPT_KEY`
-   - **Verification Token** → 填入 `.env` 的 `FEISHU_VERIFY_TOKEN`
-6. 点击 **「添加事件」**，搜索并添加 `im.message.receive_v1`（接收消息）
-7. 在 `.env` 中设置：
-   ```
-   FEISHU_EVENT_MODE=webhook
-   ```
-
----
-
-**两种方式对比：**
-
-| | WebSocket 长连接 | HTTP Webhook |
-|---|---|---|
-| 需要公网 IP | 不需要 | 需要 |
-| 需要 HTTPS | 不需要 | 需要 |
-| 配置回调地址 | 不需要 | 需要（且有 challenge 验证） |
-| Encrypt Key | 不需要 | 推荐配置 |
-| 适用场景 | 开发调试、内网 | 生产环境 |
-| `.env` 设置 | `FEISHU_EVENT_MODE=websocket` | `FEISHU_EVENT_MODE=webhook` |
+> **为什么不用 HTTP Webhook？**
+> 传统的 webhook 模式需要你有一个公网可访问的 HTTPS 地址，还有 challenge 验证、加密解密等配置。
+> 长连接模式完全省掉了这些——SDK 主动连接飞书服务器，在内网、没有域名的机器上也能直接用。
+> 如果你确实需要 webhook 模式（比如生产环境有固定域名），在 `.env` 中设置 `FEISHU_EVENT_MODE=webhook` 即可切换，详见 [附录：HTTP Webhook 模式](#附录http-webhook-模式)。
 
 #### 1.7 发布应用
 
@@ -465,11 +434,10 @@ cp .env.example .env
 编辑 `.env` 文件，填入你在第一步记录的信息：
 
 ```bash
-# === 飞书应用配置 ===
+# === 飞书应用配置 (只需要 App ID 和 App Secret) ===
 FEISHU_APP_ID=cli_xxxxxxxxxx          # 第1.3步的 App ID
 FEISHU_APP_SECRET=xxxxxxxxxxxxxxxx     # 第1.3步的 App Secret
-FEISHU_ENCRYPT_KEY=xxxxxxxxxxxx        # 第1.6步的 Encrypt Key
-FEISHU_VERIFY_TOKEN=xxxxxxxxxxxx       # 第1.6步的 Verification Token
+FEISHU_EVENT_MODE=websocket            # 长连接模式，无需公网
 
 # === Claude 配置 ===
 ANTHROPIC_API_KEY=sk-ant-api03-xxxxx   # 第2.2步的 API Key
@@ -492,62 +460,20 @@ npm start
 
 启动成功会看到：
 ```
-Server started on port 3000
-Feishu webhook URL: http://localhost:3000/feishu/webhook
+Feishu WebSocket connected
+  无需配置回调地址，无需公网 IP
 ```
+
+> 使用 WebSocket 长连接模式，**不需要配置公网地址、不需要 ngrok、不需要 nginx**。
+> 启动后 SDK 自动连接飞书，就可以在飞书里和机器人对话了。
 
 ---
 
-### 第四步：配置网络（让飞书能访问你的服务器）
+### 第四步（可选）：生产环境部署
 
-飞书需要能通过公网访问你的 `/feishu/webhook` 接口。
+> WebSocket 模式在开发和生产环境都可以用。以下仅在你需要进程守护时参考。
 
-#### 方式 A：ngrok 内网穿透（开发测试推荐）
-
-```bash
-# 安装 ngrok
-npm install -g ngrok
-# 或者从 https://ngrok.com/download 下载
-
-# 启动穿透
-ngrok http 3000
-```
-
-ngrok 会输出一个公网地址，如：
-```
-Forwarding  https://abc123.ngrok-free.app -> http://localhost:3000
-```
-
-将 `https://abc123.ngrok-free.app/feishu/webhook` 填入飞书后台的事件订阅请求地址。
-
-#### 方式 B：nginx 反向代理 + HTTPS（生产环境推荐）
-
-```nginx
-# /etc/nginx/sites-available/feishu-claude
-server {
-    listen 443 ssl;
-    server_name your-domain.com;
-
-    ssl_certificate     /path/to/cert.pem;
-    ssl_certificate_key /path/to/key.pem;
-
-    location /feishu/ {
-        proxy_pass http://127.0.0.1:3000;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_read_timeout 300s;  # Claude 执行可能耗时较长
-    }
-}
-```
-
-```bash
-sudo ln -s /etc/nginx/sites-available/feishu-claude /etc/nginx/sites-enabled/
-sudo nginx -t && sudo systemctl reload nginx
-```
-
-将 `https://your-domain.com/feishu/webhook` 填入飞书后台。
-
-#### 方式 C：使用 PM2 守护进程（生产环境）
+#### 使用 PM2 守护进程
 
 ```bash
 npm install -g pm2
@@ -580,10 +506,47 @@ pm2 startup  # 设置开机自启
 
 - **Runtime**: Node.js 18+ / TypeScript 5
 - **HTTP**: Express
-- **飞书 SDK**: @larksuiteoapi/node-sdk
+- **飞书 SDK**: @larksuiteoapi/node-sdk（WebSocket 长连接 + API 调用）
 - **Claude Agent SDK**: @anthropic-ai/claude-agent-sdk (官方 SDK)
 - **日志**: pino
 - **进程管理**: PM2 (生产环境)
+
+---
+
+## 附录：HTTP Webhook 模式
+
+如果你的生产环境有固定公网域名和 HTTPS 证书，可以使用传统的 HTTP Webhook 模式替代 WebSocket 长连接。
+
+### 切换方式
+
+在 `.env` 中设置：
+
+```bash
+FEISHU_EVENT_MODE=webhook
+FEISHU_ENCRYPT_KEY=xxxxxxxxxxxx        # webhook 模式需要
+FEISHU_VERIFY_TOKEN=xxxxxxxxxxxx       # webhook 模式需要
+```
+
+### 飞书后台配置
+
+> **注意先后顺序**：填写回调地址时，飞书会立刻发送一个 challenge 验证请求。你必须**先部署好服务并确保地址可访问**，然后再来飞书后台配置。
+
+1. 确保服务已部署且公网可访问（见第三步、第四步）
+2. 飞书后台 → **「事件与回调」** → 选择 **「将事件发送至开发者服务器」**
+3. **请求地址**填入：`https://your-domain.com/feishu/webhook`
+   - 填入后飞书立刻发送 challenge 请求，本项目会自动响应
+4. 记录页面上的 **Encrypt Key** 和 **Verification Token**，填入 `.env`
+5. 添加事件 `im.message.receive_v1`
+
+### 两种模式对比
+
+| | WebSocket 长连接（默认） | HTTP Webhook |
+|---|---|---|
+| 公网 IP / 域名 | 不需要 | 需要 |
+| HTTPS 证书 | 不需要 | 需要 |
+| 回调地址 + challenge | 不需要 | 需要 |
+| Encrypt Key / Verify Token | 不需要 | 需要 |
+| 适用场景 | 开发/测试/内网 | 生产环境 |
 
 ## License
 
