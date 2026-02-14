@@ -18,7 +18,6 @@ function main(): void {
   }
 
   logger.info({
-    claudeMode: config.claude.mode,
     defaultWorkDir: config.claude.defaultWorkDir,
     timeoutSeconds: config.claude.timeoutSeconds,
   }, 'Configuration loaded');
@@ -26,9 +25,10 @@ function main(): void {
   // 启动 HTTP 服务
   startServer();
 
-  // 定时清理过期会话 (每 30 分钟)
+  // 定时清理过期会话和 Claude Code 进程 (每 30 分钟)
   setInterval(() => {
     sessionManager.cleanup();
+    claudeExecutor.cleanup();
   }, 30 * 60 * 1000);
 
   // 优雅退出

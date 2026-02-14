@@ -21,7 +21,6 @@ export const config = {
 
   // Claude Code 配置
   claude: {
-    mode: (process.env.CLAUDE_MODE || 'cli') as 'cli' | 'sdk',
     defaultWorkDir: process.env.DEFAULT_WORK_DIR || '/home/ubuntu/projects',
     timeoutSeconds: parseInt(process.env.CLAUDE_TIMEOUT || '300', 10),
   },

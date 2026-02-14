@@ -118,19 +118,22 @@ async function handleSlashCommand(
     return true;
   }
 
-  // /reset - 重置会话
+  // /reset - 重置会话 (同时终止 Claude Code 长连接进程)
   if (trimmed === '/reset') {
+    const sessionKey = `${chatId}:${userId}`;
+    claudeExecutor.killSession(sessionKey);
     sessionManager.reset(chatId, userId);
-    await feishuClient.replyText(messageId, '🔄 会话已重置');
+    await feishuClient.replyText(messageId, '🔄 会话已重置 (Claude Code 进程已终止)');
     return true;
   }
 
   // /stop - 中断执行
   if (trimmed === '/stop') {
-    claudeExecutor.killAll();
+    const sessionKey = `${chatId}:${userId}`;
+    claudeExecutor.killSession(sessionKey);
     taskQueue.cancelPending(chatId);
     sessionManager.setStatus(chatId, userId, 'idle');
-    await feishuClient.replyText(messageId, '🛑 已中断所有执行中的任务');
+    await feishuClient.replyText(messageId, '🛑 已中断当前会话的执行');
     return true;
   }
 
@@ -157,6 +160,9 @@ async function handleSlashCommand(
 
 /**
  * 执行 Claude Code 任务
+ *
+ * 使用长连接模式: 每个 chatId:userId 对应一个持久的 Claude Code 进程。
+ * 多轮对话的上下文由 Claude Code 进程自身维护，无需手动传递 conversationId。
  */
 async function executeClaudeTask(
   prompt: string,
@@ -165,6 +171,7 @@ async function executeClaudeTask(
   messageId: string,
 ): Promise<void> {
   const session = sessionManager.getOrCreate(chatId, userId);
+  const sessionKey = `${chatId}:${userId}`;
 
   // 发送 "处理中" 卡片
   const progressMsgId = await feishuClient.sendCard(
@@ -176,20 +183,20 @@ async function executeClaudeTask(
   sessionManager.setStatus(chatId, userId, 'busy');
 
   try {
-    // 执行 Claude Code
+    // 通过长连接执行 Claude Code (自动创建/复用进程)
     const result = await claudeExecutor.execute(
+      sessionKey,
       prompt,
       session.workingDir,
-      session.conversationId,
-      // 进度回调 - 可用于更新卡片
+      // 进度回调 - 可用于实时更新卡片
       (event) => {
-        logger.debug({ eventType: event.type, subtype: event.subtype }, 'Claude stream event');
+        logger.debug({ eventType: event.type }, 'Claude stream event');
       },
     );
 
-    // 保存会话 ID
-    if (result.conversationId) {
-      sessionManager.setConversationId(chatId, userId, result.conversationId);
+    // 保存 Claude Code 的 session_id (备用)
+    if (result.sessionId) {
+      sessionManager.setConversationId(chatId, userId, result.sessionId);
     }
 
     // 格式化耗时
