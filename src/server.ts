@@ -4,27 +4,46 @@ import { config } from './config.js';
 import { logger } from './utils/logger.js';
 import { createEventDispatcher, createCardActionHandler } from './feishu/event-handler.js';
 
-export function createServer(): express.Application {
-  const app = express();
+/**
+ * 启动服务
+ *
+ * 支持两种飞书事件接收模式 (由 FEISHU_EVENT_MODE 控制):
+ *
+ *   1. webhook 模式 (默认):
+ *      - 飞书通过 HTTP POST 把事件推送到你的服务器
+ *      - 需要公网可访问的 HTTPS 地址
+ *      - 适合生产环境
+ *
+ *   2. websocket 模式:
+ *      - 使用飞书 SDK 的 WSClient 主动连接飞书
+ *      - 不需要公网 IP，不需要配置回调地址
+ *      - 适合开发调试、没有公网 IP 的场景
+ */
+export function startServer(): void {
+  const { port } = config.server;
+  const eventDispatcher = createEventDispatcher();
 
-  // 解析 JSON body
+  if (config.feishu.eventMode === 'websocket') {
+    startWebSocketMode(eventDispatcher, port);
+  } else {
+    startWebhookMode(eventDispatcher, port);
+  }
+}
+
+// ============================================================
+// 模式一: HTTP Webhook (需要公网)
+// ============================================================
+
+function startWebhookMode(eventDispatcher: lark.EventDispatcher, port: number): void {
+  const app = express();
   app.use(express.json());
 
   // 健康检查
   app.get('/health', (_req, res) => {
-    res.json({ status: 'ok', timestamp: new Date().toISOString() });
+    res.json({ status: 'ok', mode: 'webhook', timestamp: new Date().toISOString() });
   });
 
-  // ====================================================
-  // 飞书事件回调 — 使用 SDK 的 EventDispatcher + adaptExpress
-  //
-  // SDK 自动处理:
-  //   - URL verification (challenge 自动应答)
-  //   - 事件签名验证
-  //   - 事件加密/解密
-  //   - 事件去重 (内置 cache)
-  // ====================================================
-  const eventDispatcher = createEventDispatcher();
+  // 飞书事件回调 — SDK 自动处理 challenge、签名验证、事件去重
   app.post(
     '/feishu/webhook',
     lark.adaptExpress(eventDispatcher, { autoChallenge: true }),
@@ -37,16 +56,41 @@ export function createServer(): express.Application {
     lark.adaptExpress(cardHandler, { autoChallenge: true }),
   );
 
-  return app;
+  app.listen(port, () => {
+    logger.info({ port, mode: 'webhook' }, 'Server started (HTTP Webhook mode)');
+    logger.info(`  Webhook URL: http://localhost:${port}/feishu/webhook`);
+    logger.info(`  Card action URL: http://localhost:${port}/feishu/card`);
+    logger.info('  Note: 飞书需要能通过公网 HTTPS 访问以上地址');
+  });
 }
 
-export function startServer(): void {
-  const app = createServer();
-  const { port } = config.server;
+// ============================================================
+// 模式二: WebSocket 长连接 (无需公网)
+// ============================================================
+
+function startWebSocketMode(eventDispatcher: lark.EventDispatcher, port: number): void {
+  // WSClient 主动连接飞书，通过 WebSocket 接收事件
+  const wsClient = new lark.WSClient({
+    appId: config.feishu.appId,
+    appSecret: config.feishu.appSecret,
+  });
+
+  // 将 EventDispatcher 传给 WSClient
+  wsClient.start({ eventDispatcher }).then(() => {
+    logger.info({ mode: 'websocket' }, 'Feishu WebSocket connected');
+    logger.info('  无需配置回调地址，无需公网 IP');
+    logger.info('  飞书后台事件订阅方式选择「使用长连接接收事件」');
+  }).catch((err: Error) => {
+    logger.error({ err }, 'Failed to connect Feishu WebSocket');
+  });
+
+  // 仍然启动 Express 用于健康检查
+  const app = express();
+  app.get('/health', (_req, res) => {
+    res.json({ status: 'ok', mode: 'websocket', timestamp: new Date().toISOString() });
+  });
 
   app.listen(port, () => {
-    logger.info({ port, env: config.server.nodeEnv }, `Server started on port ${port}`);
-    logger.info(`Feishu webhook URL: http://localhost:${port}/feishu/webhook`);
-    logger.info(`Feishu card action URL: http://localhost:${port}/feishu/card`);
+    logger.info({ port, mode: 'websocket' }, 'Health check server started');
   });
 }
