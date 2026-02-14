@@ -327,41 +327,82 @@ for await (const message of q) {
 
 左侧菜单 → **「权限管理」**，搜索并开通以下权限：
 
-| 权限名称 | 权限标识 | 用途 |
-|---------|---------|------|
-| 获取与发送单聊、群组消息 | `im:message` | 读取用户消息 |
-| 以应用的身份发消息 | `im:message:send_as_bot` | 机器人发送消息 |
-| 获取用户发给机器人的单聊消息 | `im:message.p2p_msg:readonly` | 接收私聊消息 |
-| 获取群组中所有消息 | `im:message.group_msg:readonly` | 接收群聊消息 |
-| 获取用户在群组中@机器人的消息 | `im:message.group_at_msg:readonly` | 接收群聊中 @机器人的消息 |
-| 更新应用发送的消息卡片 | `im:message:send_as_bot` | 更新进度卡片 |
+**发送类**（机器人主动发消息、回复消息、更新卡片）：
 
-> 开通后需要由管理员审批，如果你本身是管理员则自动通过。
+| 权限名称 | 权限标识 | 对应代码中的 API |
+|---------|---------|----------------|
+| 以应用的身份发消息 | `im:message:send_as_bot` | `im.message.create` / `im.message.reply` |
+| 编辑应用发送的消息 | `im:message:patch_as_bot` | `im.message.patch`（更新进度卡片） |
+
+**接收类**（接收用户发来的消息事件，至少开一个）：
+
+| 权限名称 | 权限标识 | 适用场景 |
+|---------|---------|---------|
+| 获取用户发给机器人的单聊消息 | `im:message.p2p_msg:readonly` | 私聊场景（必开） |
+| 获取用户在群组中@机器人的消息 | `im:message.group_at_msg:readonly` | 群聊场景（推荐） |
+| 获取群组中所有消息 | `im:message.group_msg:readonly` | 群聊不@也能响应（可选） |
+
+> - `im:message:send_as_bot` 管的是**发消息**（create + reply）
+> - `im:message:patch_as_bot` 管的是**编辑已发出的消息**（patch，用于更新进度卡片）
+> - 它们是两个不同的权限，都需要开通
+> - 开通后需要由管理员审批，如果你本身是管理员则自动通过
 
 #### 1.6 配置事件订阅
 
-这是最关键的一步，让飞书把用户消息推送到你的服务器。
+这是最关键的一步，让飞书把用户消息推送到你的服务器。本项目支持两种方式，选其中一种即可：
 
-1. 左侧菜单 → **「事件与回调」** → **「事件配置」**
-2. 选择 **事件订阅方式**：
+---
 
-   **方式 A：HTTP Webhook（需要公网地址）**
-   - 请求地址填写：`https://your-domain.com/feishu/webhook`
-   - 飞书会发送一个 challenge 请求验证地址，本项目会自动处理
+**方式 A：WebSocket 长连接（推荐，无需公网 IP）**
 
-   **方式 B：WebSocket 长连接（无需公网，推荐开发阶段）**
-   - 不需要填请求地址，SDK 会主动连接飞书
-   - 适合没有公网 IP 的开发环境
+适合开发调试、内网服务器、没有域名的场景。SDK 主动连接飞书，不需要飞书能访问到你。
 
-3. 在 **「Encrypt Key」** 和 **「Verification Token」** 区域：
-   - 记录 **Encrypt Key** → 填入 `.env` 的 `FEISHU_ENCRYPT_KEY`
-   - 记录 **Verification Token** → 填入 `.env` 的 `FEISHU_VERIFY_TOKEN`
+1. 左侧菜单 → **「事件与回调」**
+2. 选择 **「使用长连接接收事件」**（这一步很重要，不要选 HTTP）
+3. 点击 **「添加事件」**，搜索并添加 `im.message.receive_v1`（接收消息）
+4. 在 `.env` 中设置：
+   ```
+   FEISHU_EVENT_MODE=websocket
+   ```
+5. 启动项目，SDK 会自动通过 WebSocket 连接飞书接收事件
+6. **不需要**填写回调地址，**不需要** Encrypt Key / Verification Token
 
-4. 点击 **「添加事件」**，搜索并添加：
+---
 
-   | 事件名称 | 事件标识 | 说明 |
-   |---------|---------|------|
-   | 接收消息 | `im.message.receive_v1` | 用户发消息时触发 |
+**方式 B：HTTP Webhook（需要公网 HTTPS 地址）**
+
+适合生产环境、有固定域名的服务器。
+
+> **注意先后顺序**：填写回调地址时，飞书会立刻发送一个 challenge 验证请求。所以你必须**先部署好服务并确保地址可访问**，然后再来飞书后台配置。
+
+1. 先完成 **第三步（部署项目）** 和 **第四步（配置网络）**，确保服务已启动
+2. 回到飞书后台 → **「事件与回调」** → **「事件配置」**
+3. 选择 **「将事件发送至开发者服务器」**
+4. 在 **请求地址** 中填入：`https://your-domain.com/feishu/webhook`
+   - 填入后飞书会立刻发送 challenge 请求验证
+   - 本项目会自动响应 challenge（SDK 的 `autoChallenge: true` 处理）
+   - 如果验证失败，检查地址是否可通过公网 HTTPS 访问
+5. 记录页面上的：
+   - **Encrypt Key** → 填入 `.env` 的 `FEISHU_ENCRYPT_KEY`
+   - **Verification Token** → 填入 `.env` 的 `FEISHU_VERIFY_TOKEN`
+6. 点击 **「添加事件」**，搜索并添加 `im.message.receive_v1`（接收消息）
+7. 在 `.env` 中设置：
+   ```
+   FEISHU_EVENT_MODE=webhook
+   ```
+
+---
+
+**两种方式对比：**
+
+| | WebSocket 长连接 | HTTP Webhook |
+|---|---|---|
+| 需要公网 IP | 不需要 | 需要 |
+| 需要 HTTPS | 不需要 | 需要 |
+| 配置回调地址 | 不需要 | 需要（且有 challenge 验证） |
+| Encrypt Key | 不需要 | 推荐配置 |
+| 适用场景 | 开发调试、内网 | 生产环境 |
+| `.env` 设置 | `FEISHU_EVENT_MODE=websocket` | `FEISHU_EVENT_MODE=webhook` |
 
 #### 1.7 发布应用
 

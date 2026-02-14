@@ -8,6 +8,8 @@ export const config = {
     appSecret: process.env.FEISHU_APP_SECRET || '',
     encryptKey: process.env.FEISHU_ENCRYPT_KEY || '',
     verifyToken: process.env.FEISHU_VERIFY_TOKEN || '',
+    /** 事件接收模式: 'webhook' (HTTP 回调，需要公网) | 'websocket' (长连接，无需公网) */
+    eventMode: (process.env.FEISHU_EVENT_MODE || 'webhook') as 'webhook' | 'websocket',
   },
 
   // 安全配置
