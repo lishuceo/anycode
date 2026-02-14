@@ -1,8 +1,8 @@
 import express from 'express';
+import * as lark from '@larksuiteoapi/node-sdk';
 import { config } from './config.js';
 import { logger } from './utils/logger.js';
-import { handleFeishuEvent } from './feishu/event-handler.js';
-import type { FeishuEventBody } from './feishu/types.js';
+import { createEventDispatcher, createCardActionHandler } from './feishu/event-handler.js';
 
 export function createServer(): express.Application {
   const app = express();
@@ -15,33 +15,27 @@ export function createServer(): express.Application {
     res.json({ status: 'ok', timestamp: new Date().toISOString() });
   });
 
-  // 飞书事件回调
-  app.post('/feishu/webhook', async (req, res) => {
-    const body = req.body as FeishuEventBody;
+  // ====================================================
+  // 飞书事件回调 — 使用 SDK 的 EventDispatcher + adaptExpress
+  //
+  // SDK 自动处理:
+  //   - URL verification (challenge 自动应答)
+  //   - 事件签名验证
+  //   - 事件加密/解密
+  //   - 事件去重 (内置 cache)
+  // ====================================================
+  const eventDispatcher = createEventDispatcher();
+  app.post(
+    '/feishu/webhook',
+    lark.adaptExpress(eventDispatcher, { autoChallenge: true }),
+  );
 
-    logger.debug({ eventType: body.header?.event_type, challenge: !!body.challenge }, 'Webhook received');
-
-    try {
-      const result = await handleFeishuEvent(body);
-
-      // URL 验证需要返回 challenge
-      if (result) {
-        res.json(result);
-      } else {
-        // 飞书要求 2 秒内返回 200，否则会重试
-        res.json({ code: 0 });
-      }
-    } catch (err) {
-      logger.error({ err }, 'Error handling webhook');
-      res.status(500).json({ code: -1, msg: 'Internal error' });
-    }
-  });
-
-  // 飞书卡片交互回调 (预留)
-  app.post('/feishu/card', async (req, res) => {
-    logger.debug({ body: req.body }, 'Card action received');
-    res.json({});
-  });
+  // 飞书卡片交互回调
+  const cardHandler = createCardActionHandler();
+  app.post(
+    '/feishu/card',
+    lark.adaptExpress(cardHandler, { autoChallenge: true }),
+  );
 
   return app;
 }
@@ -53,5 +47,6 @@ export function startServer(): void {
   app.listen(port, () => {
     logger.info({ port, env: config.server.nodeEnv }, `Server started on port ${port}`);
     logger.info(`Feishu webhook URL: http://localhost:${port}/feishu/webhook`);
+    logger.info(`Feishu card action URL: http://localhost:${port}/feishu/card`);
   });
 }

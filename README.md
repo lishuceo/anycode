@@ -274,10 +274,9 @@ for await (const message of q) {
 │   ├── server.ts                # Express HTTP 服务器
 │   ├── config.ts                # 配置管理
 │   ├── feishu/
-│   │   ├── client.ts            # 飞书 API 客户端
-│   │   ├── event-handler.ts     # 飞书事件处理
-│   │   ├── message-builder.ts   # 消息/卡片构建器
-│   │   └── types.ts             # 飞书相关类型定义
+│   │   ├── client.ts            # 飞书 API 客户端 (@larksuiteoapi/node-sdk)
+│   │   ├── event-handler.ts     # EventDispatcher + 消息处理逻辑
+│   │   └── message-builder.ts   # 消息卡片构建器
 │   ├── claude/
 │   │   ├── executor.ts          # Claude Agent SDK 执行器
 │   │   └── types.ts             # Claude SDK 类型重导出 + 自定义类型
