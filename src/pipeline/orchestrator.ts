@@ -47,10 +47,22 @@ export class PipelineOrchestrator {
 
     logger.info({ prompt: prompt.slice(0, 100), workingDir }, 'Pipeline started');
 
+    // 最大迭代保护：5 phases * 2 retries * 2 safety margin
+    const MAX_ITERATIONS = 20;
+    let iterations = 0;
+
     while (state.phase !== 'done' && state.phase !== 'failed') {
+      if (++iterations > MAX_ITERATIONS) {
+        state = { ...state, phase: 'failed', failedAtPhase: state.phase, failureReason: '管道超过最大迭代次数，可能存在循环' };
+        break;
+      }
+
       const currentPhase = state.phase;
       const phaseStart = Date.now();
-      await callbacks.onPhaseChange?.(state);
+
+      try { await callbacks.onPhaseChange?.(state); } catch (err) {
+        logger.warn({ err, phase: currentPhase }, 'onPhaseChange callback failed');
+      }
 
       logger.info({ phase: currentPhase, retries: state.retries }, 'Pipeline phase starting');
 
@@ -76,7 +88,9 @@ export class PipelineOrchestrator {
     }
 
     // 最终通知
-    await callbacks.onPhaseChange?.(state);
+    try { await callbacks.onPhaseChange?.(state); } catch (err) {
+      logger.warn({ err, phase: state.phase }, 'Final onPhaseChange callback failed');
+    }
 
     const durationMs = Date.now() - startTime;
     const summary = this.buildSummary(state);
@@ -125,6 +139,7 @@ export class PipelineOrchestrator {
       return {
         ...state,
         phase: 'failed',
+        failedAtPhase: 'plan',
         failureReason: `方案设计失败: ${result.error || '无输出'}`,
       };
     }
@@ -181,11 +196,13 @@ export class PipelineOrchestrator {
     state.totalCostUsd += result.costUsd ?? 0;
 
     if (!result.success) {
-      // review agent 自身失败（不是 REJECTED），视为通过以避免阻塞
-      logger.warn({ reviewPhase, error: result.error }, 'Review agent failed, treating as approved');
+      // review agent 自身失败（超时/崩溃等）— fail-closed，不跳过审查
+      logger.warn({ reviewPhase, error: result.error }, 'Review agent failed, treating as pipeline failure');
       return {
         ...state,
-        phase: isPlanReview ? 'implement' : 'push',
+        phase: 'failed',
+        failedAtPhase: reviewPhase,
+        failureReason: `${isPlanReview ? '方案' : '代码'}审查 agent 执行失败: ${result.error || '未知错误'}`,
       };
     }
 
@@ -211,6 +228,7 @@ export class PipelineOrchestrator {
       return {
         ...state,
         phase: 'failed',
+        failedAtPhase: reviewPhase,
         retries: { ...state.retries, [retryKey]: retryCount },
         failureReason: `${isPlanReview ? '方案' : '代码'}审查连续 ${retryCount} 次未通过:\n${verdict.feedback}`,
       };
@@ -259,6 +277,7 @@ export class PipelineOrchestrator {
       return {
         ...state,
         phase: 'failed',
+        failedAtPhase: 'implement',
         failureReason: `代码实现失败: ${result.error || '无输出'}`,
       };
     }

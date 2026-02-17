@@ -310,7 +310,11 @@ async function handleSlashCommand(
       }
       return true;
     }
-    // 通过 executeClaudeTask 的 pipeline 模式执行
+    // 安全检查
+    if (containsDangerousCommand(task)) {
+      await feishuClient.replyText(messageId, '⚠️ 检测到危险命令，已拒绝执行');
+      return true;
+    }
     await executePipelineTask(task, chatId, userId, messageId, rootId);
     return true;
   }
@@ -387,6 +391,24 @@ async function ensureThread(
 }
 
 /**
+ * 并发保护：检查会话是否正在执行，若是则回复用户并返回 true
+ */
+async function acquireSession(
+  chatId: string,
+  userId: string,
+  messageId: string,
+): Promise<boolean> {
+  const session = sessionManager.getOrCreate(chatId, userId);
+  if (session.status === 'busy') {
+    await feishuClient.replyText(messageId, '⏳ 当前会话正在执行任务，请等待完成或使用 /stop 中断');
+    return false;
+  }
+  // 立即标记为忙碌，防止 TOCTOU 竞态
+  sessionManager.setStatus(chatId, userId, 'busy');
+  return true;
+}
+
+/**
  * 执行 Claude Agent SDK 任务
  */
 async function executeClaudeTask(
@@ -396,6 +418,8 @@ async function executeClaudeTask(
   messageId: string,
   rootId?: string,
 ): Promise<void> {
+  if (!await acquireSession(chatId, userId, messageId)) return;
+
   const session = sessionManager.getOrCreate(chatId, userId);
   const sessionKey = `${chatId}:${userId}`;
 
@@ -410,9 +434,6 @@ async function executeClaudeTask(
   if (!progressMsgId) {
     progressMsgId = await feishuClient.sendCard(chatId, buildProgressCard(prompt));
   }
-
-  // 标记会话为忙碌
-  sessionManager.setStatus(chatId, userId, 'busy');
 
   // 获取历史摘要用于注入 system prompt
   const summaries = sessionManager.getRecentSummaries(chatId, userId, 5);
@@ -520,6 +541,8 @@ async function executePipelineTask(
   messageId: string,
   rootId?: string,
 ): Promise<void> {
+  if (!await acquireSession(chatId, userId, messageId)) return;
+
   const session = sessionManager.getOrCreate(chatId, userId);
   const pipelineStartTime = Date.now();
 
@@ -536,9 +559,6 @@ async function executePipelineTask(
     progressMsgId = await feishuClient.sendCard(chatId, initialCard);
   }
 
-  // 标记会话为忙碌
-  sessionManager.setStatus(chatId, userId, 'busy');
-
   // 获取历史摘要
   const summaries = sessionManager.getRecentSummaries(chatId, userId, 5);
   let historySummaries: string | undefined;
@@ -553,20 +573,25 @@ async function executePipelineTask(
   try {
     const orchestrator = new PipelineOrchestrator();
 
+    // 跟踪当前 phase 供 onStreamUpdate 使用
+    let currentPipelinePhase: string = 'plan';
+    let currentPhaseIndex = 1;
+
     const pipelineResult = await orchestrator.run(
       prompt,
       session.workingDir,
       {
         onPhaseChange: async (state) => {
+          currentPipelinePhase = state.phase;
+          currentPhaseIndex = PHASE_META[state.phase]?.index ?? currentPhaseIndex;
           if (!progressMsgId) return;
           const elapsed = Math.floor((Date.now() - pipelineStartTime) / 1000);
-          const meta = PHASE_META[state.phase];
           await feishuClient.updateCard(
             progressMsgId,
             buildPipelineCard(
               prompt,
               state.phase,
-              meta.index,
+              currentPhaseIndex,
               TOTAL_PHASES,
               elapsed,
               state.totalCostUsd || undefined,
@@ -574,13 +599,13 @@ async function executePipelineTask(
           );
         },
         onStreamUpdate: async (text: string) => {
-          // 在管道模式下，流式更新放在卡片的 detail 区域
           if (!progressMsgId) return;
           const elapsed = Math.floor((Date.now() - pipelineStartTime) / 1000);
-          // 不知道当前精确 phase，用简化更新
+          // 使用 pipeline 卡片 + detail 区域展示流式输出，保留阶段进度
+          const tail = text.length > 2000 ? '...\n' + text.slice(-2000) : text;
           await feishuClient.updateCard(
             progressMsgId,
-            buildStreamingCard(prompt, text, elapsed),
+            buildPipelineCard(prompt, currentPipelinePhase, currentPhaseIndex, TOTAL_PHASES, elapsed, undefined, tail),
           );
         },
       },
@@ -593,10 +618,15 @@ async function executePipelineTask(
       ? ` | 💰 $${pipelineResult.totalCostUsd.toFixed(4)}`
       : '';
 
+    // 失败时用 failedAtPhase 定位实际失败的阶段
+    const failedIndex = pipelineResult.state.failedAtPhase
+      ? PHASE_META[pipelineResult.state.failedAtPhase]?.index ?? TOTAL_PHASES
+      : TOTAL_PHASES;
+
     const finalCard = buildPipelineCard(
       prompt,
       pipelineResult.success ? 'done' : 'failed',
-      pipelineResult.success ? TOTAL_PHASES + 1 : PHASE_META[pipelineResult.state.phase]?.index ?? TOTAL_PHASES,
+      pipelineResult.success ? TOTAL_PHASES + 1 : failedIndex,
       TOTAL_PHASES,
       totalElapsed,
       pipelineResult.totalCostUsd || undefined,

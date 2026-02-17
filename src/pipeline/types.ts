@@ -1,5 +1,3 @@
-import type { ClaudeResult } from '../claude/types.js';
-
 // ============================================================
 // Pipeline 类型定义
 // ============================================================
@@ -50,6 +48,8 @@ export interface PipelineState {
   totalCostUsd: number;
   /** 失败原因 */
   failureReason?: string;
+  /** 失败发生在哪个阶段（用于卡片展示失败位置） */
+  failedAtPhase?: PipelinePhase;
 }
 
 /** 管道回调 */
@@ -70,13 +70,4 @@ export interface PipelineResult {
   durationMs: number;
   /** 总花费 (USD) */
   totalCostUsd: number;
-}
-
-/** 单步执行结果（内部使用） */
-export interface StepResult {
-  success: boolean;
-  output: string;
-  costUsd: number;
-  /** 下一个阶段 */
-  nextPhase: PipelinePhase;
 }

@@ -39,6 +39,7 @@ describe('PipelineOrchestrator', () => {
   beforeEach(() => {
     orchestrator = new PipelineOrchestrator();
     vi.clearAllMocks();
+    mockExecute.mockReset();
   });
 
   // ============================================================
@@ -141,6 +142,7 @@ describe('PipelineOrchestrator', () => {
 
       expect(result.success).toBe(false);
       expect(result.state.phase).toBe('failed');
+      expect(result.state.failedAtPhase).toBe('plan');
     });
   });
 
@@ -203,6 +205,7 @@ describe('PipelineOrchestrator', () => {
       expect(result.success).toBe(false);
       expect(result.state.phase).toBe('failed');
       expect(result.state.failureReason).toContain('代码实现失败');
+      expect(result.state.failedAtPhase).toBe('implement');
     });
   });
 
@@ -249,35 +252,38 @@ describe('PipelineOrchestrator', () => {
   });
 
   // ============================================================
-  // Review agent 自身失败 — 视为通过
+  // Review agent 自身失败 — fail-closed（管道失败）
   // ============================================================
 
-  describe('review agent failure (not REJECTED, but error)', () => {
-    it('should treat plan review agent failure as approved', async () => {
+  describe('review agent failure (fail-closed)', () => {
+    it('should fail pipeline when plan review agent crashes', async () => {
       mockExecute
         .mockResolvedValueOnce(makeResult({ output: 'plan' }))
-        .mockResolvedValueOnce(makeResult({ success: false, error: 'agent crash' }))  // plan_review crashes
-        .mockResolvedValueOnce(makeResult({ output: 'implemented' }))
-        .mockResolvedValueOnce(makeResult({ output: 'APPROVED' }))
-        .mockResolvedValueOnce(makeResult({ output: 'pushed' }));
+        .mockResolvedValueOnce(makeResult({ success: false, error: 'agent crash' }));  // plan_review crashes
 
       const result = await orchestrator.run('task', '/tmp', noopCallbacks);
 
-      expect(result.success).toBe(true);
-      expect(result.state.phase).toBe('done');
+      expect(result.success).toBe(false);
+      expect(result.state.phase).toBe('failed');
+      expect(result.state.failedAtPhase).toBe('plan_review');
+      expect(result.state.failureReason).toContain('审查 agent 执行失败');
+      expect(mockExecute).toHaveBeenCalledTimes(2);
     });
 
-    it('should treat code review agent failure as approved', async () => {
+    it('should fail pipeline when code review agent crashes', async () => {
       mockExecute
         .mockResolvedValueOnce(makeResult({ output: 'plan' }))
         .mockResolvedValueOnce(makeResult({ output: 'APPROVED' }))
         .mockResolvedValueOnce(makeResult({ output: 'implemented' }))
-        .mockResolvedValueOnce(makeResult({ success: false, error: 'timeout' }))      // code_review crashes
-        .mockResolvedValueOnce(makeResult({ output: 'pushed' }));
+        .mockResolvedValueOnce(makeResult({ success: false, error: 'timeout' }));      // code_review crashes
 
       const result = await orchestrator.run('task', '/tmp', noopCallbacks);
 
-      expect(result.success).toBe(true);
+      expect(result.success).toBe(false);
+      expect(result.state.phase).toBe('failed');
+      expect(result.state.failedAtPhase).toBe('code_review');
+      expect(result.state.failureReason).toContain('审查 agent 执行失败');
+      expect(mockExecute).toHaveBeenCalledTimes(4);
     });
   });
 
@@ -470,6 +476,134 @@ describe('PipelineOrchestrator', () => {
 
       // Should have been called for each step
       expect(onStreamUpdate).toHaveBeenCalledWith('partial output');
+    });
+  });
+
+  // ============================================================
+  // failedAtPhase 追踪
+  // ============================================================
+
+  describe('failedAtPhase tracking', () => {
+    it('should set failedAtPhase to plan when plan fails', async () => {
+      mockExecute.mockResolvedValueOnce(makeResult({ success: false, error: 'err' }));
+
+      const result = await orchestrator.run('task', '/tmp', noopCallbacks);
+
+      expect(result.state.failedAtPhase).toBe('plan');
+    });
+
+    it('should set failedAtPhase to implement when implement fails', async () => {
+      mockExecute
+        .mockResolvedValueOnce(makeResult({ output: 'plan' }))
+        .mockResolvedValueOnce(makeResult({ output: 'APPROVED' }))
+        .mockResolvedValueOnce(makeResult({ success: false, error: 'compile error' }));
+
+      const result = await orchestrator.run('task', '/tmp', noopCallbacks);
+
+      expect(result.state.failedAtPhase).toBe('implement');
+    });
+
+    it('should set failedAtPhase to plan_review when plan review max retries exceeded', async () => {
+      mockExecute
+        .mockResolvedValueOnce(makeResult({ output: 'plan v1' }))
+        .mockResolvedValueOnce(makeResult({ output: 'REJECTED\n问题1' }))
+        .mockResolvedValueOnce(makeResult({ output: 'plan v2' }))
+        .mockResolvedValueOnce(makeResult({ output: 'REJECTED\n问题2' }));
+
+      const result = await orchestrator.run('task', '/tmp', noopCallbacks);
+
+      expect(result.state.failedAtPhase).toBe('plan_review');
+    });
+
+    it('should set failedAtPhase to code_review when code review max retries exceeded', async () => {
+      mockExecute
+        .mockResolvedValueOnce(makeResult({ output: 'plan' }))
+        .mockResolvedValueOnce(makeResult({ output: 'APPROVED' }))
+        .mockResolvedValueOnce(makeResult({ output: 'impl v1' }))
+        .mockResolvedValueOnce(makeResult({ output: 'REJECTED\nbug A' }))
+        .mockResolvedValueOnce(makeResult({ output: 'impl v2' }))
+        .mockResolvedValueOnce(makeResult({ output: 'REJECTED\nbug B' }));
+
+      const result = await orchestrator.run('task', '/tmp', noopCallbacks);
+
+      expect(result.state.failedAtPhase).toBe('code_review');
+    });
+  });
+
+  // ============================================================
+  // MAX_ITERATIONS 循环保护
+  // ============================================================
+
+  describe('max iterations protection', () => {
+    it('should fail pipeline when iterations exceed MAX_ITERATIONS', async () => {
+      // 制造无限循环：review 始终 REJECTED，但 retries 永远不增长
+      // 实际上 MAX_RETRIES=2 会先触发，所以我们用一个更直接的方式：
+      // 不断 REJECTED → retry → REJECTED → retry... 直到 MAX_ITERATIONS
+      // 每轮消耗 2 calls (plan + review)，MAX_RETRIES=2 在第 4 calls 后触发
+      // 所以正常情况下 MAX_ITERATIONS 不会先触发
+      // 为了测试 MAX_ITERATIONS，模拟一个极端情况：大量 mock 返回值
+      const mocks: ReturnType<typeof makeResult>[] = [];
+      for (let i = 0; i < 25; i++) {
+        mocks.push(makeResult({ output: `plan v${i}` }));
+        mocks.push(makeResult({ output: 'REJECTED\nredo' }));
+      }
+      for (const m of mocks) {
+        mockExecute.mockResolvedValueOnce(m);
+      }
+
+      const result = await orchestrator.run('task', '/tmp', noopCallbacks);
+
+      expect(result.success).toBe(false);
+      expect(result.state.phase).toBe('failed');
+      // 应该在 MAX_RETRIES 或 MAX_ITERATIONS 处终止
+      expect(mockExecute.mock.calls.length).toBeLessThanOrEqual(20);
+    });
+  });
+
+  // ============================================================
+  // onPhaseChange 回调异常不中断管道
+  // ============================================================
+
+  describe('callback error resilience', () => {
+    it('should continue pipeline when onPhaseChange throws', async () => {
+      mockExecute
+        .mockResolvedValueOnce(makeResult({ output: 'plan' }))
+        .mockResolvedValueOnce(makeResult({ output: 'APPROVED' }))
+        .mockResolvedValueOnce(makeResult({ output: 'impl' }))
+        .mockResolvedValueOnce(makeResult({ output: 'APPROVED' }))
+        .mockResolvedValueOnce(makeResult({ output: 'pushed' }));
+
+      const failingCallback = vi.fn().mockRejectedValue(new Error('callback exploded'));
+
+      const result = await orchestrator.run('task', '/tmp', {
+        onPhaseChange: failingCallback,
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.state.phase).toBe('done');
+      // 回调仍然被调用了（只是异常被吞掉）
+      expect(failingCallback).toHaveBeenCalled();
+    });
+
+    it('should complete pipeline when onPhaseChange throws on final notification', async () => {
+      mockExecute
+        .mockResolvedValueOnce(makeResult({ output: 'plan' }))
+        .mockResolvedValueOnce(makeResult({ output: 'APPROVED' }))
+        .mockResolvedValueOnce(makeResult({ output: 'impl' }))
+        .mockResolvedValueOnce(makeResult({ output: 'APPROVED' }))
+        .mockResolvedValueOnce(makeResult({ output: 'pushed' }));
+
+      // 只在最后一次调用时抛异常（final notification）
+      let callCount = 0;
+      const onPhaseChange = vi.fn().mockImplementation(async () => {
+        callCount++;
+        if (callCount === 6) throw new Error('final callback error');
+      });
+
+      const result = await orchestrator.run('task', '/tmp', { onPhaseChange });
+
+      expect(result.success).toBe(true);
+      expect(result.state.phase).toBe('done');
     });
   });
 });

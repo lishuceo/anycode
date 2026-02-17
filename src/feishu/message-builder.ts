@@ -3,6 +3,9 @@
  * 用于构建执行状态卡片、结果卡片等
  */
 
+import { PHASE_META, TOTAL_PHASES } from '../pipeline/types.js';
+import type { PipelinePhase } from '../pipeline/types.js';
+
 /** 构建 "执行中" 状态卡片 */
 export function buildProgressCard(prompt: string, statusText: string = '正在处理...'): Record<string, unknown> {
   return {
@@ -129,6 +132,9 @@ export function buildStreamingCard(
   };
 }
 
+/** 管道中的可执行阶段（排除 done/failed） */
+const PIPELINE_PHASES: PipelinePhase[] = ['plan', 'plan_review', 'implement', 'code_review', 'push'];
+
 /** 构建管道进度卡片 */
 export function buildPipelineCard(
   prompt: string,
@@ -139,26 +145,20 @@ export function buildPipelineCard(
   costUsd?: number,
   detail?: string,
 ): Record<string, unknown> {
-  const phases = [
-    { label: '方案设计', key: 'plan' },
-    { label: '方案审查', key: 'plan_review' },
-    { label: '代码实现', key: 'implement' },
-    { label: '代码审查', key: 'code_review' },
-    { label: '推送 & PR', key: 'push' },
-  ];
 
   const isDone = phase === 'done';
   const isFailed = phase === 'failed';
 
-  const phaseLines = phases.map((p, i) => {
-    const idx = i + 1;
-    if (isDone) return `✅ ${idx}. ${p.label}`;
+  const phaseLines = PIPELINE_PHASES.map((key) => {
+    const meta = PHASE_META[key];
+    const idx = meta.index;
+    if (isDone) return `✅ ${idx}. ${meta.label}`;
     if (isFailed && idx >= phaseIndex) {
-      return idx === phaseIndex ? `❌ ${idx}. ${p.label}` : `⬚ ${idx}. ${p.label}`;
+      return idx === phaseIndex ? `❌ ${idx}. ${meta.label}` : `⬚ ${idx}. ${meta.label}`;
     }
-    if (idx < phaseIndex) return `✅ ${idx}. ${p.label}`;
-    if (idx === phaseIndex) return `🔄 ${idx}. ${p.label} ← 当前`;
-    return `⬚ ${idx}. ${p.label}`;
+    if (idx < phaseIndex) return `✅ ${idx}. ${meta.label}`;
+    if (idx === phaseIndex) return `🔄 ${idx}. ${meta.label} ← 当前`;
+    return `⬚ ${idx}. ${meta.label}`;
   });
 
   const headerTemplate = isDone ? 'green' : isFailed ? 'red' : 'blue';
