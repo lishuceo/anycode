@@ -124,6 +124,7 @@ interface ParsedMessage {
   chatId: string;
   chatType: string;
   mentionedBot: boolean;
+  rootId?: string;
 }
 
 /**
@@ -139,9 +140,9 @@ async function handleMessageEvent(data: MessageEventData): Promise<void> {
     return;
   }
 
-  const { text, messageId, userId, chatId, chatType, mentionedBot } = parsed;
+  const { text, messageId, userId, chatId, chatType, mentionedBot, rootId } = parsed;
 
-  logger.info({ userId, chatId, chatType, text: text.slice(0, 100) }, 'Received message');
+  logger.info({ userId, chatId, chatType, rootId, text: text.slice(0, 100) }, 'Received message');
 
   // 群聊中需要 @机器人 才响应
   if (chatType === 'group' && !mentionedBot) {
@@ -156,7 +157,7 @@ async function handleMessageEvent(data: MessageEventData): Promise<void> {
   }
 
   // 处理斜杠命令
-  const commandResult = await handleSlashCommand(text, chatId, userId, messageId);
+  const commandResult = await handleSlashCommand(text, chatId, userId, messageId, rootId);
   if (commandResult) return;
 
   // 安全检查
@@ -166,7 +167,7 @@ async function handleMessageEvent(data: MessageEventData): Promise<void> {
   }
 
   // 执行 Claude Agent
-  await executeClaudeTask(text, chatId, userId, messageId);
+  await executeClaudeTask(text, chatId, userId, messageId, rootId);
 }
 
 /**
@@ -177,12 +178,14 @@ async function handleSlashCommand(
   chatId: string,
   userId: string,
   messageId: string,
+  rootId?: string,
 ): Promise<boolean> {
   const trimmed = text.trim();
 
   // 获取当前会话的话题锚点消息 ID（用于将命令响应发到话题内）
+  // 如果用户在话题内发消息，优先使用该话题的 rootId
   const currentSession = sessionManager.get(chatId, userId);
-  const threadRootMsgId = currentSession?.threadRootMessageId;
+  const threadRootMsgId = rootId || currentSession?.threadRootMessageId;
 
   // /project <path> - 切换工作目录
   if (trimmed.startsWith('/project ')) {
@@ -329,17 +332,28 @@ async function ensureThread(
   chatId: string,
   userId: string,
   messageId: string,
+  rootId?: string,
 ): Promise<string | undefined> {
   const session = sessionManager.getOrCreate(chatId, userId);
 
+  // 1. 用户在已有话题内发消息 — 直接复用该话题，无需发送问候
+  if (rootId) {
+    // 更新 session 的话题信息，确保后续回复也发到这个话题
+    sessionManager.setThread(chatId, userId, rootId, rootId);
+    return rootId;
+  }
+
+  // 2. session 已有话题信息（用户在话题外发消息，但之前的话题仍在）
   if (session.threadId && session.threadRootMessageId) {
     return session.threadRootMessageId;
   }
 
-  // 首次交互：reply_in_thread 创建话题
+  // 3. 全新场景 — 创建话题，根据是否有 conversationId 判断是新建还是恢复
+  const isResumed = !!session.conversationId;
+  const greeting = isResumed ? '🤖 会话已恢复' : '🤖 新会话已创建';
   const { messageId: botMsgId, threadId } = await feishuClient.replyInThread(
     messageId,
-    '🤖 新会话已创建',
+    greeting,
   );
 
   if (threadId && botMsgId) {
@@ -360,12 +374,13 @@ async function executeClaudeTask(
   chatId: string,
   userId: string,
   messageId: string,
+  rootId?: string,
 ): Promise<void> {
   const session = sessionManager.getOrCreate(chatId, userId);
   const sessionKey = `${chatId}:${userId}`;
 
   // 确保话题存在，返回话题锚点消息 ID
-  const threadRootMsgId = await ensureThread(chatId, userId, messageId);
+  const threadRootMsgId = await ensureThread(chatId, userId, messageId, rootId);
 
   // 发送 "处理中" 卡片（优先发到话题内）
   let progressMsgId: string | undefined;
@@ -483,6 +498,7 @@ function parseMessage(data: MessageEventData): ParsedMessage | null {
     chatId: message.chat_id,
     chatType: message.chat_type,
     mentionedBot,
+    rootId: message.root_id || undefined,
   };
 }
 
