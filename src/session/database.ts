@@ -34,6 +34,10 @@ export class SessionDatabase {
   private stmtUpdateThread: Database.Statement;
   private stmtUpdateLastActive: Database.Statement;
   private stmtResetBusy: Database.Statement;
+  private stmtTryAcquire: Database.Statement;
+  private stmtInsertSummary: Database.Statement;
+  private stmtGetRecentSummaries: Database.Statement;
+  private stmtCleanOldSummaries: Database.Statement;
 
   constructor(dbPath: string) {
     dbPath = resolve(dbPath);
@@ -107,6 +111,38 @@ export class SessionDatabase {
       "UPDATE sessions SET status = 'idle', conversation_id = NULL WHERE status = 'busy'",
     );
 
+    this.stmtTryAcquire = this.db.prepare(
+      "UPDATE sessions SET status = 'busy', last_active_at = ? WHERE key = ? AND status != 'busy'",
+    );
+
+    // 会话摘要表（独立于 sessions，不受 cleanup 影响）
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS session_summaries (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        chat_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        working_dir TEXT,
+        summary TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      )
+    `);
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_summaries_user
+        ON session_summaries(chat_id, user_id, created_at DESC)
+    `);
+
+    this.stmtInsertSummary = this.db.prepare(
+      'INSERT INTO session_summaries (chat_id, user_id, working_dir, summary, created_at) VALUES (?, ?, ?, ?, ?)',
+    );
+
+    this.stmtGetRecentSummaries = this.db.prepare(
+      'SELECT summary FROM session_summaries WHERE chat_id = ? AND user_id = ? ORDER BY created_at DESC, id DESC LIMIT ?',
+    );
+
+    this.stmtCleanOldSummaries = this.db.prepare(
+      'DELETE FROM session_summaries WHERE created_at < ?',
+    );
+
     logger.info({ dbPath }, 'Session database initialized');
   }
 
@@ -161,11 +197,36 @@ export class SessionDatabase {
     this.stmtUpdateLastActive.run(new Date().toISOString(), key);
   }
 
+  /**
+   * 原子地尝试将 session 标记为 busy（CAS: idle → busy）
+   * @returns true 如果成功获取锁，false 如果已经 busy
+   */
+  tryAcquire(key: string): boolean {
+    const result = this.stmtTryAcquire.run(new Date().toISOString(), key);
+    return result.changes === 1;
+  }
+
   resetBusySessions(): number {
     const result = this.stmtResetBusy.run();
     if (result.changes > 0) {
       logger.info({ count: result.changes }, 'Reset stale busy sessions to idle');
     }
+    return result.changes;
+  }
+
+  insertSummary(chatId: string, userId: string, workingDir: string, summary: string): void {
+    this.stmtInsertSummary.run(chatId, userId, workingDir, summary, new Date().toISOString());
+  }
+
+  getRecentSummaries(chatId: string, userId: string, limit: number): string[] {
+    const rows = this.stmtGetRecentSummaries.all(chatId, userId, limit) as Array<{ summary: string }>;
+    // 返回时间正序（旧 → 新）
+    return rows.map((r) => r.summary).reverse();
+  }
+
+  cleanOldSummaries(maxAgeDays: number = 30): number {
+    const cutoff = new Date(Date.now() - maxAgeDays * 24 * 60 * 60 * 1000).toISOString();
+    const result = this.stmtCleanOldSummaries.run(cutoff);
     return result.changes;
   }
 

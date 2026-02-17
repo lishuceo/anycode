@@ -4,7 +4,9 @@ import { isUserAllowed, containsDangerousCommand } from '../utils/security.js';
 import { sessionManager } from '../session/manager.js';
 import { taskQueue } from '../session/queue.js';
 import { claudeExecutor } from '../claude/executor.js';
-import { buildProgressCard, buildResultCard, buildStatusCard } from './message-builder.js';
+import { buildProgressCard, buildResultCard, buildStreamingCard, buildPipelineCard, buildStatusCard } from './message-builder.js';
+import { PipelineOrchestrator } from '../pipeline/orchestrator.js';
+import { PHASE_META, TOTAL_PHASES } from '../pipeline/types.js';
 import { feishuClient } from './client.js';
 import { config } from '../config.js';
 import { setupWorkspace } from '../workspace/manager.js';
@@ -342,6 +344,27 @@ async function handleSlashCommand(
     return true;
   }
 
+  // /dev <task> - 自动开发管道（绕过 taskQueue，使用 acquireSession 并发保护）
+  if (trimmed.startsWith('/dev ')) {
+    const task = trimmed.slice('/dev '.length).trim();
+    if (!task) {
+      const reply = '⚠️ 用法: `/dev <开发任务描述>`';
+      if (threadRootMsgId) {
+        await feishuClient.replyTextInThread(threadRootMsgId, reply);
+      } else {
+        await feishuClient.replyText(messageId, reply);
+      }
+      return true;
+    }
+    // 安全检查
+    if (containsDangerousCommand(task)) {
+      await feishuClient.replyText(messageId, '⚠️ 检测到危险命令，已拒绝执行');
+      return true;
+    }
+    await executePipelineTask(task, chatId, userId, messageId, rootId);
+    return true;
+  }
+
   // /help - 帮助
   if (trimmed === '/help') {
     const helpText = [
@@ -352,6 +375,7 @@ async function handleSlashCommand(
       '**可用命令:**',
       '`/project <path>` - 切换工作目录',
       '`/workspace <url|path> [branch]` - 创建隔离工作区 (自动 clone + 创建分支)',
+      '`/dev <task>` - 自动开发管道 (方案→审查→实现→审查→推送)',
       '`/status` - 查看当前会话状态',
       '`/reset` - 重置会话',
       '`/stop` - 中断当前执行',
@@ -413,6 +437,23 @@ async function ensureThread(
 }
 
 /**
+ * 并发保护：原子地尝试获取会话锁（CAS: idle → busy）
+ * @returns true 如果成功获取锁，false 如果已被占用
+ */
+async function acquireSession(
+  chatId: string,
+  userId: string,
+  messageId: string,
+): Promise<boolean> {
+  // 原子 CAS：UPDATE ... WHERE status != 'busy'，单条 SQL 防止 TOCTOU 竞态
+  if (!sessionManager.tryAcquire(chatId, userId)) {
+    await feishuClient.replyText(messageId, '⏳ 当前会话正在执行任务，请等待完成或使用 /stop 中断');
+    return false;
+  }
+  return true;
+}
+
+/**
  * 执行 Claude Agent SDK 任务
  * 支持 workspace 变更后自动 restart：第一次 query 触发 setup_workspace 后，
  * 自动以新 cwd 发起第二次 query，确保 CLAUDE.md 正确加载。
@@ -442,6 +483,25 @@ async function executeClaudeTask(
   // 标记会话为忙碌
   sessionManager.setStatus(chatId, userId, 'busy');
 
+  // 获取历史摘要用于注入 system prompt
+  const summaries = sessionManager.getRecentSummaries(chatId, userId, 5);
+  let historySummaries: string | undefined;
+  if (summaries.length > 0) {
+    let combined = summaries.join('\n');
+    if (combined.length > 3000) {
+      combined = combined.slice(-3000);
+    }
+    historySummaries = combined;
+  }
+
+  // 构造流式卡片更新回调
+  const executeStartTime = Date.now();
+  const onStreamUpdate = async (text: string) => {
+    if (!progressMsgId) return;
+    const elapsed = Math.floor((Date.now() - executeStartTime) / 1000);
+    await feishuClient.updateCard(progressMsgId, buildStreamingCard(prompt, text, elapsed));
+  };
+
   // workspace 变更回调: MCP 工具 clone 后自动更新 session.workingDir
   const onWorkspaceChanged = (newDir: string) => {
     sessionManager.setWorkingDir(chatId, userId, newDir);
@@ -454,14 +514,16 @@ async function executeClaudeTask(
 
   try {
     // 第一次 query：可能触发 workspace setup
-    const result = await claudeExecutor.execute(
+    const result = await claudeExecutor.execute({
       sessionKey,
       prompt,
-      session.workingDir,
-      session.conversationId,
+      workingDir: session.workingDir,
+      resumeSessionId: session.conversationId,
       onProgress,
       onWorkspaceChanged,
-    );
+      onStreamUpdate,
+      historySummaries,
+    });
 
     // 检测是否需要 restart（workspace 变更后重新执行以加载 CLAUDE.md）
     if (result.needsRestart && result.newWorkingDir) {
@@ -501,15 +563,15 @@ async function executeClaudeTask(
       // - 不传 resumeSessionId（全新 session）
       // - 不传 onWorkspaceChanged（不触发二次 restart）
       // - disableWorkspaceTool: 完全移除 setup_workspace MCP tool，防止无限循环
-      const restartResult = await claudeExecutor.execute(
+      const restartResult = await claudeExecutor.execute({
         sessionKey,
         prompt,
-        result.newWorkingDir,
-        undefined,
+        workingDir: result.newWorkingDir,
         onProgress,
-        undefined,
-        { disableWorkspaceTool: true },
-      );
+        onStreamUpdate,
+        historySummaries,
+        disableWorkspaceTool: true,
+      });
 
       // 保存 restart query 的 session_id 用于下次续接
       // 如果 restart query 失败未返回 sessionId，用第一次 query 的作为 fallback
@@ -538,6 +600,18 @@ async function executeClaudeTask(
       prompt, result, result.durationMs, result.costUsd,
       progressMsgId, threadRootMsgId, chatId,
     );
+
+    // 保存会话摘要（取输出末尾 500 字符作为摘要）
+    if (result.success && result.output && result.output.length > 100) {
+      try {
+        const date = new Date().toISOString().slice(0, 10);
+        const tail = result.output.slice(-500).trim();
+        const summary = `[${date}] dir: ${session.workingDir} | ${tail}`;
+        sessionManager.saveSummary(chatId, userId, session.workingDir, summary);
+      } catch (err) {
+        logger.warn({ err }, 'Failed to save session summary');
+      }
+    }
   } catch (err) {
     logger.error({ err }, 'Error executing Claude Agent SDK query');
     const errorReply = `❌ 执行出错: ${(err as Error).message}`;
@@ -593,6 +667,149 @@ async function sendResultCard(
       await feishuClient.replyTextInThread(threadRootMsgId, result.output);
     } else {
       await feishuClient.sendText(chatId, result.output);
+    }
+  }
+}
+
+/**
+ * 执行自动开发管道（/dev 命令触发）
+ * 绕过 taskQueue，使用 acquireSession 进行并发保护
+ */
+async function executePipelineTask(
+  prompt: string,
+  chatId: string,
+  userId: string,
+  messageId: string,
+  rootId?: string,
+): Promise<void> {
+  if (!await acquireSession(chatId, userId, messageId)) return;
+
+  const session = sessionManager.getOrCreate(chatId, userId);
+  const pipelineStartTime = Date.now();
+
+  // 确保话题存在
+  const threadRootMsgId = await ensureThread(chatId, userId, messageId, rootId);
+
+  // 发送管道初始卡片
+  let progressMsgId: string | undefined;
+  const initialCard = buildPipelineCard(prompt, 'plan', 1, TOTAL_PHASES, 0);
+  if (threadRootMsgId) {
+    progressMsgId = await feishuClient.replyCardInThread(threadRootMsgId, initialCard);
+  }
+  if (!progressMsgId) {
+    progressMsgId = await feishuClient.sendCard(chatId, initialCard);
+  }
+
+  // 获取历史摘要
+  const summaries = sessionManager.getRecentSummaries(chatId, userId, 5);
+  let historySummaries: string | undefined;
+  if (summaries.length > 0) {
+    let combined = summaries.join('\n');
+    if (combined.length > 3000) {
+      combined = combined.slice(-3000);
+    }
+    historySummaries = combined;
+  }
+
+  try {
+    const orchestrator = new PipelineOrchestrator();
+
+    // 跟踪当前 phase 供 onStreamUpdate 使用
+    let currentPipelinePhase: string = 'plan';
+    let currentPhaseIndex = 1;
+
+    const pipelineResult = await orchestrator.run(
+      prompt,
+      session.workingDir,
+      {
+        onPhaseChange: async (state) => {
+          currentPipelinePhase = state.phase;
+          currentPhaseIndex = PHASE_META[state.phase]?.index ?? currentPhaseIndex;
+          if (!progressMsgId) return;
+          const elapsed = Math.floor((Date.now() - pipelineStartTime) / 1000);
+          await feishuClient.updateCard(
+            progressMsgId,
+            buildPipelineCard(
+              prompt,
+              state.phase,
+              currentPhaseIndex,
+              TOTAL_PHASES,
+              elapsed,
+              state.totalCostUsd || undefined,
+            ),
+          );
+        },
+        onStreamUpdate: async (text: string) => {
+          if (!progressMsgId) return;
+          const elapsed = Math.floor((Date.now() - pipelineStartTime) / 1000);
+          // 使用 pipeline 卡片 + detail 区域展示流式输出，保留阶段进度
+          const tail = text.length > 2000 ? '...\n' + text.slice(-2000) : text;
+          await feishuClient.updateCard(
+            progressMsgId,
+            buildPipelineCard(prompt, currentPipelinePhase, currentPhaseIndex, TOTAL_PHASES, elapsed, undefined, tail),
+          );
+        },
+      },
+      historySummaries,
+    );
+
+    // 最终结果卡片
+    const totalElapsed = Math.floor((Date.now() - pipelineStartTime) / 1000);
+    const costStr = pipelineResult.totalCostUsd
+      ? ` | 💰 $${pipelineResult.totalCostUsd.toFixed(4)}`
+      : '';
+
+    // 失败时用 failedAtPhase 定位实际失败的阶段
+    const failedIndex = pipelineResult.state.failedAtPhase
+      ? PHASE_META[pipelineResult.state.failedAtPhase]?.index ?? TOTAL_PHASES
+      : TOTAL_PHASES;
+
+    const finalCard = buildPipelineCard(
+      prompt,
+      pipelineResult.success ? 'done' : 'failed',
+      pipelineResult.success ? TOTAL_PHASES + 1 : failedIndex,
+      TOTAL_PHASES,
+      totalElapsed,
+      pipelineResult.totalCostUsd || undefined,
+      pipelineResult.summary.slice(0, 2500),
+    );
+
+    if (progressMsgId) {
+      await feishuClient.updateCard(progressMsgId, finalCard);
+    } else if (threadRootMsgId) {
+      await feishuClient.replyCardInThread(threadRootMsgId, finalCard);
+    } else {
+      await feishuClient.sendCard(chatId, finalCard);
+    }
+
+    // 如果摘要太长，额外发送完整文本
+    if (pipelineResult.summary.length > 2500) {
+      if (threadRootMsgId) {
+        await feishuClient.replyTextInThread(threadRootMsgId, pipelineResult.summary);
+      } else {
+        await feishuClient.sendText(chatId, pipelineResult.summary);
+      }
+    }
+
+    // 保存摘要
+    if (pipelineResult.summary.length > 100) {
+      try {
+        const date = new Date().toISOString().slice(0, 10);
+        const tail = pipelineResult.summary.slice(-500).trim();
+        const summary = `[${date}] [pipeline] dir: ${session.workingDir} | ${tail}`;
+        sessionManager.saveSummary(chatId, userId, session.workingDir, summary);
+      } catch (err) {
+        logger.warn({ err }, 'Failed to save pipeline summary');
+      }
+    }
+  } catch (err) {
+    logger.error({ err }, 'Error executing pipeline');
+    await feishuClient.replyText(messageId, `❌ 管道执行出错: ${(err as Error).message}`);
+  } finally {
+    try {
+      sessionManager.setStatus(chatId, userId, 'idle');
+    } catch (err) {
+      logger.error({ err, chatId, userId }, 'Failed to reset session status');
     }
   }
 }
