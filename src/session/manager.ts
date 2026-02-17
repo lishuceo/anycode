@@ -59,6 +59,16 @@ export class SessionManager {
   }
 
   /**
+   * 保存话题信息
+   */
+  setThread(chatId: string, userId: string, threadId: string, rootMessageId: string): void {
+    const session = this.getOrCreate(chatId, userId);
+    session.threadId = threadId;
+    session.threadRootMessageId = rootMessageId;
+    logger.info({ chatId, userId, threadId }, 'Thread saved to session');
+  }
+
+  /**
    * 更新 Claude Code 会话 ID (用于续接对话)
    */
   setConversationId(chatId: string, userId: string, conversationId: string): void {

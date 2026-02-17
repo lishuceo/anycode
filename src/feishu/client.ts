@@ -149,6 +149,91 @@ export class FeishuClient {
     }
   }
 
+  /**
+   * 在话题中回复消息（创建话题）
+   * 返回 messageId 和 threadId
+   */
+  async replyInThread(
+    messageId: string,
+    text: string,
+  ): Promise<{ messageId?: string; threadId?: string }> {
+    try {
+      const resp = await this.client.im.message.reply({
+        path: { message_id: messageId },
+        data: {
+          msg_type: 'text',
+          content: JSON.stringify({ text }),
+          reply_in_thread: true,
+        },
+      });
+
+      if (resp.code !== 0) {
+        logger.error({ code: resp.code, msg: resp.msg }, 'Failed to reply in thread');
+        return {};
+      }
+
+      return {
+        messageId: resp.data?.message_id,
+        threadId: resp.data?.thread_id,
+      };
+    } catch (err) {
+      logger.error({ err }, 'Error replying in thread');
+      return {};
+    }
+  }
+
+  /**
+   * 在话题中回复文本（通过回复话题内的消息）
+   */
+  async replyTextInThread(threadMessageId: string, text: string): Promise<string | undefined> {
+    try {
+      const resp = await this.client.im.message.reply({
+        path: { message_id: threadMessageId },
+        data: {
+          msg_type: 'text',
+          content: JSON.stringify({ text }),
+          reply_in_thread: true,
+        },
+      });
+
+      if (resp.code !== 0) {
+        logger.error({ code: resp.code, msg: resp.msg }, 'Failed to reply text in thread');
+        return undefined;
+      }
+
+      return resp.data?.message_id;
+    } catch (err) {
+      logger.error({ err }, 'Error replying text in thread');
+      return undefined;
+    }
+  }
+
+  /**
+   * 在话题中回复卡片（通过回复话题内的消息）
+   */
+  async replyCardInThread(threadMessageId: string, card: Record<string, unknown>): Promise<string | undefined> {
+    try {
+      const resp = await this.client.im.message.reply({
+        path: { message_id: threadMessageId },
+        data: {
+          msg_type: 'interactive',
+          content: JSON.stringify(card),
+          reply_in_thread: true,
+        },
+      });
+
+      if (resp.code !== 0) {
+        logger.error({ code: resp.code, msg: resp.msg }, 'Failed to reply card in thread');
+        return undefined;
+      }
+
+      return resp.data?.message_id;
+    } catch (err) {
+      logger.error({ err }, 'Error replying card in thread');
+      return undefined;
+    }
+  }
+
   /** 获取原始 client 以便直接使用 */
   get raw(): lark.Client {
     return this.client;
