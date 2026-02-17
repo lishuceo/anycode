@@ -30,6 +30,7 @@ export interface QueueTask {
   userId: string;
   message: string;
   messageId: string;
+  rootId?: string;
   resolve: (result: string) => void;
   reject: (error: Error) => void;
   createdAt: Date;

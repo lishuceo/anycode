@@ -93,9 +93,9 @@ export class SessionManager {
   }
 
   /**
-   * 清理过期会话 (超过 2 小时不活跃)
+   * 清理过期会话 (超过 24 小时不活跃)
    */
-  cleanup(maxIdleMs: number = 2 * 60 * 60 * 1000): number {
+  cleanup(maxIdleMs: number = 24 * 60 * 60 * 1000): number {
     const cleaned = this.db.deleteExpired(maxIdleMs);
     if (cleaned > 0) {
       logger.info({ cleaned }, 'Cleaned up idle sessions');
