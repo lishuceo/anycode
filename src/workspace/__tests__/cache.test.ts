@@ -267,14 +267,18 @@ describe('cleanupTmpDirs', () => {
 // ============================================================
 
 describe('cleanupExpiredCaches', () => {
-  it('should remove caches older than maxAgeDays', () => {
+  it('should remove .git caches older than maxAgeDays', () => {
     mockExistsSync.mockReturnValue(true);
 
-    // Simulate host directory with one old cache
-    mockReaddirSync
-      .mockReturnValueOnce([{ name: 'github.com', isDirectory: () => true }])  // cacheDir
-      .mockReturnValueOnce([{ name: 'foo', isDirectory: () => true }])          // host dir
-      .mockReturnValueOnce([]);  // empty after cleanup check
+    // 3-level structure: cacheDir → github.com → foo → bar.git
+    let callCount = 0;
+    mockReaddirSync.mockImplementation(() => {
+      callCount++;
+      if (callCount === 1) return [{ name: 'github.com', isDirectory: () => true }]; // cacheDir
+      if (callCount === 2) return [{ name: 'foo', isDirectory: () => true }];         // host
+      if (callCount === 3) return [{ name: 'bar.git', isDirectory: () => true }];     // owner
+      return []; // empty checks after cleanup
+    });
 
     const oldTime = Date.now() - (31 * 24 * 60 * 60 * 1000); // 31 days ago
     mockStatSync.mockReturnValue({ atimeMs: oldTime });
@@ -285,13 +289,17 @@ describe('cleanupExpiredCaches', () => {
     expect(mockRmSync).toHaveBeenCalled();
   });
 
-  it('should keep recent caches', () => {
+  it('should keep recent .git caches', () => {
     mockExistsSync.mockReturnValue(true);
 
-    mockReaddirSync
-      .mockReturnValueOnce([{ name: 'github.com', isDirectory: () => true }])
-      .mockReturnValueOnce([{ name: 'foo', isDirectory: () => true }])
-      .mockReturnValueOnce([{ name: 'foo', isDirectory: () => true }]); // not empty
+    let callCount = 0;
+    mockReaddirSync.mockImplementation(() => {
+      callCount++;
+      if (callCount === 1) return [{ name: 'github.com', isDirectory: () => true }];
+      if (callCount === 2) return [{ name: 'foo', isDirectory: () => true }];
+      if (callCount === 3) return [{ name: 'bar.git', isDirectory: () => true }];
+      return [{ name: 'bar.git', isDirectory: () => true }]; // not empty
+    });
 
     const recentTime = Date.now() - (1 * 24 * 60 * 60 * 1000); // 1 day ago
     mockStatSync.mockReturnValue({ atimeMs: recentTime });

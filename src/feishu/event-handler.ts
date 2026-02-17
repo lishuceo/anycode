@@ -185,7 +185,8 @@ async function handleMessageEvent(data: MessageEventData): Promise<void> {
   }
 
   // 通过 taskQueue 串行化执行，确保同一 chat 同一时间只有一个 query
-  taskQueue.enqueue(chatId, userId, text, messageId, rootId);
+  // enqueue 返回的 Promise 的错误处理在 processQueue/executeClaudeTask 中完成
+  taskQueue.enqueue(chatId, userId, text, messageId, rootId).catch(() => {});
   processQueue(chatId);
 }
 

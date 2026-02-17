@@ -254,6 +254,9 @@ function cleanupTmpDir(tmpPath: string): void {
 /**
  * 清理过期缓存 (超过 maxAgeDays 未访问)
  * 在定时 cleanup interval 中调用
+ *
+ * 缓存目录结构为 host/owner/repo.git（3 级），
+ * 递归查找 .git 结尾的目录作为缓存单元进行过期检查。
  */
 export function cleanupExpiredCaches(): number {
   const cacheDir = config.repoCache.dir;
@@ -261,30 +264,7 @@ export function cleanupExpiredCaches(): number {
 
   const maxAgeMs = config.repoCache.maxAgeDays * 24 * 60 * 60 * 1000;
   const now = Date.now();
-  let cleaned = 0;
-
-  // 遍历 host 目录
-  try {
-    const hosts = readdirSync(cacheDir, { withFileTypes: true });
-    for (const hostEntry of hosts) {
-      if (!hostEntry.isDirectory()) continue;
-      const hostDir = join(cacheDir, hostEntry.name);
-
-      cleaned += cleanupExpiredInDir(hostDir, now, maxAgeMs);
-
-      // 如果 host 目录为空则删除
-      try {
-        const remaining = readdirSync(hostDir);
-        if (remaining.length === 0) {
-          rmSync(hostDir, { recursive: true, force: true });
-        }
-      } catch {
-        // ignore
-      }
-    }
-  } catch {
-    // ignore
-  }
+  const cleaned = cleanupExpiredRecursive(cacheDir, now, maxAgeMs);
 
   if (cleaned > 0) {
     logger.info({ cleaned }, 'Cleaned up expired cache directories');
@@ -292,7 +272,7 @@ export function cleanupExpiredCaches(): number {
   return cleaned;
 }
 
-function cleanupExpiredInDir(dir: string, now: number, maxAgeMs: number): number {
+function cleanupExpiredRecursive(dir: string, now: number, maxAgeMs: number): number {
   let cleaned = 0;
   try {
     const entries = readdirSync(dir, { withFileTypes: true });
@@ -300,17 +280,33 @@ function cleanupExpiredInDir(dir: string, now: number, maxAgeMs: number): number
       if (!entry.isDirectory()) continue;
       const fullPath = join(dir, entry.name);
 
-      try {
-        const stat = statSync(fullPath);
-        const age = now - stat.atimeMs;
-        if (age > maxAgeMs) {
-          rmSync(fullPath, { recursive: true, force: true });
-          lastFetchTime.delete(fullPath);
-          cleaned++;
-          logger.debug({ path: fullPath, ageDays: Math.floor(age / 86400000) }, 'Removed expired cache');
+      if (entry.name.endsWith('.git')) {
+        // 这是一个 bare clone 缓存目录，检查是否过期
+        try {
+          const stat = statSync(fullPath);
+          const age = now - stat.atimeMs;
+          if (age > maxAgeMs) {
+            rmSync(fullPath, { recursive: true, force: true });
+            lastFetchTime.delete(fullPath);
+            cleaned++;
+            logger.debug({ path: fullPath, ageDays: Math.floor(age / 86400000) }, 'Removed expired cache');
+          }
+        } catch {
+          // ignore stat errors
         }
-      } catch {
-        // ignore stat errors
+      } else {
+        // 中间目录 (host, owner)，递归查找
+        cleaned += cleanupExpiredRecursive(fullPath, now, maxAgeMs);
+
+        // 如果中间目录变空则删除
+        try {
+          const remaining = readdirSync(fullPath);
+          if (remaining.length === 0) {
+            rmSync(fullPath, { recursive: true, force: true });
+          }
+        } catch {
+          // ignore
+        }
       }
     }
   } catch {

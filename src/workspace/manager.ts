@@ -106,9 +106,6 @@ export function setupWorkspace(options: SetupWorkspaceOptions): SetupWorkspaceRe
   const repoName = deriveRepoName(source);
   const shortId = randomBytes(3).toString('hex');
   const branchPrefix = config.workspace.branchPrefix;
-  const branch = mode === 'writable'
-    ? (featureBranch || `${branchPrefix}-${shortId}`)
-    : (sourceBranch || 'HEAD');
   const dirName = `${repoName}-${mode === 'writable' ? branchPrefix.replace(/\//g, '-') : 'readonly'}-${shortId}`;
   const workspacePath = resolve(config.workspace.baseDir, dirName);
 
