@@ -3,6 +3,7 @@ import { logger } from './utils/logger.js';
 import { startServer } from './server.js';
 import { sessionManager } from './session/manager.js';
 import { claudeExecutor } from './claude/executor.js';
+import { cleanupTmpDirs, cleanupExpiredCaches } from './workspace/cache.js';
 
 function main(): void {
   logger.info('Starting Feishu Claude Code Bridge...');
@@ -22,13 +23,17 @@ function main(): void {
     timeoutSeconds: config.claude.timeoutSeconds,
   }, 'Configuration loaded');
 
+  // 启动时清理残留的 .tmp-* 临时目录
+  cleanupTmpDirs();
+
   // 启动 HTTP 服务
   startServer();
 
-  // 定时清理过期会话和 Claude Code 进程 (每 30 分钟)
+  // 定时清理过期会话、Claude Code 进程和缓存 (每 30 分钟)
   setInterval(() => {
     sessionManager.cleanup();
     claudeExecutor.cleanup();
+    cleanupExpiredCaches();
   }, 30 * 60 * 1000);
 
   // 优雅退出

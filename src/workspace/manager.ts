@@ -4,12 +4,15 @@ import { randomBytes } from 'node:crypto';
 import { basename, resolve } from 'node:path';
 import { config } from '../config.js';
 import { logger } from '../utils/logger.js';
+import { ensureBareCache, sanitizeRepoUrl } from './cache.js';
 
 // ============================================================
 // 工作区管理器
 //
-// 负责 git clone 仓库到隔离工作目录，并创建 feature 分支。
-// 每次操作创建独立副本，多用户/多任务之间互不干扰。
+// 负责 git clone 仓库到隔离工作目录。
+// - writable 模式：从缓存 local clone + 创建 feature 分支
+// - readonly 模式：从缓存 local clone，不创建 feature 分支
+// - 无 repoUrl 时 (localPath)：直接 clone 本地路径
 // ============================================================
 
 export interface SetupWorkspaceOptions {
@@ -17,16 +20,18 @@ export interface SetupWorkspaceOptions {
   repoUrl?: string;
   /** 本地仓库路径 (与 repoUrl 二选一) */
   localPath?: string;
+  /** 访问模式: readonly 只读分析, writable 需要修改代码 */
+  mode?: 'readonly' | 'writable';
   /** 源分支 (clone 时 checkout 的分支) */
   sourceBranch?: string;
-  /** 自定义 feature 分支名 (默认自动生成) */
+  /** 自定义 feature 分支名 (默认自动生成, 仅 writable 模式) */
   featureBranch?: string;
 }
 
 export interface SetupWorkspaceResult {
   /** 工作区绝对路径 */
   workspacePath: string;
-  /** 创建的 feature 分支名 */
+  /** 创建的分支名 (readonly 模式下为源分支名) */
   branch: string;
   /** 仓库名 */
   repoName: string;
@@ -37,22 +42,35 @@ const SAFE_BRANCH_RE = /^[a-zA-Z0-9._\/-]+$/;
 /** git 远程 URL 协议前缀 */
 const GIT_URL_RE = /^(https?:\/\/|git@|ssh:\/\/|git:\/\/)/;
 
+/** Git 安全参数 (clone 时使用) */
+const GIT_SECURITY_ARGS = [
+  '--config', 'core.hooksPath=/dev/null',
+  '--no-recurse-submodules',
+  '-c', 'protocol.file.allow=never',
+];
+
 /**
  * 从 URL 或路径提取仓库名
  */
 export function deriveRepoName(source: string): string {
-  // URL: https://github.com/user/repo.git → repo
-  // URL: git@github.com:user/repo.git → repo
-  // Path: /home/user/projects/my-app → my-app
   const cleaned = source.replace(/\.git\/?$/, '').replace(/\/+$/, '');
   return basename(cleaned) || 'repo';
 }
 
 /**
- * 创建隔离工作区：clone 仓库 + 创建 feature 分支
+ * 创建隔离工作区
+ *
+ * 流程 (repoUrl 有值时):
+ *   1. 通过 ensureBareCache() 获取/更新 bare clone 缓存
+ *   2. 从 bare cache local clone 到工作区 (快速)
+ *   3. writable: 设置 origin 为原始远程地址 + 创建 feature 分支
+ *      readonly: 仅切换到 sourceBranch (如指定)
+ *
+ * 流程 (localPath 有值时):
+ *   直接从本地路径 clone (不经过缓存层)
  */
 export function setupWorkspace(options: SetupWorkspaceOptions): SetupWorkspaceResult {
-  const { repoUrl, localPath, sourceBranch, featureBranch } = options;
+  const { repoUrl, localPath, mode = 'writable', sourceBranch, featureBranch } = options;
 
   const source = repoUrl || localPath;
   if (!source) {
@@ -76,11 +94,22 @@ export function setupWorkspace(options: SetupWorkspaceOptions): SetupWorkspaceRe
     throw new Error(`无效的分支名: ${featureBranch}`);
   }
 
+  // 确定 clone 源: 有 repoUrl 时走缓存层，否则直接用 localPath
+  let cloneSource: string;
+  if (repoUrl) {
+    cloneSource = ensureBareCache(repoUrl);
+    logger.info({ repoUrl, cachePath: cloneSource }, 'Using bare cache as clone source');
+  } else {
+    cloneSource = source;
+  }
+
   const repoName = deriveRepoName(source);
   const shortId = randomBytes(3).toString('hex');
   const branchPrefix = config.workspace.branchPrefix;
-  const branch = featureBranch || `${branchPrefix}-${shortId}`;
-  const dirName = `${repoName}-${branchPrefix.replace(/\//g, '-')}-${shortId}`;
+  const branch = mode === 'writable'
+    ? (featureBranch || `${branchPrefix}-${shortId}`)
+    : (sourceBranch || 'HEAD');
+  const dirName = `${repoName}-${mode === 'writable' ? branchPrefix.replace(/\//g, '-') : 'readonly'}-${shortId}`;
   const workspacePath = resolve(config.workspace.baseDir, dirName);
 
   // 确保 baseDir 存在
@@ -89,20 +118,17 @@ export function setupWorkspace(options: SetupWorkspaceOptions): SetupWorkspaceRe
     logger.info({ baseDir: config.workspace.baseDir }, 'Created workspace base directory');
   }
 
-  // git clone (使用 execFileSync 避免 shell 注入)
+  // git clone (从 bare cache 或 localPath)
   const cloneArgs: string[] = [
     'clone',
-    // 安全参数：禁用 git hooks、submodules、file 协议
-    '--config', 'core.hooksPath=/dev/null',
-    '--no-recurse-submodules',
-    '-c', 'protocol.file.allow=never',
+    ...GIT_SECURITY_ARGS,
   ];
   if (sourceBranch) {
     cloneArgs.push('--branch', sourceBranch);
   }
-  cloneArgs.push(source, workspacePath);
+  cloneArgs.push(cloneSource, workspacePath);
 
-  logger.info({ args: ['git', ...cloneArgs] }, 'Cloning repository');
+  logger.info({ mode, source: cloneSource, workspacePath }, 'Cloning to workspace');
 
   try {
     execFileSync('git', cloneArgs, {
@@ -114,20 +140,41 @@ export function setupWorkspace(options: SetupWorkspaceOptions): SetupWorkspaceRe
     throw new Error(`git clone 失败: ${msg}`);
   }
 
-  // 创建 feature 分支 (使用 execFileSync 避免 shell 注入)
-  logger.info({ branch, cwd: workspacePath }, 'Creating feature branch');
+  if (mode === 'writable') {
+    // writable: 设置 remote origin 为原始远程地址 (剥离认证信息)
+    if (repoUrl) {
+      try {
+        execFileSync('git', ['remote', 'set-url', 'origin', sanitizeRepoUrl(repoUrl)], {
+          cwd: workspacePath,
+          timeout: 10_000,
+          stdio: ['ignore', 'pipe', 'pipe'],
+        });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        logger.warn({ err: msg }, 'Failed to set remote URL, continuing');
+      }
+    }
 
-  try {
-    execFileSync('git', ['checkout', '-b', branch], {
-      cwd: workspacePath,
-      timeout: 10_000,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    throw new Error(`创建分支失败: ${msg}`);
+    // 创建 feature 分支
+    const branchName = featureBranch || `${branchPrefix}-${shortId}`;
+    logger.info({ branch: branchName, cwd: workspacePath }, 'Creating feature branch');
+
+    try {
+      execFileSync('git', ['checkout', '-b', branchName], {
+        cwd: workspacePath,
+        timeout: 10_000,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new Error(`创建分支失败: ${msg}`);
+    }
+
+    logger.info({ workspacePath, branch: branchName, repoName, mode }, 'Workspace setup complete');
+    return { workspacePath, branch: branchName, repoName };
   }
 
-  logger.info({ workspacePath, branch, repoName }, 'Workspace setup complete');
-  return { workspacePath, branch, repoName };
+  // readonly: 不创建 feature 分支
+  logger.info({ workspacePath, repoName, mode }, 'Readonly workspace setup complete');
+  return { workspacePath, branch: sourceBranch || 'default', repoName };
 }

@@ -1,3 +1,4 @@
+// @ts-nocheck — test file, vitest uses esbuild transform
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // ============================================================
