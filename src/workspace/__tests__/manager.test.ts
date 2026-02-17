@@ -115,6 +115,20 @@ describe('setupWorkspace', () => {
     expect(checkoutCall[1]![1]).toBe('-b');
   });
 
+  it('should include git security parameters in clone args', () => {
+    setupWorkspace({ repoUrl: 'https://github.com/user/repo.git' });
+
+    const cloneArgs = mockExecFileSync.mock.calls[0][1] as string[];
+    // 禁用 git hooks
+    expect(cloneArgs).toContain('--config');
+    expect(cloneArgs[cloneArgs.indexOf('--config') + 1]).toBe('core.hooksPath=/dev/null');
+    // 禁用 submodules
+    expect(cloneArgs).toContain('--no-recurse-submodules');
+    // 禁用 file 协议
+    expect(cloneArgs).toContain('-c');
+    expect(cloneArgs[cloneArgs.indexOf('-c') + 1]).toBe('protocol.file.allow=never');
+  });
+
   it('should clone local repo when path exists', () => {
     // localPath 存在性检查需要返回 true
     mockExistsSync.mockImplementation((p) => {
