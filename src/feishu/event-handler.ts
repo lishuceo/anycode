@@ -82,6 +82,24 @@ export function createCardActionHandler(): lark.CardActionHandler {
 }
 
 // ============================================================
+// 队列驱动：确保同一 chat 的 query 串行执行
+// ============================================================
+
+function processQueue(chatId: string): void {
+  const task = taskQueue.dequeue(chatId);
+  if (!task) return;
+
+  executeClaudeTask(task.message, task.chatId, task.userId, task.messageId, task.rootId)
+    .then(() => task.resolve('done'))
+    .catch((err) => task.reject(err instanceof Error ? err : new Error(String(err))))
+    .finally(() => {
+      taskQueue.complete(chatId);
+      // 处理队列中的下一个任务
+      processQueue(chatId);
+    });
+}
+
+// ============================================================
 // 消息处理逻辑
 // ============================================================
 
@@ -168,8 +186,10 @@ async function handleMessageEvent(data: MessageEventData): Promise<void> {
     return;
   }
 
-  // 执行 Claude Agent
-  await executeClaudeTask(text, chatId, userId, messageId, rootId);
+  // 通过 taskQueue 串行化执行，确保同一 chat 同一时间只有一个 query
+  // enqueue 返回的 Promise 的错误处理在 processQueue/executeClaudeTask 中完成
+  taskQueue.enqueue(chatId, userId, text, messageId, rootId).catch(() => {});
+  processQueue(chatId);
 }
 
 /**
@@ -192,9 +212,35 @@ async function handleSlashCommand(
   // /project <path> - 切换工作目录
   if (trimmed.startsWith('/project ')) {
     const dir = trimmed.slice('/project '.length).trim();
+    // 安全校验：路径必须在允许的基目录下（用 realpathSync 跟踪 symlink）
+    const { resolve } = await import('node:path');
+    const { existsSync, realpathSync } = await import('node:fs');
+    const resolved = resolve(dir);
+    if (!existsSync(resolved)) {
+      const reply = `⚠️ 路径不存在: ${dir}`;
+      if (threadRootMsgId) {
+        await feishuClient.replyTextInThread(threadRootMsgId, reply);
+      } else {
+        await feishuClient.replyText(messageId, reply);
+      }
+      return true;
+    }
+    const realResolved = realpathSync(resolved);
+    const allowedBase = existsSync(resolve(config.claude.defaultWorkDir))
+      ? realpathSync(resolve(config.claude.defaultWorkDir))
+      : resolve(config.claude.defaultWorkDir);
+    if (!realResolved.startsWith(allowedBase + '/') && realResolved !== allowedBase) {
+      const reply = `⚠️ 路径不在允许的目录范围内 (允许: ${allowedBase})`;
+      if (threadRootMsgId) {
+        await feishuClient.replyTextInThread(threadRootMsgId, reply);
+      } else {
+        await feishuClient.replyText(messageId, reply);
+      }
+      return true;
+    }
     sessionManager.getOrCreate(chatId, userId);
-    sessionManager.setWorkingDir(chatId, userId, dir);
-    const reply = `📂 工作目录已切换到: ${dir}`;
+    sessionManager.setWorkingDir(chatId, userId, realResolved);
+    const reply = `📂 工作目录已切换到: ${realResolved}`;
     if (threadRootMsgId) {
       await feishuClient.replyTextInThread(threadRootMsgId, reply);
     } else {
@@ -298,7 +344,7 @@ async function handleSlashCommand(
     return true;
   }
 
-  // /dev <task> - 自动开发管道
+  // /dev <task> - 自动开发管道（绕过 taskQueue，使用 acquireSession 并发保护）
   if (trimmed.startsWith('/dev ')) {
     const task = trimmed.slice('/dev '.length).trim();
     if (!task) {
@@ -391,7 +437,8 @@ async function ensureThread(
 }
 
 /**
- * 并发保护：检查会话是否正在执行，若是则回复用户并返回 true
+ * 并发保护：原子地尝试获取会话锁（CAS: idle → busy）
+ * @returns true 如果成功获取锁，false 如果已被占用
  */
 async function acquireSession(
   chatId: string,
@@ -408,6 +455,8 @@ async function acquireSession(
 
 /**
  * 执行 Claude Agent SDK 任务
+ * 支持 workspace 变更后自动 restart：第一次 query 触发 setup_workspace 后，
+ * 自动以新 cwd 发起第二次 query，确保 CLAUDE.md 正确加载。
  */
 async function executeClaudeTask(
   prompt: string,
@@ -416,8 +465,6 @@ async function executeClaudeTask(
   messageId: string,
   rootId?: string,
 ): Promise<void> {
-  if (!await acquireSession(chatId, userId, messageId)) return;
-
   const session = sessionManager.getOrCreate(chatId, userId);
   const sessionKey = `${chatId}:${userId}`;
 
@@ -432,6 +479,9 @@ async function executeClaudeTask(
   if (!progressMsgId) {
     progressMsgId = await feishuClient.sendCard(chatId, buildProgressCard(prompt));
   }
+
+  // 标记会话为忙碌
+  sessionManager.setStatus(chatId, userId, 'busy');
 
   // 获取历史摘要用于注入 system prompt
   const summaries = sessionManager.getRecentSummaries(chatId, userId, 5);
@@ -452,50 +502,104 @@ async function executeClaudeTask(
     await feishuClient.updateCard(progressMsgId, buildStreamingCard(prompt, text, elapsed));
   };
 
+  // workspace 变更回调: MCP 工具 clone 后自动更新 session.workingDir
+  const onWorkspaceChanged = (newDir: string) => {
+    sessionManager.setWorkingDir(chatId, userId, newDir);
+    logger.info({ chatId, userId, newDir }, 'Workspace changed via MCP tool');
+  };
+
+  const onProgress = (message: import('@anthropic-ai/claude-agent-sdk').SDKMessage) => {
+    logger.debug({ messageType: message.type }, 'Claude SDK message');
+  };
+
   try {
-    // 调用 Claude Agent SDK
+    // 第一次 query：可能触发 workspace setup
     const result = await claudeExecutor.execute({
       sessionKey,
       prompt,
       workingDir: session.workingDir,
       resumeSessionId: session.conversationId,
-      onProgress: (message) => {
-        logger.debug({ messageType: message.type }, 'Claude SDK message');
-      },
-      onWorkspaceChanged: (newDir: string) => {
-        sessionManager.setWorkingDir(chatId, userId, newDir);
-        logger.info({ chatId, userId, newDir }, 'Workspace changed via MCP tool');
-      },
+      onProgress,
+      onWorkspaceChanged,
       onStreamUpdate,
       historySummaries,
     });
 
-    // 保存 SDK session_id 用于下次续接
+    // 检测是否需要 restart（workspace 变更后重新执行以加载 CLAUDE.md）
+    if (result.needsRestart && result.newWorkingDir) {
+      logger.info(
+        { chatId, userId, newWorkingDir: result.newWorkingDir },
+        'Workspace changed, restarting query with new cwd',
+      );
+
+      // 检查 session 是否已被用户 /stop 中断
+      const currentSession = sessionManager.get(chatId, userId);
+      if (!currentSession || currentSession.status !== 'busy') {
+        logger.info({ chatId, userId }, 'Restart cancelled: session no longer busy');
+        return;
+      }
+
+      // 验证新工作目录确实存在
+      const { existsSync: dirExists } = await import('node:fs');
+      if (!dirExists(result.newWorkingDir)) {
+        logger.error({ newWorkingDir: result.newWorkingDir }, 'Restart cancelled: newWorkingDir does not exist');
+        await sendResultCard(
+          prompt, { ...result, success: false, output: '', error: '工作区准备失败，目录不存在' },
+          result.durationMs, result.costUsd,
+          progressMsgId, threadRootMsgId, chatId,
+        );
+        return;
+      }
+
+      // 清空残留的 conversationId，避免指向只做了 workspace setup 的短 session
+      sessionManager.setConversationId(chatId, userId, '');
+
+      // 更新进度卡片
+      if (progressMsgId) {
+        await feishuClient.updateCard(progressMsgId, buildProgressCard(prompt, '正在加载项目配置...'));
+      }
+
+      // 第二次 query：以新 cwd 执行，CLAUDE.md 正确加载
+      // - 不传 resumeSessionId（全新 session）
+      // - 不传 onWorkspaceChanged（不触发二次 restart）
+      // - disableWorkspaceTool: 完全移除 setup_workspace MCP tool，防止无限循环
+      const restartResult = await claudeExecutor.execute({
+        sessionKey,
+        prompt,
+        workingDir: result.newWorkingDir,
+        onProgress,
+        onStreamUpdate,
+        historySummaries,
+        disableWorkspaceTool: true,
+      });
+
+      // 保存 restart query 的 session_id 用于下次续接
+      // 如果 restart query 失败未返回 sessionId，用第一次 query 的作为 fallback
+      const finalSessionId = restartResult.sessionId || result.sessionId;
+      if (finalSessionId) {
+        sessionManager.setConversationId(chatId, userId, finalSessionId);
+      }
+
+      // 合并两次 query 的耗时和花费
+      const totalDurationMs = result.durationMs + restartResult.durationMs;
+      const totalCostUsd = (result.costUsd ?? 0) + (restartResult.costUsd ?? 0);
+
+      await sendResultCard(
+        prompt, restartResult, totalDurationMs, totalCostUsd,
+        progressMsgId, threadRootMsgId, chatId,
+      );
+      return;
+    }
+
+    // 无 restart，正常流程
     if (result.sessionId) {
       sessionManager.setConversationId(chatId, userId, result.sessionId);
     }
 
-    // 格式化耗时和花费
-    const durationStr = formatDuration(result.durationMs);
-    const costInfo = result.costUsd
-      ? ` | 💰 $${result.costUsd.toFixed(4)}`
-      : '';
-
-    // 更新卡片为结果
-    const resultCard = buildResultCard(
-      prompt,
-      result.output || result.error || '(无输出)',
-      result.success,
-      durationStr + costInfo,
+    await sendResultCard(
+      prompt, result, result.durationMs, result.costUsd,
+      progressMsgId, threadRootMsgId, chatId,
     );
-
-    if (progressMsgId) {
-      await feishuClient.updateCard(progressMsgId, resultCard);
-    } else if (threadRootMsgId) {
-      await feishuClient.replyCardInThread(threadRootMsgId, resultCard);
-    } else {
-      await feishuClient.sendCard(chatId, resultCard);
-    }
 
     // 保存会话摘要（取输出末尾 500 字符作为摘要）
     if (result.success && result.output && result.output.length > 100) {
@@ -508,18 +612,14 @@ async function executeClaudeTask(
         logger.warn({ err }, 'Failed to save session summary');
       }
     }
-
-    // 如果输出特别长，额外发送完整文本
-    if (result.output && result.output.length > 3000) {
-      if (threadRootMsgId) {
-        await feishuClient.replyTextInThread(threadRootMsgId, result.output);
-      } else {
-        await feishuClient.sendText(chatId, result.output);
-      }
-    }
   } catch (err) {
     logger.error({ err }, 'Error executing Claude Agent SDK query');
-    await feishuClient.replyText(messageId, `❌ 执行出错: ${(err as Error).message}`);
+    const errorReply = `❌ 执行出错: ${(err as Error).message}`;
+    if (threadRootMsgId) {
+      await feishuClient.replyTextInThread(threadRootMsgId, errorReply);
+    } else {
+      await feishuClient.replyText(messageId, errorReply);
+    }
   } finally {
     try {
       sessionManager.setStatus(chatId, userId, 'idle');
@@ -530,7 +630,50 @@ async function executeClaudeTask(
 }
 
 /**
+ * 发送结果卡片（提取为独立函数，避免 restart 和正常流程重复代码）
+ */
+async function sendResultCard(
+  prompt: string,
+  result: import('../claude/types.js').ClaudeResult,
+  totalDurationMs: number,
+  totalCostUsd: number | undefined,
+  progressMsgId: string | undefined,
+  threadRootMsgId: string | undefined,
+  chatId: string,
+): Promise<void> {
+  const durationStr = formatDuration(totalDurationMs);
+  const costInfo = totalCostUsd
+    ? ` | 💰 $${totalCostUsd.toFixed(4)}`
+    : '';
+
+  const resultCard = buildResultCard(
+    prompt,
+    result.output || result.error || '(无输出)',
+    result.success,
+    durationStr + costInfo,
+  );
+
+  if (progressMsgId) {
+    await feishuClient.updateCard(progressMsgId, resultCard);
+  } else if (threadRootMsgId) {
+    await feishuClient.replyCardInThread(threadRootMsgId, resultCard);
+  } else {
+    await feishuClient.sendCard(chatId, resultCard);
+  }
+
+  // 如果输出特别长，额外发送完整文本
+  if (result.output && result.output.length > 3000) {
+    if (threadRootMsgId) {
+      await feishuClient.replyTextInThread(threadRootMsgId, result.output);
+    } else {
+      await feishuClient.sendText(chatId, result.output);
+    }
+  }
+}
+
+/**
  * 执行自动开发管道（/dev 命令触发）
+ * 绕过 taskQueue，使用 acquireSession 进行并发保护
  */
 async function executePipelineTask(
   prompt: string,

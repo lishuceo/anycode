@@ -34,6 +34,20 @@ export interface ClaudeResult {
   costUsd?: number;
   /** 总轮数 */
   numTurns?: number;
+  /** 是否需要重启 (workspace 变更后) */
+  needsRestart?: boolean;
+  /** 重启目标工作目录 */
+  newWorkingDir?: string;
+}
+
+/** executor.execute() 的可选参数 */
+export interface ExecuteOptions {
+  /** 覆盖默认 maxTurns (默认 50) */
+  maxTurns?: number;
+  /** 覆盖默认 maxBudgetUsd (默认 5) */
+  maxBudgetUsd?: number;
+  /** 不注入 setup_workspace MCP tool (restart 时使用) */
+  disableWorkspaceTool?: boolean;
 }
 
 /** 执行进度回调 — 接收 SDK 的 SDKMessage */
