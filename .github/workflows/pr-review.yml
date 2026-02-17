@@ -47,10 +47,14 @@ jobs:
             2. Run `gh pr diff ${{ github.event.pull_request.number }}` to get the current diff.
             3. For each previous comment you left:
                - Read the CURRENT version of the file at the commented line to check if the issue is fixed.
-               - If FIXED: reply to that comment via `gh api repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/comments/{comment_id}/replies -f body="✅ Fixed."`
+               - If FIXED: reply to that comment via `gh api repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/comments/{comment_id}/replies -f body="✅ Fixed. {brief description of the fix}"`, then resolve the conversation (see step 5).
                - If STILL EXISTS: reply noting it persists, do NOT create a duplicate inline comment for the same issue.
                - If PARTIALLY FIXED: reply explaining what remains.
             4. Only create NEW inline comments for genuinely new issues not already covered by previous comments.
+            5. After replying to ALL fixed comments, resolve their conversation threads:
+               a. Get review thread IDs: `gh api graphql -f query='{ repository(owner:"${{ github.repository_owner }}", name:"${{ github.event.repository.name }}") { pullRequest(number:${{ github.event.pull_request.number }}) { reviewThreads(first:100) { nodes { id isResolved comments(first:1) { nodes { databaseId body } } } } } } }'`
+               b. Match each fixed comment's databaseId to find the thread node ID.
+               c. Resolve each thread: `gh api graphql -f query='mutation { resolveReviewThread(input:{threadId:"THREAD_NODE_ID"}) { thread { isResolved } } }'`
 
             ## Step 2: Setup
 
