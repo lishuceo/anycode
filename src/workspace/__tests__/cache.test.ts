@@ -281,7 +281,7 @@ describe('cleanupExpiredCaches', () => {
     });
 
     const oldTime = Date.now() - (31 * 24 * 60 * 60 * 1000); // 31 days ago
-    mockStatSync.mockReturnValue({ atimeMs: oldTime });
+    mockStatSync.mockReturnValue({ mtimeMs: oldTime });
 
     const cleaned = cleanupExpiredCaches();
 
@@ -302,7 +302,7 @@ describe('cleanupExpiredCaches', () => {
     });
 
     const recentTime = Date.now() - (1 * 24 * 60 * 60 * 1000); // 1 day ago
-    mockStatSync.mockReturnValue({ atimeMs: recentTime });
+    mockStatSync.mockReturnValue({ mtimeMs: recentTime });
 
     const cleaned = cleanupExpiredCaches();
 

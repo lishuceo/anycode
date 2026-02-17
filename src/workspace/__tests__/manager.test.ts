@@ -20,6 +20,9 @@ vi.mock('../../config.js', () => ({
       baseDir: '/tmp/workspaces',
       branchPrefix: 'feat/claude-session',
     },
+    claude: {
+      defaultWorkDir: '/home/user/projects',
+    },
     repoCache: {
       dir: '/repos/cache',
       maxAgeDays: 30,
@@ -207,6 +210,7 @@ describe('setupWorkspace', () => {
       mockExistsSync.mockImplementation((p) => {
         if (p === '/tmp/workspaces') return true;
         if (p === '/home/user/projects/my-app') return true;
+        if (p === '/home/user/projects') return true;
         return false;
       });
 
@@ -222,15 +226,16 @@ describe('setupWorkspace', () => {
     });
   });
 
-  it('should include git security parameters in clone args', () => {
+  it('should include git security parameters in clone args (local clone from cache)', () => {
     setupWorkspace({ repoUrl: 'https://github.com/user/repo.git' });
 
     const cloneArgs = mockExecFileSync.mock.calls[0][1];
+    // 从 bare cache 本地 clone 时使用 LOCAL 安全参数（不含 protocol.file.allow=never）
     expect(cloneArgs).toContain('--config');
     expect(cloneArgs[cloneArgs.indexOf('--config') + 1]).toBe('core.hooksPath=/dev/null');
     expect(cloneArgs).toContain('--no-recurse-submodules');
-    expect(cloneArgs).toContain('-c');
-    expect(cloneArgs[cloneArgs.indexOf('-c') + 1]).toBe('protocol.file.allow=never');
+    // 本地 clone 不应禁用 file 协议
+    expect(cloneArgs).not.toContain('protocol.file.allow=never');
   });
 
   it('should pass --branch when sourceBranch is specified', () => {

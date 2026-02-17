@@ -41,7 +41,7 @@ export const config = {
     dir: process.env.REPO_CACHE_DIR || '/repos/cache',
     /** 缓存最大保留天数 */
     maxAgeDays: parseInt(process.env.REPO_CACHE_MAX_AGE_DAYS || '30', 10),
-    /** 缓存最大总大小 (GB)，超过按 LRU 清理 */
+    /** 缓存最大总大小 (GB)，超过按 LRU 清理 — TODO: 尚未实现，当前仅按过期时间清理 */
     maxSizeGb: parseInt(process.env.REPO_CACHE_MAX_SIZE_GB || '50', 10),
     /** 同一仓库两次 fetch 的最小间隔 (分钟) */
     fetchIntervalMin: parseInt(process.env.REPO_CACHE_FETCH_INTERVAL_MIN || '10', 10),

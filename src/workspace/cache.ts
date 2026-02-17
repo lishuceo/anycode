@@ -4,6 +4,7 @@ import { resolve, join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { config } from '../config.js';
 import { logger } from '../utils/logger.js';
+import { GIT_REMOTE_SECURITY_ARGS } from './git-security.js';
 
 // ============================================================
 // 仓库缓存管理
@@ -103,12 +104,6 @@ export function sanitizeRepoUrl(repoUrl: string): string {
 // 缓存操作
 // ============================================================
 
-/** Git 安全参数 */
-const GIT_SECURITY_ARGS = [
-  '--config', 'core.hooksPath=/dev/null',
-  '--no-recurse-submodules',
-  '-c', 'protocol.file.allow=never',
-];
 
 /**
  * 确保仓库的 bare clone 缓存存在且是最新的
@@ -145,7 +140,7 @@ function cloneBareAtomic(repoUrl: string, cachePath: string): void {
   try {
     execFileSync('git', [
       'clone', '--bare',
-      ...GIT_SECURITY_ARGS,
+      ...GIT_REMOTE_SECURITY_ARGS,
       repoUrl, tmpPath,
     ], {
       timeout: 300_000, // 5 min for large repos
@@ -180,6 +175,7 @@ function fetchIfStale(cachePath: string): void {
   try {
     execFileSync('git', [
       '-C', cachePath,
+      '-c', 'core.hooksPath=/dev/null',
       'fetch', '--all',
       '--no-recurse-submodules',
       '-c', 'protocol.file.allow=never',
@@ -284,7 +280,7 @@ function cleanupExpiredRecursive(dir: string, now: number, maxAgeMs: number): nu
         // 这是一个 bare clone 缓存目录，检查是否过期
         try {
           const stat = statSync(fullPath);
-          const age = now - stat.atimeMs;
+          const age = now - stat.mtimeMs;
           if (age > maxAgeMs) {
             rmSync(fullPath, { recursive: true, force: true });
             lastFetchTime.delete(fullPath);

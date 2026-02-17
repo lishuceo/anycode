@@ -474,8 +474,10 @@ async function executeClaudeTask(
       );
 
       // 保存 restart query 的 session_id 用于下次续接
-      if (restartResult.sessionId) {
-        sessionManager.setConversationId(chatId, userId, restartResult.sessionId);
+      // 如果 restart query 失败未返回 sessionId，用第一次 query 的作为 fallback
+      const finalSessionId = restartResult.sessionId || result.sessionId;
+      if (finalSessionId) {
+        sessionManager.setConversationId(chatId, userId, finalSessionId);
       }
 
       // 合并两次 query 的耗时和花费

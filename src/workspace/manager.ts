@@ -5,6 +5,7 @@ import { basename, resolve } from 'node:path';
 import { config } from '../config.js';
 import { logger } from '../utils/logger.js';
 import { ensureBareCache, sanitizeRepoUrl } from './cache.js';
+import { GIT_LOCAL_SECURITY_ARGS, GIT_REMOTE_SECURITY_ARGS } from './git-security.js';
 
 // ============================================================
 // 工作区管理器
@@ -42,12 +43,6 @@ const SAFE_BRANCH_RE = /^[a-zA-Z0-9._\/-]+$/;
 /** git 远程 URL 协议前缀 */
 const GIT_URL_RE = /^(https?:\/\/|git@|ssh:\/\/|git:\/\/)/;
 
-/** Git 安全参数 (clone 时使用) */
-const GIT_SECURITY_ARGS = [
-  '--config', 'core.hooksPath=/dev/null',
-  '--no-recurse-submodules',
-  '-c', 'protocol.file.allow=never',
-];
 
 /**
  * 从 URL 或路径提取仓库名
@@ -86,6 +81,11 @@ export function setupWorkspace(options: SetupWorkspaceOptions): SetupWorkspaceRe
     if (!existsSync(resolved)) {
       throw new Error(`本地路径不存在: ${localPath}`);
     }
+    // 安全校验：localPath 必须在允许的基目录下
+    const allowedBase = resolve(config.claude.defaultWorkDir);
+    if (!resolved.startsWith(allowedBase + '/') && resolved !== allowedBase) {
+      throw new Error(`本地路径不在允许的目录范围内: ${localPath} (允许: ${allowedBase})`);
+    }
   }
   if (sourceBranch && !SAFE_BRANCH_RE.test(sourceBranch)) {
     throw new Error(`无效的分支名: ${sourceBranch}`);
@@ -115,10 +115,12 @@ export function setupWorkspace(options: SetupWorkspaceOptions): SetupWorkspaceRe
     logger.info({ baseDir: config.workspace.baseDir }, 'Created workspace base directory');
   }
 
-  // git clone (从 bare cache 或 localPath)
+  // git clone: 从 bare cache (本地路径) 用 LOCAL 参数，从远程/localPath 直接 clone 用 REMOTE 参数
+  // repoUrl 存在时 cloneSource 是 bare cache 本地路径，需要 file 协议
+  const securityArgs = repoUrl ? GIT_LOCAL_SECURITY_ARGS : GIT_REMOTE_SECURITY_ARGS;
   const cloneArgs: string[] = [
     'clone',
-    ...GIT_SECURITY_ARGS,
+    ...securityArgs,
   ];
   if (sourceBranch) {
     cloneArgs.push('--branch', sourceBranch);
