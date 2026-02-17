@@ -69,6 +69,16 @@ export class SessionManager {
   }
 
   /**
+   * 原子地尝试获取会话锁（idle → busy），防止 TOCTOU 竞态
+   * @returns true 如果成功获取（session 之前不是 busy），false 如果已被占用
+   */
+  tryAcquire(chatId: string, userId: string): boolean {
+    // 确保 session 存在
+    this.getOrCreate(chatId, userId);
+    return this.db.tryAcquire(this.makeKey(chatId, userId));
+  }
+
+  /**
    * 保存话题信息
    */
   setThread(chatId: string, userId: string, threadId: string, rootMessageId: string): void {
@@ -93,12 +103,30 @@ export class SessionManager {
   }
 
   /**
-   * 清理过期会话 (超过 24 小时不活跃)
+   * 保存会话摘要（独立于 sessions 表，不受 cleanup 影响）
+   */
+  saveSummary(chatId: string, userId: string, workingDir: string, summary: string): void {
+    this.db.insertSummary(chatId, userId, workingDir, summary);
+  }
+
+  /**
+   * 获取最近 N 条会话摘要（时间正序：旧 → 新）
+   */
+  getRecentSummaries(chatId: string, userId: string, limit: number = 5): string[] {
+    return this.db.getRecentSummaries(chatId, userId, limit);
+  }
+
+  /**
+   * 清理过期会话 (超过 24 小时不活跃) 和旧摘要 (超过 30 天)
    */
   cleanup(maxIdleMs: number = 24 * 60 * 60 * 1000): number {
     const cleaned = this.db.deleteExpired(maxIdleMs);
     if (cleaned > 0) {
       logger.info({ cleaned }, 'Cleaned up idle sessions');
+    }
+    const oldSummaries = this.db.cleanOldSummaries();
+    if (oldSummaries > 0) {
+      logger.info({ oldSummaries }, 'Cleaned up old session summaries');
     }
     return cleaned;
   }

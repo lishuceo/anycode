@@ -59,6 +59,16 @@ function setupMessages(messages: Array<Record<string, unknown>>) {
   });
 }
 
+/** Shorthand for building an ExecuteInput with defaults */
+function makeInput(overrides: Record<string, unknown> = {}) {
+  return {
+    sessionKey: 'chat1:user1',
+    prompt: 'test prompt',
+    workingDir: '/tmp/work',
+    ...overrides,
+  };
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   // Default: yield a simple success result
@@ -94,15 +104,11 @@ describe('ClaudeExecutor', () => {
       ]);
 
       const externalCallback = vi.fn();
-      const resultPromise = executor.execute(
-        'chat1:user1', 'test prompt', '/tmp/work',
-        undefined, undefined, externalCallback,
-      );
+      const resultPromise = executor.execute(makeInput({
+        onWorkspaceChanged: externalCallback,
+      }));
 
-      // 模拟 MCP tool 在迭代过程中调用 onWorkspaceChanged
-      // 由于 mock 的 async iterator 是同步 resolve 的，这里需要在 query 构建后触发
-      // 实际上 capturedOnWorkspaceChanged 会在 createWorkspaceMcpServer 调用时被捕获
-      // 手动触发
+      // 手动触发 workspace 变更
       if (capturedOnWorkspaceChanged) {
         capturedOnWorkspaceChanged('/new/workspace');
       }
@@ -116,10 +122,9 @@ describe('ClaudeExecutor', () => {
     });
 
     it('should not set needsRestart when workspace does not change', async () => {
-      const result = await executor.execute(
-        'chat1:user1', 'test prompt', '/tmp/work',
-        undefined, undefined, vi.fn(),
-      );
+      const result = await executor.execute(makeInput({
+        onWorkspaceChanged: vi.fn(),
+      }));
 
       expect(result.needsRestart).toBeFalsy();
       expect(result.newWorkingDir).toBeUndefined();
@@ -137,10 +142,9 @@ describe('ClaudeExecutor', () => {
         { type: 'result', subtype: 'error', session_id: 'sess-1', errors: ['something failed'], duration_ms: 50 },
       ]);
 
-      const promise = executor.execute(
-        'chat1:user1', 'test', '/tmp/work',
-        undefined, undefined, vi.fn(),
-      );
+      const promise = executor.execute(makeInput({
+        onWorkspaceChanged: vi.fn(),
+      }));
       capturedCb?.('/new/dir');
       const result = await promise;
 
@@ -152,11 +156,9 @@ describe('ClaudeExecutor', () => {
 
   describe('disableWorkspaceTool', () => {
     it('should not create MCP server when disableWorkspaceTool is true', async () => {
-      await executor.execute(
-        'chat1:user1', 'test', '/tmp/work',
-        undefined, undefined, undefined,
-        { disableWorkspaceTool: true },
-      );
+      await executor.execute(makeInput({
+        disableWorkspaceTool: true,
+      }));
 
       // createWorkspaceMcpServer should NOT be called
       expect(mockCreateWorkspaceMcpServer).not.toHaveBeenCalled();
@@ -167,10 +169,9 @@ describe('ClaudeExecutor', () => {
     });
 
     it('should create MCP server when disableWorkspaceTool is not set', async () => {
-      await executor.execute(
-        'chat1:user1', 'test', '/tmp/work',
-        undefined, undefined, vi.fn(),
-      );
+      await executor.execute(makeInput({
+        onWorkspaceChanged: vi.fn(),
+      }));
 
       expect(mockCreateWorkspaceMcpServer).toHaveBeenCalledTimes(1);
       const queryCallOptions = mockQuery.mock.calls[0][0].options;
@@ -180,7 +181,7 @@ describe('ClaudeExecutor', () => {
 
   describe('options overrides', () => {
     it('should use default maxTurns and maxBudgetUsd', async () => {
-      await executor.execute('chat1:user1', 'test', '/tmp/work');
+      await executor.execute(makeInput());
 
       const opts = mockQuery.mock.calls[0][0].options;
       expect(opts.maxTurns).toBe(50);
@@ -188,11 +189,10 @@ describe('ClaudeExecutor', () => {
     });
 
     it('should override maxTurns and maxBudgetUsd from options', async () => {
-      await executor.execute(
-        'chat1:user1', 'test', '/tmp/work',
-        undefined, undefined, undefined,
-        { maxTurns: 5, maxBudgetUsd: 0.5 },
-      );
+      await executor.execute(makeInput({
+        maxTurns: 5,
+        maxBudgetUsd: 0.5,
+      }));
 
       const opts = mockQuery.mock.calls[0][0].options;
       expect(opts.maxTurns).toBe(5);
@@ -202,10 +202,7 @@ describe('ClaudeExecutor', () => {
 
   describe('workspace changed callback wrapping', () => {
     it('should not wrap when onWorkspaceChanged is undefined', async () => {
-      await executor.execute(
-        'chat1:user1', 'test', '/tmp/work',
-        undefined, undefined, undefined,
-      );
+      await executor.execute(makeInput());
 
       // createWorkspaceMcpServer should be called with undefined (no wrapping)
       expect(mockCreateWorkspaceMcpServer).toHaveBeenCalledWith(undefined);
@@ -213,10 +210,9 @@ describe('ClaudeExecutor', () => {
 
     it('should wrap when onWorkspaceChanged is provided', async () => {
       const cb = vi.fn();
-      await executor.execute(
-        'chat1:user1', 'test', '/tmp/work',
-        undefined, undefined, cb,
-      );
+      await executor.execute(makeInput({
+        onWorkspaceChanged: cb,
+      }));
 
       // createWorkspaceMcpServer should be called with a wrapper function (not the original cb)
       const passedCb = mockCreateWorkspaceMcpServer.mock.calls[0][0];
