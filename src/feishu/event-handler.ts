@@ -7,6 +7,7 @@ import { claudeExecutor } from '../claude/executor.js';
 import { buildProgressCard, buildResultCard, buildStatusCard } from './message-builder.js';
 import { feishuClient } from './client.js';
 import { config } from '../config.js';
+import { setupWorkspace } from '../workspace/manager.js';
 
 // ============================================================
 // 使用飞书 SDK 的 EventDispatcher 处理事件
@@ -243,6 +244,56 @@ async function handleSlashCommand(
     return true;
   }
 
+  // /workspace <url-or-path> [branch] - 创建隔离工作区
+  if (trimmed.startsWith('/workspace ')) {
+    const args = trimmed.slice('/workspace '.length).trim().split(/\s+/);
+    const source = args[0];
+    const sourceBranch = args[1];
+
+    if (!source) {
+      const reply = '⚠️ 用法: `/workspace <repo-url-or-local-path> [branch]`';
+      if (threadRootMsgId) {
+        await feishuClient.replyTextInThread(threadRootMsgId, reply);
+      } else {
+        await feishuClient.replyText(messageId, reply);
+      }
+      return true;
+    }
+
+    try {
+      const isUrl = /^(https?:\/\/|git@|ssh:\/\/)/.test(source);
+      const result = setupWorkspace({
+        ...(isUrl ? { repoUrl: source } : { localPath: source }),
+        sourceBranch,
+      });
+
+      sessionManager.getOrCreate(chatId, userId);
+      sessionManager.setWorkingDir(chatId, userId, result.workspacePath);
+
+      const statusText = result.reused ? ' (复用已有)' : '';
+      const reply = [
+        `📂 工作区已创建${statusText}`,
+        `路径: ${result.workspacePath}`,
+        `分支: ${result.branch}`,
+        `仓库: ${result.repoName}`,
+      ].join('\n');
+      if (threadRootMsgId) {
+        await feishuClient.replyTextInThread(threadRootMsgId, reply);
+      } else {
+        await feishuClient.replyText(messageId, reply);
+      }
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      const reply = `❌ 工作区创建失败: ${errorMsg}`;
+      if (threadRootMsgId) {
+        await feishuClient.replyTextInThread(threadRootMsgId, reply);
+      } else {
+        await feishuClient.replyText(messageId, reply);
+      }
+    }
+    return true;
+  }
+
   // /help - 帮助
   if (trimmed === '/help') {
     const helpText = [
@@ -252,10 +303,13 @@ async function handleSlashCommand(
       '',
       '**可用命令:**',
       '`/project <path>` - 切换工作目录',
+      '`/workspace <url|path> [branch]` - 创建隔离工作区 (自动 clone + 创建分支)',
       '`/status` - 查看当前会话状态',
       '`/reset` - 重置会话',
       '`/stop` - 中断当前执行',
       '`/help` - 显示此帮助',
+      '',
+      '**自动工作区:** 直接发消息包含仓库 URL，Claude 会自动创建隔离工作区。',
     ].join('\n');
     if (threadRootMsgId) {
       await feishuClient.replyTextInThread(threadRootMsgId, helpText);
@@ -335,6 +389,11 @@ async function executeClaudeTask(
       session.conversationId,
       (message) => {
         logger.debug({ messageType: message.type }, 'Claude SDK message');
+      },
+      // 工作区变更回调: MCP 工具 clone 后自动更新 session.workingDir
+      (newDir: string) => {
+        sessionManager.setWorkingDir(chatId, userId, newDir);
+        logger.info({ chatId, userId, newDir }, 'Workspace changed via MCP tool');
       },
     );
 
