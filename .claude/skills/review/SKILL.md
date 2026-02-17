@@ -1,7 +1,6 @@
 ---
 name: review
 description: Multi-agent code review for uncommitted changes, latest commit, or a pull request
-disable-model-invocation: true
 argument-hint: "[PR number, PR URL, or empty for local changes]"
 ---
 
@@ -17,8 +16,16 @@ argument-hint: "[PR number, PR URL, or empty for local changes]"
 
 按优先级选择审查范围：
 
-1. **未提交的变更**（staged + unstaged）：运行 `git diff HEAD`，如果有输出则审查这些变更
+1. **未提交的变更**（staged + unstaged + untracked）：
+   - 运行 `git diff HEAD` 查看 tracked 文件的变更
+   - 运行 `git ls-files --others --exclude-standard` 发现 untracked 新文件，将其完整内容也纳入审查
+   - 如果有任何变更或新文件，则审查这些内容
 2. **最近一次 commit**：如果没有未提交变更，运行 `git diff HEAD~1..HEAD` 审查最近一个 commit
+
+**边界处理**：
+- 先运行 `git rev-list --count HEAD 2>/dev/null` 检查 commit 数量
+- 如果命令失败（无 commit），提示用户"仓库尚无 commit，无内容可审查"
+- 如果只有 1 个 commit 且无未提交变更，用 `git show HEAD` 代替 `git diff HEAD~1..HEAD`
 
 用 `git status` 确认当前状态，告知用户审查的是哪个范围。
 
@@ -29,6 +36,8 @@ argument-hint: "[PR number, PR URL, or empty for local changes]"
 - PR URL：`/review https://github.com/org/repo/pull/4` → 提取编号后同上
 
 用 `gh pr diff` 获取完整 diff，用 `gh pr view` 了解 PR 意图。
+
+**参数校验**：如果 `$ARGUMENTS` 既不是有效的正整数，也无法从 URL 中提取 PR 编号（格式应为 `https://github.com/{owner}/{repo}/pull/{number}`），则告知用户参数无效并给出正确用法示例：`/review 4` 或 `/review https://github.com/org/repo/pull/4`。
 
 ## 多 Agent 并行审查
 
