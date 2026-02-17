@@ -1,0 +1,82 @@
+name: Claude PR Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+  id-token: write
+  actions: read
+
+concurrency:
+  group: claude-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    if: ${{ !github.event.pull_request.draft }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          track_progress: true
+          claude_args: |
+            --model opus
+            --max-budget-usd 10
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr checks:*),Bash(git log:*),Bash(git blame:*),Bash(git diff:*),Read,Glob,Grep"
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+
+            You are a senior code reviewer. Your goal is to find real, actionable issues — not to generate noise.
+
+            ## Setup
+            1. Read CLAUDE.md to understand the project architecture and conventions.
+            2. Run `gh pr diff ${{ github.event.pull_request.number }}` to get the full diff.
+            3. Run `gh pr view ${{ github.event.pull_request.number }}` to understand the PR intent.
+
+            ## Review Process
+            For EACH changed file in the diff:
+            1. Read the FULL source file (not just the diff) to understand context.
+            2. Use `git blame` on suspicious lines to understand the change history.
+            3. Trace function calls to verify correctness across module boundaries.
+
+            ## What to Look For
+            - **Bugs**: Logic errors, off-by-one, null/undefined access, race conditions, unhandled promise rejections
+            - **Security**: Injection risks (command, SQL, XSS), secret exposure, unsafe permissions, missing input validation
+            - **Architecture**: Does the change follow patterns in CLAUDE.md? ESM imports with .js extensions? Proper singleton usage?
+            - **TypeScript**: Unsafe `any` types, incorrect generics, missing error types, async/await pitfalls
+            - **Resource leaks**: Unclosed connections, missing event listener cleanup, timer leaks
+
+            ## Confidence Scoring
+            For each issue, assign a confidence score (0-100):
+            - 90-100: Certain this is a real bug or security issue
+            - 75-89: Highly confident, likely a real problem
+            - 50-74: Moderate confidence, worth mentioning
+            - Below 50: Do NOT report — too likely to be a false positive
+
+            Only report issues with confidence ≥ 75.
+
+            ## False Positive Filters — Do NOT report:
+            - Pre-existing issues not introduced in this PR
+            - Style preferences or nitpicks
+            - Issues that linters/formatters will catch
+            - Missing comments on self-explanatory code
+            - Hypothetical future problems
+            - Code that "could be improved" but works correctly
+
+            ## Output Format
+            - Use `mcp__github_inline_comment__create_inline_comment` to post comments directly on the relevant code lines.
+            - Post a summary comment via `gh pr comment` with:
+              - One-line verdict: ✅ Approved / ⚠️ Issues Found
+              - If issues found: bulleted list with severity (🔴 critical / 🟡 warning) and confidence score
+              - Brief overall assessment of the PR quality
