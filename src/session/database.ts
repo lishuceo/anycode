@@ -1,6 +1,6 @@
 import Database from 'better-sqlite3';
 import { mkdirSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { dirname, resolve } from 'node:path';
 import { logger } from '../utils/logger.js';
 import type { Session, SessionStatus } from './types.js';
 
@@ -17,6 +17,11 @@ interface SessionRow {
   last_active_at: string;
 }
 
+const VALID_STATUSES = new Set<string>(['idle', 'busy', 'error']);
+function validStatus(s: string): SessionStatus {
+  return VALID_STATUSES.has(s) ? (s as SessionStatus) : 'idle';
+}
+
 export class SessionDatabase {
   private db: Database.Database;
   private stmtUpsert: Database.Statement;
@@ -31,10 +36,16 @@ export class SessionDatabase {
   private stmtResetBusy: Database.Statement;
 
   constructor(dbPath: string) {
-    mkdirSync(dirname(dbPath), { recursive: true });
+    dbPath = resolve(dbPath);
+    mkdirSync(dirname(dbPath), { recursive: true, mode: 0o700 });
 
     this.db = new Database(dbPath);
     this.db.pragma('journal_mode = WAL');
+
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
+      INSERT OR IGNORE INTO schema_version VALUES (1)
+    `);
 
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS sessions (
@@ -93,7 +104,7 @@ export class SessionDatabase {
     );
 
     this.stmtResetBusy = this.db.prepare(
-      "UPDATE sessions SET status = 'idle' WHERE status = 'busy'",
+      "UPDATE sessions SET status = 'idle', conversation_id = NULL WHERE status = 'busy'",
     );
 
     logger.info({ dbPath }, 'Session database initialized');
@@ -171,7 +182,7 @@ export class SessionDatabase {
       conversationId: row.conversation_id ?? undefined,
       threadId: row.thread_id ?? undefined,
       threadRootMessageId: row.thread_root_message_id ?? undefined,
-      status: row.status as SessionStatus,
+      status: validStatus(row.status),
       createdAt: new Date(row.created_at),
       lastActiveAt: new Date(row.last_active_at),
     };

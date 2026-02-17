@@ -107,16 +107,18 @@ console.log('\n3. 跨实例持久化 (模拟重启)');
   db.close();
 }
 
-console.log('\n4. resetBusySessions');
+console.log('\n4. resetBusySessions (同时清空 conversationId)');
 {
   const db = new SessionDatabase(DB_PATH);
 
-  // chat2:user2 之前设为 busy
+  // chat2:user2 之前设为 busy 且有 conversationId
   assert(db.get('chat2:user2')!.status === 'busy', '重启前 status 为 busy');
+  assert(db.get('chat2:user2')!.conversationId === 'conv-123', '重启前 conversationId 存在');
 
   const count = db.resetBusySessions();
   assert(count >= 1, `resetBusySessions 重置了 ${count} 条记录`);
   assert(db.get('chat2:user2')!.status === 'idle', '重置后 status 为 idle');
+  assert(db.get('chat2:user2')!.conversationId === undefined, '重置后 conversationId 被清空');
 
   db.close();
 }
@@ -184,6 +186,24 @@ console.log('\n6. upsert 覆盖更新');
   assert(s.workingDir === '/v2', 'upsert 覆盖 workingDir');
   assert(s.conversationId === 'conv-new', 'upsert 覆盖 conversationId');
   assert(s.status === 'busy', 'upsert 覆盖 status');
+
+  db.close();
+}
+
+console.log('\n7. status 运行时校验 (非法值回退为 idle)');
+{
+  const db = new SessionDatabase(DB_PATH);
+  const now = new Date();
+
+  db.upsert('bad:status', {
+    chatId: 'bad', userId: 'status', workingDir: '/tmp',
+    status: 'idle', createdAt: now, lastActiveAt: now,
+  });
+  // 直接写入非法 status 模拟 DB 损坏
+  // @ts-expect-error -- 故意传入非法值测试运行时校验
+  db.updateStatus('bad:status', 'corrupted');
+  const s = db.get('bad:status')!;
+  assert(s.status === 'idle', '非法 status 被回退为 idle');
 
   db.close();
 }

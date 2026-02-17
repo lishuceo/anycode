@@ -6,6 +6,9 @@ import type { Session } from './types.js';
 /**
  * 会话管理器
  * 管理飞书会话与 Claude Code 工作环境的映射
+ *
+ * 注意: get / getOrCreate 返回的 Session 是 DB 快照副本 (Readonly),
+ * 直接修改属性不会反映到数据库，需通过 set* 方法更新。
  */
 export class SessionManager {
   private db: SessionDatabase;
@@ -19,7 +22,7 @@ export class SessionManager {
    * 获取或创建会话
    * key = chatId (群聊共享) 或 chatId:userId (私聊独立)
    */
-  getOrCreate(chatId: string, userId: string): Session {
+  getOrCreate(chatId: string, userId: string): Readonly<Session> {
     const key = this.makeKey(chatId, userId);
     let session = this.db.get(key);
 
@@ -45,7 +48,7 @@ export class SessionManager {
   /**
    * 获取会话
    */
-  get(chatId: string, userId: string): Session | undefined {
+  get(chatId: string, userId: string): Readonly<Session> | undefined {
     return this.db.get(this.makeKey(chatId, userId));
   }
 
@@ -54,7 +57,6 @@ export class SessionManager {
    */
   setWorkingDir(chatId: string, userId: string, dir: string): void {
     const key = this.makeKey(chatId, userId);
-    this.getOrCreate(chatId, userId);
     this.db.updateWorkingDir(key, dir);
     logger.info({ chatId, userId, workingDir: dir }, 'Working directory changed');
   }
@@ -63,18 +65,14 @@ export class SessionManager {
    * 更新会话状态
    */
   setStatus(chatId: string, userId: string, status: Session['status']): void {
-    const key = this.makeKey(chatId, userId);
-    this.getOrCreate(chatId, userId);
-    this.db.updateStatus(key, status);
+    this.db.updateStatus(this.makeKey(chatId, userId), status);
   }
 
   /**
    * 保存话题信息
    */
   setThread(chatId: string, userId: string, threadId: string, rootMessageId: string): void {
-    const key = this.makeKey(chatId, userId);
-    this.getOrCreate(chatId, userId);
-    this.db.updateThread(key, threadId, rootMessageId);
+    this.db.updateThread(this.makeKey(chatId, userId), threadId, rootMessageId);
     logger.info({ chatId, userId, threadId }, 'Thread saved to session');
   }
 
@@ -82,9 +80,7 @@ export class SessionManager {
    * 更新 Claude Code 会话 ID (用于续接对话)
    */
   setConversationId(chatId: string, userId: string, conversationId: string): void {
-    const key = this.makeKey(chatId, userId);
-    this.getOrCreate(chatId, userId);
-    this.db.updateConversationId(key, conversationId);
+    this.db.updateConversationId(this.makeKey(chatId, userId), conversationId);
   }
 
   /**
