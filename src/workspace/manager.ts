@@ -90,7 +90,13 @@ export function setupWorkspace(options: SetupWorkspaceOptions): SetupWorkspaceRe
   }
 
   // git clone (使用 execFileSync 避免 shell 注入)
-  const cloneArgs: string[] = ['clone'];
+  const cloneArgs: string[] = [
+    'clone',
+    // 安全参数：禁用 git hooks、submodules、file 协议
+    '--config', 'core.hooksPath=/dev/null',
+    '--no-recurse-submodules',
+    '-c', 'protocol.file.allow=never',
+  ];
   if (sourceBranch) {
     cloneArgs.push('--branch', sourceBranch);
   }
