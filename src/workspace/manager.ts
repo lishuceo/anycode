@@ -30,9 +30,12 @@ export interface SetupWorkspaceResult {
   branch: string;
   /** 仓库名 */
   repoName: string;
-  /** 是否复用了已有目录 */
-  reused: boolean;
 }
+
+/** git 分支名合法字符 */
+const SAFE_BRANCH_RE = /^[a-zA-Z0-9._\/-]+$/;
+/** git 远程 URL 协议前缀 */
+const GIT_URL_RE = /^(https?:\/\/|git@|ssh:\/\/|git:\/\/)/;
 
 /**
  * 从 URL 或路径提取仓库名
@@ -56,6 +59,23 @@ export function setupWorkspace(options: SetupWorkspaceOptions): SetupWorkspaceRe
     throw new Error('必须提供 repo_url 或 local_path');
   }
 
+  // 输入校验
+  if (repoUrl && !GIT_URL_RE.test(repoUrl)) {
+    throw new Error(`无效的仓库 URL: ${repoUrl}`);
+  }
+  if (localPath) {
+    const resolved = resolve(localPath);
+    if (!existsSync(resolved)) {
+      throw new Error(`本地路径不存在: ${localPath}`);
+    }
+  }
+  if (sourceBranch && !SAFE_BRANCH_RE.test(sourceBranch)) {
+    throw new Error(`无效的分支名: ${sourceBranch}`);
+  }
+  if (featureBranch && !SAFE_BRANCH_RE.test(featureBranch)) {
+    throw new Error(`无效的分支名: ${featureBranch}`);
+  }
+
   const repoName = deriveRepoName(source);
   const shortId = randomBytes(3).toString('hex');
   const branchPrefix = config.workspace.branchPrefix;
@@ -67,12 +87,6 @@ export function setupWorkspace(options: SetupWorkspaceOptions): SetupWorkspaceRe
   if (!existsSync(config.workspace.baseDir)) {
     mkdirSync(config.workspace.baseDir, { recursive: true });
     logger.info({ baseDir: config.workspace.baseDir }, 'Created workspace base directory');
-  }
-
-  // 已有目录则复用
-  if (existsSync(workspacePath)) {
-    logger.info({ workspacePath }, 'Workspace already exists, reusing');
-    return { workspacePath, branch, repoName, reused: true };
   }
 
   // git clone (使用 execFileSync 避免 shell 注入)
@@ -109,5 +123,5 @@ export function setupWorkspace(options: SetupWorkspaceOptions): SetupWorkspaceRe
   }
 
   logger.info({ workspacePath, branch, repoName }, 'Workspace setup complete');
-  return { workspacePath, branch, repoName, reused: false };
+  return { workspacePath, branch, repoName };
 }

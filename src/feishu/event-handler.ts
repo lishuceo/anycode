@@ -270,9 +270,8 @@ async function handleSlashCommand(
       sessionManager.getOrCreate(chatId, userId);
       sessionManager.setWorkingDir(chatId, userId, result.workspacePath);
 
-      const statusText = result.reused ? ' (复用已有)' : '';
       const reply = [
-        `📂 工作区已创建${statusText}`,
+        '📂 工作区已创建',
         `路径: ${result.workspacePath}`,
         `分支: ${result.branch}`,
         `仓库: ${result.repoName}`,

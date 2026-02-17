@@ -68,14 +68,12 @@ export function createWorkspaceMcpServer(onWorkspaceChanged?: SessionUpdater) {
               logger.warn('No session updater set, workingDir not updated');
             }
 
-            const statusText = result.reused ? '(复用已有工作区)' : '(新建)';
-
             return {
               content: [
                 {
                   type: 'text' as const,
                   text: [
-                    `工作区已就绪 ${statusText}`,
+                    '工作区已就绪',
                     `📂 路径: ${result.workspacePath}`,
                     `🌿 分支: ${result.branch}`,
                     `📦 仓库: ${result.repoName}`,
