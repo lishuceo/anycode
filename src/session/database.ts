@@ -131,7 +131,7 @@ export class SessionDatabase {
     );
 
     this.stmtGetRecentSummaries = this.db.prepare(
-      'SELECT summary FROM session_summaries WHERE chat_id = ? AND user_id = ? ORDER BY created_at DESC LIMIT ?',
+      'SELECT summary FROM session_summaries WHERE chat_id = ? AND user_id = ? ORDER BY created_at DESC, id DESC LIMIT ?',
     );
 
     this.stmtCleanOldSummaries = this.db.prepare(

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildProgressCard, buildResultCard, buildStatusCard } from '../message-builder.js';
+import { buildProgressCard, buildResultCard, buildStreamingCard, buildPipelineCard, buildStatusCard } from '../message-builder.js';
 
 describe('buildProgressCard', () => {
   it('should build a card with the given prompt', () => {
@@ -77,6 +77,89 @@ describe('buildResultCard', () => {
     const outputEl = card.elements[2];
     expect(outputEl.text.content).toContain('_(输出过长，已截断)_');
     expect(outputEl.text.content.length).toBeLessThan(5000);
+  });
+});
+
+describe('buildStreamingCard', () => {
+  it('should display prompt, content, and elapsed time', () => {
+    const card = buildStreamingCard('do something', 'partial output here', 15) as any;
+    expect(card.header.template).toBe('blue');
+    expect(card.header.title.content).toContain('执行中');
+    expect(card.elements[0].text.content).toContain('do something');
+    expect(card.elements[2].text.content).toContain('partial output here');
+    const note = card.elements[4];
+    expect(note.elements[0].content).toContain('15s');
+  });
+
+  it('should show last 2500 chars of long content', () => {
+    const longContent = 'A'.repeat(1000) + 'B'.repeat(2500);
+    const card = buildStreamingCard('test', longContent, 5) as any;
+    const displayed = card.elements[2].text.content;
+    expect(displayed).toContain('...');
+    expect(displayed).not.toContain('A');
+    expect(displayed).toContain('B');
+  });
+
+  it('should show placeholder when content is empty', () => {
+    const card = buildStreamingCard('test', '', 0) as any;
+    expect(card.elements[2].text.content).toContain('正在处理...');
+  });
+});
+
+describe('buildPipelineCard', () => {
+  it('should show in-progress phase with correct marker', () => {
+    const card = buildPipelineCard('task', 'implement', 3, 5, 30) as any;
+    expect(card.header.template).toBe('blue');
+    expect(card.header.title.content).toContain('自动开发管道');
+    const phasesContent = card.elements[2].text.content as string;
+    expect(phasesContent).toContain('✅ 1. 方案设计');
+    expect(phasesContent).toContain('✅ 2. 方案审查');
+    expect(phasesContent).toContain('🔄 3. 代码实现 ← 当前');
+    expect(phasesContent).toContain('⬚ 4. 代码审查');
+    expect(phasesContent).toContain('⬚ 5. 推送 & PR');
+    const note = card.elements[card.elements.length - 1];
+    expect(note.elements[0].content).toContain('阶段 3/5');
+    expect(note.elements[0].content).toContain('30s');
+  });
+
+  it('should show all checkmarks when done', () => {
+    const card = buildPipelineCard('task', 'done', 6, 5, 120, 0.72) as any;
+    expect(card.header.template).toBe('green');
+    expect(card.header.title.content).toContain('管道完成');
+    const phasesContent = card.elements[2].text.content as string;
+    expect(phasesContent).toContain('✅ 1.');
+    expect(phasesContent).toContain('✅ 5.');
+    expect(phasesContent).not.toContain('⬚');
+    expect(phasesContent).not.toContain('🔄');
+    const note = card.elements[card.elements.length - 1];
+    expect(note.elements[0].content).toContain('✅ 完成');
+    expect(note.elements[0].content).toContain('$0.7200');
+  });
+
+  it('should show failure state correctly', () => {
+    const card = buildPipelineCard('task', 'failed', 3, 5, 60) as any;
+    expect(card.header.template).toBe('red');
+    expect(card.header.title.content).toContain('管道失败');
+    const phasesContent = card.elements[2].text.content as string;
+    expect(phasesContent).toContain('✅ 1.');
+    expect(phasesContent).toContain('✅ 2.');
+    expect(phasesContent).toContain('❌ 3.');
+    expect(phasesContent).toContain('⬚ 4.');
+  });
+
+  it('should include detail section when provided', () => {
+    const card = buildPipelineCard('task', 'implement', 3, 5, 10, undefined, 'some detail') as any;
+    // detail should appear between phases and note
+    const allTexts = card.elements.map((e: any) => e.text?.content ?? '').join(' ');
+    expect(allTexts).toContain('some detail');
+  });
+
+  it('should truncate long detail to 2000 chars', () => {
+    const longDetail = 'X'.repeat(3000);
+    const card = buildPipelineCard('task', 'plan', 1, 5, 5, undefined, longDetail) as any;
+    const allTexts = card.elements.map((e: any) => e.text?.content ?? '').join(' ');
+    expect(allTexts).toContain('...');
+    expect(allTexts.length).toBeLessThan(3000 + 500);
   });
 });
 
