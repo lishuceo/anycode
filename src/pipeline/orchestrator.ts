@@ -133,11 +133,12 @@ export class PipelineOrchestrator {
       callbacks.onStreamUpdate,
     );
 
-    state.totalCostUsd += result.costUsd ?? 0;
+    const totalCostUsd = state.totalCostUsd + (result.costUsd ?? 0);
 
     if (!result.success || !result.output) {
       return {
         ...state,
+        totalCostUsd,
         phase: 'failed',
         failedAtPhase: 'plan',
         failureReason: `方案设计失败: ${result.error || '无输出'}`,
@@ -146,6 +147,7 @@ export class PipelineOrchestrator {
 
     return {
       ...state,
+      totalCostUsd,
       phase: 'plan_review',
       plan: result.output,
     };
@@ -193,13 +195,14 @@ export class PipelineOrchestrator {
       callbacks.onStreamUpdate,
     );
 
-    state.totalCostUsd += result.costUsd ?? 0;
+    const totalCostUsd = state.totalCostUsd + (result.costUsd ?? 0);
 
     if (!result.success) {
       // review agent 自身失败（超时/崩溃等）— fail-closed，不跳过审查
       logger.warn({ reviewPhase, error: result.error }, 'Review agent failed, treating as pipeline failure');
       return {
         ...state,
+        totalCostUsd,
         phase: 'failed',
         failedAtPhase: reviewPhase,
         failureReason: `${isPlanReview ? '方案' : '代码'}审查 agent 执行失败: ${result.error || '未知错误'}`,
@@ -212,6 +215,7 @@ export class PipelineOrchestrator {
       logger.info({ reviewPhase }, 'Review approved');
       return {
         ...state,
+        totalCostUsd,
         phase: isPlanReview ? 'implement' : 'push',
         ...(isPlanReview
           ? { planReviewFeedback: undefined }
@@ -227,6 +231,7 @@ export class PipelineOrchestrator {
       logger.warn({ reviewPhase, retryCount }, 'Review rejected, max retries reached');
       return {
         ...state,
+        totalCostUsd,
         phase: 'failed',
         failedAtPhase: reviewPhase,
         retries: { ...state.retries, [retryKey]: retryCount },
@@ -239,6 +244,7 @@ export class PipelineOrchestrator {
     // 回退到上一步重做
     return {
       ...state,
+      totalCostUsd,
       phase: isPlanReview ? 'plan' : 'implement',
       retries: { ...state.retries, [retryKey]: retryCount },
       ...(isPlanReview
@@ -271,11 +277,12 @@ export class PipelineOrchestrator {
       callbacks.onStreamUpdate,
     );
 
-    state.totalCostUsd += result.costUsd ?? 0;
+    const totalCostUsd = state.totalCostUsd + (result.costUsd ?? 0);
 
     if (!result.success) {
       return {
         ...state,
+        totalCostUsd,
         phase: 'failed',
         failedAtPhase: 'implement',
         failureReason: `代码实现失败: ${result.error || '无输出'}`,
@@ -284,6 +291,7 @@ export class PipelineOrchestrator {
 
     return {
       ...state,
+      totalCostUsd,
       phase: 'code_review',
       implementOutput: result.output,
     };
@@ -314,12 +322,13 @@ export class PipelineOrchestrator {
       callbacks.onStreamUpdate,
     );
 
-    state.totalCostUsd += result.costUsd ?? 0;
+    const totalCostUsd = state.totalCostUsd + (result.costUsd ?? 0);
 
     if (!result.success) {
       // push 失败不算完全失败，代码已经写好了
       return {
         ...state,
+        totalCostUsd,
         phase: 'done',
         pushOutput: `推送失败，但代码修改已完成: ${result.error || result.output}`,
       };
@@ -327,6 +336,7 @@ export class PipelineOrchestrator {
 
     return {
       ...state,
+      totalCostUsd,
       phase: 'done',
       pushOutput: result.output,
     };
@@ -374,9 +384,8 @@ export class PipelineOrchestrator {
       return { approved: false, feedback: lines.slice(1).join('\n').trim() };
     }
 
-    // 无法解析 → 搜索全文
-    const upperOutput = output.toUpperCase();
-    if (upperOutput.includes('APPROVED') && !upperOutput.includes('REJECTED')) {
+    // 无法解析 → 搜索全文（使用词边界避免匹配 "NOT APPROVED" 等子串）
+    if (/\bAPPROVED\b/i.test(output) && !/\bREJECTED\b/i.test(output)) {
       return { approved: true, feedback: output };
     }
 

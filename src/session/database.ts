@@ -34,6 +34,7 @@ export class SessionDatabase {
   private stmtUpdateThread: Database.Statement;
   private stmtUpdateLastActive: Database.Statement;
   private stmtResetBusy: Database.Statement;
+  private stmtTryAcquire: Database.Statement;
   private stmtInsertSummary: Database.Statement;
   private stmtGetRecentSummaries: Database.Statement;
   private stmtCleanOldSummaries: Database.Statement;
@@ -108,6 +109,10 @@ export class SessionDatabase {
 
     this.stmtResetBusy = this.db.prepare(
       "UPDATE sessions SET status = 'idle', conversation_id = NULL WHERE status = 'busy'",
+    );
+
+    this.stmtTryAcquire = this.db.prepare(
+      "UPDATE sessions SET status = 'busy', last_active_at = ? WHERE key = ? AND status != 'busy'",
     );
 
     // 会话摘要表（独立于 sessions，不受 cleanup 影响）
@@ -190,6 +195,15 @@ export class SessionDatabase {
 
   updateLastActive(key: string): void {
     this.stmtUpdateLastActive.run(new Date().toISOString(), key);
+  }
+
+  /**
+   * 原子地尝试将 session 标记为 busy（CAS: idle → busy）
+   * @returns true 如果成功获取锁，false 如果已经 busy
+   */
+  tryAcquire(key: string): boolean {
+    const result = this.stmtTryAcquire.run(new Date().toISOString(), key);
+    return result.changes === 1;
   }
 
   resetBusySessions(): number {

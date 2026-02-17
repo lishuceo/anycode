@@ -69,6 +69,16 @@ export class SessionManager {
   }
 
   /**
+   * 原子地尝试获取会话锁（idle → busy），防止 TOCTOU 竞态
+   * @returns true 如果成功获取（session 之前不是 busy），false 如果已被占用
+   */
+  tryAcquire(chatId: string, userId: string): boolean {
+    // 确保 session 存在
+    this.getOrCreate(chatId, userId);
+    return this.db.tryAcquire(this.makeKey(chatId, userId));
+  }
+
+  /**
    * 保存话题信息
    */
   setThread(chatId: string, userId: string, threadId: string, rootMessageId: string): void {

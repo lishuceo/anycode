@@ -398,13 +398,11 @@ async function acquireSession(
   userId: string,
   messageId: string,
 ): Promise<boolean> {
-  const session = sessionManager.getOrCreate(chatId, userId);
-  if (session.status === 'busy') {
+  // 原子 CAS：UPDATE ... WHERE status != 'busy'，单条 SQL 防止 TOCTOU 竞态
+  if (!sessionManager.tryAcquire(chatId, userId)) {
     await feishuClient.replyText(messageId, '⏳ 当前会话正在执行任务，请等待完成或使用 /stop 中断');
     return false;
   }
-  // 立即标记为忙碌，防止 TOCTOU 竞态
-  sessionManager.setStatus(chatId, userId, 'busy');
   return true;
 }
 
