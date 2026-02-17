@@ -21,6 +21,23 @@ import { config } from '../config.js';
 // 配合 adaptExpress 可以一行代码接入 Express
 // ============================================================
 
+// 消息去重缓存 (message_id → 时间戳)，防止飞书重试导致重复处理
+const processedMessages = new Map<string, number>();
+const DEDUP_TTL_MS = 5 * 60 * 1000; // 5 分钟过期
+
+function isDuplicate(messageId: string): boolean {
+  const now = Date.now();
+  // 清理过期条目
+  if (processedMessages.size > 500) {
+    for (const [id, ts] of processedMessages) {
+      if (now - ts > DEDUP_TTL_MS) processedMessages.delete(id);
+    }
+  }
+  if (processedMessages.has(messageId)) return true;
+  processedMessages.set(messageId, now);
+  return false;
+}
+
 /**
  * 创建飞书事件分发器
  */
@@ -115,6 +132,12 @@ async function handleMessageEvent(data: MessageEventData): Promise<void> {
   const parsed = parseMessage(data);
   if (!parsed) return;
 
+  // 消息去重：飞书可能在未及时收到响应时重试推送
+  if (isDuplicate(parsed.messageId)) {
+    logger.debug({ messageId: parsed.messageId }, 'Duplicate message ignored');
+    return;
+  }
+
   const { text, messageId, userId, chatId, chatType, mentionedBot } = parsed;
 
   logger.info({ userId, chatId, chatType, text: text.slice(0, 100) }, 'Received message');
@@ -156,11 +179,20 @@ async function handleSlashCommand(
 ): Promise<boolean> {
   const trimmed = text.trim();
 
+  // 获取当前会话的话题锚点消息 ID（用于将命令响应发到话题内）
+  const currentSession = sessionManager.get(chatId, userId);
+  const threadRootMsgId = currentSession?.threadRootMessageId;
+
   // /project <path> - 切换工作目录
   if (trimmed.startsWith('/project ')) {
     const dir = trimmed.slice('/project '.length).trim();
     sessionManager.setWorkingDir(chatId, userId, dir);
-    await feishuClient.replyText(messageId, `📂 工作目录已切换到: ${dir}`);
+    const reply = `📂 工作目录已切换到: ${dir}`;
+    if (threadRootMsgId) {
+      await feishuClient.replyTextInThread(threadRootMsgId, reply);
+    } else {
+      await feishuClient.replyText(messageId, reply);
+    }
     return true;
   }
 
@@ -172,7 +204,11 @@ async function handleSlashCommand(
       session.status,
       taskQueue.pendingCount(chatId),
     );
-    await feishuClient.sendCard(chatId, card);
+    if (threadRootMsgId) {
+      await feishuClient.replyCardInThread(threadRootMsgId, card);
+    } else {
+      await feishuClient.sendCard(chatId, card);
+    }
     return true;
   }
 
@@ -180,8 +216,14 @@ async function handleSlashCommand(
   if (trimmed === '/reset') {
     const sessionKey = `${chatId}:${userId}`;
     claudeExecutor.killSession(sessionKey);
+    // 先在旧话题内回复确认，再清除 session
+    const reply = '🔄 会话已重置';
+    if (threadRootMsgId) {
+      await feishuClient.replyTextInThread(threadRootMsgId, reply);
+    } else {
+      await feishuClient.replyText(messageId, reply);
+    }
     sessionManager.reset(chatId, userId);
-    await feishuClient.replyText(messageId, '🔄 会话已重置');
     return true;
   }
 
@@ -191,7 +233,12 @@ async function handleSlashCommand(
     claudeExecutor.killSession(sessionKey);
     taskQueue.cancelPending(chatId);
     sessionManager.setStatus(chatId, userId, 'idle');
-    await feishuClient.replyText(messageId, '🛑 已中断当前会话的执行');
+    const reply = '🛑 已中断当前会话的执行';
+    if (threadRootMsgId) {
+      await feishuClient.replyTextInThread(threadRootMsgId, reply);
+    } else {
+      await feishuClient.replyText(messageId, reply);
+    }
     return true;
   }
 
@@ -209,11 +256,46 @@ async function handleSlashCommand(
       '`/stop` - 中断当前执行',
       '`/help` - 显示此帮助',
     ].join('\n');
-    await feishuClient.replyText(messageId, helpText);
+    if (threadRootMsgId) {
+      await feishuClient.replyTextInThread(threadRootMsgId, helpText);
+    } else {
+      await feishuClient.replyText(messageId, helpText);
+    }
     return true;
   }
 
   return false;
+}
+
+/**
+ * 确保会话有话题，如果没有则创建一个
+ * 返回 threadRootMessageId (用于后续 reply_in_thread)，失败返回 undefined
+ */
+async function ensureThread(
+  chatId: string,
+  userId: string,
+  messageId: string,
+): Promise<string | undefined> {
+  const session = sessionManager.getOrCreate(chatId, userId);
+
+  if (session.threadId && session.threadRootMessageId) {
+    return session.threadRootMessageId;
+  }
+
+  // 首次交互：reply_in_thread 创建话题
+  const { messageId: botMsgId, threadId } = await feishuClient.replyInThread(
+    messageId,
+    '🤖 新会话已创建',
+  );
+
+  if (threadId && botMsgId) {
+    // 保存用户原始消息 ID 作为话题锚点（话题附着在此消息上）
+    sessionManager.setThread(chatId, userId, threadId, messageId);
+    return messageId;
+  }
+
+  logger.warn({ chatId, userId }, 'Failed to create thread, falling back to main chat');
+  return undefined;
 }
 
 /**
@@ -228,11 +310,17 @@ async function executeClaudeTask(
   const session = sessionManager.getOrCreate(chatId, userId);
   const sessionKey = `${chatId}:${userId}`;
 
-  // 发送 "处理中" 卡片
-  const progressMsgId = await feishuClient.sendCard(
-    chatId,
-    buildProgressCard(prompt),
-  );
+  // 确保话题存在，返回话题锚点消息 ID
+  const threadRootMsgId = await ensureThread(chatId, userId, messageId);
+
+  // 发送 "处理中" 卡片（优先发到话题内）
+  let progressMsgId: string | undefined;
+  if (threadRootMsgId) {
+    progressMsgId = await feishuClient.replyCardInThread(threadRootMsgId, buildProgressCard(prompt));
+  }
+  if (!progressMsgId) {
+    progressMsgId = await feishuClient.sendCard(chatId, buildProgressCard(prompt));
+  }
 
   // 标记会话为忙碌
   sessionManager.setStatus(chatId, userId, 'busy');
@@ -270,13 +358,19 @@ async function executeClaudeTask(
 
     if (progressMsgId) {
       await feishuClient.updateCard(progressMsgId, resultCard);
+    } else if (threadRootMsgId) {
+      await feishuClient.replyCardInThread(threadRootMsgId, resultCard);
     } else {
       await feishuClient.sendCard(chatId, resultCard);
     }
 
     // 如果输出特别长，额外发送完整文本
     if (result.output && result.output.length > 3000) {
-      await feishuClient.sendText(chatId, result.output);
+      if (threadRootMsgId) {
+        await feishuClient.replyTextInThread(threadRootMsgId, result.output);
+      } else {
+        await feishuClient.sendText(chatId, result.output);
+      }
     }
   } catch (err) {
     logger.error({ err }, 'Error executing Claude Agent SDK query');
