@@ -1,0 +1,179 @@
+import Database from 'better-sqlite3';
+import { mkdirSync } from 'node:fs';
+import { dirname } from 'node:path';
+import { logger } from '../utils/logger.js';
+import type { Session, SessionStatus } from './types.js';
+
+interface SessionRow {
+  key: string;
+  chat_id: string;
+  user_id: string;
+  working_dir: string;
+  conversation_id: string | null;
+  thread_id: string | null;
+  thread_root_message_id: string | null;
+  status: string;
+  created_at: string;
+  last_active_at: string;
+}
+
+export class SessionDatabase {
+  private db: Database.Database;
+  private stmtUpsert: Database.Statement;
+  private stmtGet: Database.Statement;
+  private stmtDelete: Database.Statement;
+  private stmtDeleteExpired: Database.Statement;
+  private stmtUpdateWorkingDir: Database.Statement;
+  private stmtUpdateStatus: Database.Statement;
+  private stmtUpdateConversationId: Database.Statement;
+  private stmtUpdateThread: Database.Statement;
+  private stmtUpdateLastActive: Database.Statement;
+  private stmtResetBusy: Database.Statement;
+
+  constructor(dbPath: string) {
+    mkdirSync(dirname(dbPath), { recursive: true });
+
+    this.db = new Database(dbPath);
+    this.db.pragma('journal_mode = WAL');
+
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS sessions (
+        key                     TEXT PRIMARY KEY,
+        chat_id                 TEXT NOT NULL,
+        user_id                 TEXT NOT NULL,
+        working_dir             TEXT NOT NULL,
+        conversation_id         TEXT,
+        thread_id               TEXT,
+        thread_root_message_id  TEXT,
+        status                  TEXT NOT NULL DEFAULT 'idle',
+        created_at              TEXT NOT NULL,
+        last_active_at          TEXT NOT NULL
+      )
+    `);
+
+    this.stmtUpsert = this.db.prepare(`
+      INSERT INTO sessions (key, chat_id, user_id, working_dir, conversation_id, thread_id, thread_root_message_id, status, created_at, last_active_at)
+      VALUES (@key, @chat_id, @user_id, @working_dir, @conversation_id, @thread_id, @thread_root_message_id, @status, @created_at, @last_active_at)
+      ON CONFLICT(key) DO UPDATE SET
+        working_dir = @working_dir,
+        conversation_id = @conversation_id,
+        thread_id = @thread_id,
+        thread_root_message_id = @thread_root_message_id,
+        status = @status,
+        last_active_at = @last_active_at
+    `);
+
+    this.stmtGet = this.db.prepare('SELECT * FROM sessions WHERE key = ?');
+    this.stmtDelete = this.db.prepare('DELETE FROM sessions WHERE key = ?');
+
+    this.stmtDeleteExpired = this.db.prepare(`
+      DELETE FROM sessions
+      WHERE status != 'busy'
+        AND last_active_at < ?
+    `);
+
+    this.stmtUpdateWorkingDir = this.db.prepare(
+      'UPDATE sessions SET working_dir = ?, last_active_at = ? WHERE key = ?',
+    );
+
+    this.stmtUpdateStatus = this.db.prepare(
+      'UPDATE sessions SET status = ?, last_active_at = ? WHERE key = ?',
+    );
+
+    this.stmtUpdateConversationId = this.db.prepare(
+      'UPDATE sessions SET conversation_id = ?, last_active_at = ? WHERE key = ?',
+    );
+
+    this.stmtUpdateThread = this.db.prepare(
+      'UPDATE sessions SET thread_id = ?, thread_root_message_id = ?, last_active_at = ? WHERE key = ?',
+    );
+
+    this.stmtUpdateLastActive = this.db.prepare(
+      'UPDATE sessions SET last_active_at = ? WHERE key = ?',
+    );
+
+    this.stmtResetBusy = this.db.prepare(
+      "UPDATE sessions SET status = 'idle' WHERE status = 'busy'",
+    );
+
+    logger.info({ dbPath }, 'Session database initialized');
+  }
+
+  upsert(key: string, session: Session): void {
+    this.stmtUpsert.run({
+      key,
+      chat_id: session.chatId,
+      user_id: session.userId,
+      working_dir: session.workingDir,
+      conversation_id: session.conversationId ?? null,
+      thread_id: session.threadId ?? null,
+      thread_root_message_id: session.threadRootMessageId ?? null,
+      status: session.status,
+      created_at: session.createdAt.toISOString(),
+      last_active_at: session.lastActiveAt.toISOString(),
+    });
+  }
+
+  get(key: string): Session | undefined {
+    const row = this.stmtGet.get(key) as SessionRow | undefined;
+    if (!row) return undefined;
+    return this.rowToSession(row);
+  }
+
+  delete(key: string): void {
+    this.stmtDelete.run(key);
+  }
+
+  deleteExpired(maxIdleMs: number): number {
+    const cutoff = new Date(Date.now() - maxIdleMs).toISOString();
+    const result = this.stmtDeleteExpired.run(cutoff);
+    return result.changes;
+  }
+
+  updateWorkingDir(key: string, dir: string): void {
+    this.stmtUpdateWorkingDir.run(dir, new Date().toISOString(), key);
+  }
+
+  updateStatus(key: string, status: SessionStatus): void {
+    this.stmtUpdateStatus.run(status, new Date().toISOString(), key);
+  }
+
+  updateConversationId(key: string, conversationId: string): void {
+    this.stmtUpdateConversationId.run(conversationId, new Date().toISOString(), key);
+  }
+
+  updateThread(key: string, threadId: string, rootMessageId: string): void {
+    this.stmtUpdateThread.run(threadId, rootMessageId, new Date().toISOString(), key);
+  }
+
+  updateLastActive(key: string): void {
+    this.stmtUpdateLastActive.run(new Date().toISOString(), key);
+  }
+
+  resetBusySessions(): number {
+    const result = this.stmtResetBusy.run();
+    if (result.changes > 0) {
+      logger.info({ count: result.changes }, 'Reset stale busy sessions to idle');
+    }
+    return result.changes;
+  }
+
+  close(): void {
+    this.db.close();
+    logger.info('Session database closed');
+  }
+
+  private rowToSession(row: SessionRow): Session {
+    return {
+      chatId: row.chat_id,
+      userId: row.user_id,
+      workingDir: row.working_dir,
+      conversationId: row.conversation_id ?? undefined,
+      threadId: row.thread_id ?? undefined,
+      threadRootMessageId: row.thread_root_message_id ?? undefined,
+      status: row.status as SessionStatus,
+      createdAt: new Date(row.created_at),
+      lastActiveAt: new Date(row.last_active_at),
+    };
+  }
+}

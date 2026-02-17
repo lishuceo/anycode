@@ -25,6 +25,7 @@
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.42",
     "@larksuiteoapi/node-sdk": "^1.40.0",
+    "better-sqlite3": "^12.6.2",
     "dotenv": "^16.4.0",
     "express": "^4.21.0",
     "pino": "^9.6.0",
@@ -32,9 +33,10 @@
     "zod": "^4.3.6"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
     "@types/express": "^5.0.0",
     "@types/node": "^22.0.0",
-    "tsx": "^4.19.0",
+    "tsx": "^4.21.0",
     "typescript": "^5.7.0"
   }
 }

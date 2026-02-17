@@ -27,6 +27,11 @@ export const config = {
     timeoutSeconds: parseInt(process.env.CLAUDE_TIMEOUT || '300', 10),
   },
 
+  // 数据库配置
+  db: {
+    sessionDbPath: process.env.SESSION_DB_PATH || './data/sessions.db',
+  },
+
   // 服务配置
   server: {
     port: parseInt(process.env.PORT || '3000', 10),
