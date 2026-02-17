@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync, realpathSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { basename, resolve } from 'node:path';
 import { config } from '../config.js';
@@ -81,9 +81,10 @@ export function setupWorkspace(options: SetupWorkspaceOptions): SetupWorkspaceRe
     if (!existsSync(resolved)) {
       throw new Error(`本地路径不存在: ${localPath}`);
     }
-    // 安全校验：localPath 必须在允许的基目录下
-    const allowedBase = resolve(config.claude.defaultWorkDir);
-    if (!resolved.startsWith(allowedBase + '/') && resolved !== allowedBase) {
+    // 安全校验：localPath 必须在允许的基目录下（用 realpathSync 跟踪 symlink）
+    const realResolved = realpathSync(resolved);
+    const allowedBase = realpathSync(resolve(config.claude.defaultWorkDir));
+    if (!realResolved.startsWith(allowedBase + '/') && realResolved !== allowedBase) {
       throw new Error(`本地路径不在允许的目录范围内: ${localPath} (允许: ${allowedBase})`);
     }
   }
@@ -98,7 +99,7 @@ export function setupWorkspace(options: SetupWorkspaceOptions): SetupWorkspaceRe
   let cloneSource: string;
   if (repoUrl) {
     cloneSource = ensureBareCache(repoUrl);
-    logger.info({ repoUrl, cachePath: cloneSource }, 'Using bare cache as clone source');
+    logger.info({ repoUrl: sanitizeRepoUrl(repoUrl), cachePath: cloneSource }, 'Using bare cache as clone source');
   } else {
     cloneSource = source;
   }

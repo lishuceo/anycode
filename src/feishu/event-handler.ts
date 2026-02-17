@@ -210,11 +210,24 @@ async function handleSlashCommand(
   // /project <path> - 切换工作目录
   if (trimmed.startsWith('/project ')) {
     const dir = trimmed.slice('/project '.length).trim();
-    // 安全校验：路径必须在允许的基目录下
+    // 安全校验：路径必须在允许的基目录下（用 realpathSync 跟踪 symlink）
     const { resolve } = await import('node:path');
+    const { existsSync, realpathSync } = await import('node:fs');
     const resolved = resolve(dir);
-    const allowedBase = resolve(config.claude.defaultWorkDir);
-    if (!resolved.startsWith(allowedBase + '/') && resolved !== allowedBase) {
+    if (!existsSync(resolved)) {
+      const reply = `⚠️ 路径不存在: ${dir}`;
+      if (threadRootMsgId) {
+        await feishuClient.replyTextInThread(threadRootMsgId, reply);
+      } else {
+        await feishuClient.replyText(messageId, reply);
+      }
+      return true;
+    }
+    const realResolved = realpathSync(resolved);
+    const allowedBase = existsSync(resolve(config.claude.defaultWorkDir))
+      ? realpathSync(resolve(config.claude.defaultWorkDir))
+      : resolve(config.claude.defaultWorkDir);
+    if (!realResolved.startsWith(allowedBase + '/') && realResolved !== allowedBase) {
       const reply = `⚠️ 路径不在允许的目录范围内 (允许: ${allowedBase})`;
       if (threadRootMsgId) {
         await feishuClient.replyTextInThread(threadRootMsgId, reply);
@@ -461,6 +474,18 @@ async function executeClaudeTask(
       const currentSession = sessionManager.get(chatId, userId);
       if (!currentSession || currentSession.status !== 'busy') {
         logger.info({ chatId, userId }, 'Restart cancelled: session no longer busy');
+        return;
+      }
+
+      // 验证新工作目录确实存在
+      const { existsSync: dirExists } = await import('node:fs');
+      if (!dirExists(result.newWorkingDir)) {
+        logger.error({ newWorkingDir: result.newWorkingDir }, 'Restart cancelled: newWorkingDir does not exist');
+        await sendResultCard(
+          prompt, { ...result, success: false, output: '', error: '工作区准备失败，目录不存在' },
+          result.durationMs, result.costUsd,
+          progressMsgId, threadRootMsgId, chatId,
+        );
         return;
       }
 

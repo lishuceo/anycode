@@ -135,7 +135,7 @@ function cloneBareAtomic(repoUrl: string, cachePath: string): void {
     mkdirSync(parentDir, { recursive: true });
   }
 
-  logger.info({ repoUrl, cachePath }, 'Creating bare clone cache');
+  logger.info({ repoUrl: sanitizeRepoUrl(repoUrl), cachePath }, 'Creating bare clone cache');
 
   try {
     execFileSync('git', [

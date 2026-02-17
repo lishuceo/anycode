@@ -8,6 +8,7 @@ vi.mock('node:child_process', () => ({
 vi.mock('node:fs', () => ({
   existsSync: vi.fn(),
   mkdirSync: vi.fn(),
+  realpathSync: vi.fn((p: string) => p),
 }));
 
 vi.mock('node:crypto', () => ({
