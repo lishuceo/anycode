@@ -1,6 +1,6 @@
 ---
-name: review
-description: Multi-agent code review for uncommitted changes, latest commit, or a pull request
+name: deep-review
+description: Multi-agent parallel code review (security + logic + architecture) for local changes or a PR
 argument-hint: "[PR number, PR URL, or empty for local changes]"
 ---
 
