@@ -186,6 +186,7 @@ async function handleSlashCommand(
   // /project <path> - 切换工作目录
   if (trimmed.startsWith('/project ')) {
     const dir = trimmed.slice('/project '.length).trim();
+    sessionManager.getOrCreate(chatId, userId);
     sessionManager.setWorkingDir(chatId, userId, dir);
     const reply = `📂 工作目录已切换到: ${dir}`;
     if (threadRootMsgId) {
