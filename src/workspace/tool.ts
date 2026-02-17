@@ -9,26 +9,23 @@ import { logger } from '../utils/logger.js';
 // 通过 createSdkMcpServer 定义 setup_workspace 工具，
 // Claude Code 在检测到用户需要修改代码时自动调用。
 // 工具执行 git clone + 创建分支，并通过回调更新 session.workingDir。
+//
+// 每次 query 创建独立的 MCP 服务器实例，将 session 回调
+// 通过闭包绑定，避免全局可变状态的并发竞态问题。
 // ============================================================
 
 /** session 更新回调类型 */
-type SessionUpdater = (newWorkingDir: string) => void;
-
-/** 当前活跃的 session 更新回调 (由 executor 在执行前设置) */
-let currentSessionUpdater: SessionUpdater | null = null;
-
-/**
- * 设置 session 更新回调
- * 由 executor 在每次 query 执行前调用
- */
-export function setSessionUpdater(updater: SessionUpdater | null): void {
-  currentSessionUpdater = updater;
-}
+export type SessionUpdater = (newWorkingDir: string) => void;
 
 /**
  * 创建工作区管理 MCP 服务器
+ *
+ * 每次 query 调用时创建新实例，通过闭包绑定当前 session 的回调，
+ * 确保多 chat 并发执行时互不干扰。
+ *
+ * @param onWorkspaceChanged  工作区变更后的回调（更新 session.workingDir）
  */
-export function createWorkspaceMcpServer() {
+export function createWorkspaceMcpServer(onWorkspaceChanged?: SessionUpdater) {
   return createSdkMcpServer({
     name: 'workspace-manager',
     version: '1.0.0',
@@ -60,9 +57,9 @@ export function createWorkspaceMcpServer() {
               featureBranch: args.feature_branch,
             });
 
-            // 通过回调更新 session 的 workingDir
-            if (currentSessionUpdater) {
-              currentSessionUpdater(result.workspacePath);
+            // 通过闭包绑定的回调更新 session 的 workingDir
+            if (onWorkspaceChanged) {
+              onWorkspaceChanged(result.workspacePath);
               logger.info(
                 { workspacePath: result.workspacePath },
                 'Session workingDir updated via MCP tool',
@@ -104,7 +101,6 @@ export function createWorkspaceMcpServer() {
         },
         {
           annotations: {
-            title: '创建隔离工作区',
             readOnlyHint: false,
             destructiveHint: false,
             openWorldHint: true,

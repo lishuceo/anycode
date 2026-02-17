@@ -1,4 +1,4 @@
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { basename, resolve } from 'node:path';
@@ -75,37 +75,33 @@ export function setupWorkspace(options: SetupWorkspaceOptions): SetupWorkspaceRe
     return { workspacePath, branch, repoName, reused: true };
   }
 
-  // git clone
-  const cloneArgs: string[] = ['git', 'clone'];
+  // git clone (使用 execFileSync 避免 shell 注入)
+  const cloneArgs: string[] = ['clone'];
   if (sourceBranch) {
     cloneArgs.push('--branch', sourceBranch);
   }
   cloneArgs.push(source, workspacePath);
 
-  const cloneCmd = cloneArgs.join(' ');
-  logger.info({ cmd: cloneCmd }, 'Cloning repository');
+  logger.info({ args: ['git', ...cloneArgs] }, 'Cloning repository');
 
   try {
-    execSync(cloneCmd, {
+    execFileSync('git', cloneArgs, {
       timeout: 120_000,
       stdio: ['ignore', 'pipe', 'pipe'],
-      encoding: 'utf-8',
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     throw new Error(`git clone 失败: ${msg}`);
   }
 
-  // 创建 feature 分支
-  const checkoutCmd = `git checkout -b ${branch}`;
-  logger.info({ cmd: checkoutCmd, cwd: workspacePath }, 'Creating feature branch');
+  // 创建 feature 分支 (使用 execFileSync 避免 shell 注入)
+  logger.info({ branch, cwd: workspacePath }, 'Creating feature branch');
 
   try {
-    execSync(checkoutCmd, {
+    execFileSync('git', ['checkout', '-b', branch], {
       cwd: workspacePath,
       timeout: 10_000,
       stdio: ['ignore', 'pipe', 'pipe'],
-      encoding: 'utf-8',
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

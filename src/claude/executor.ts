@@ -3,7 +3,7 @@ import type { Query, SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import { mkdirSync, existsSync } from 'node:fs';
 import { config } from '../config.js';
 import { logger } from '../utils/logger.js';
-import { createWorkspaceMcpServer, setSessionUpdater } from '../workspace/tool.js';
+import { createWorkspaceMcpServer } from '../workspace/tool.js';
 import type { ClaudeResult, ProgressCallback } from './types.js';
 
 // ============================================================
@@ -13,9 +13,6 @@ import type { ClaudeResult, ProgressCallback } from './types.js';
 // 每次调用 query() 会 spawn 一个 Claude Code 子进程
 // SDK 会自动管理工具执行、权限、流式输出等
 // ============================================================
-
-/** 模块级 MCP 服务器单例 */
-const workspaceMcpServer = createWorkspaceMcpServer();
 
 /** 工作区管理系统提示词 */
 const WORKSPACE_SYSTEM_PROMPT = `你正在通过飞书消息与用户交互。请保持回复简洁，适合在聊天消息中阅读。
@@ -75,8 +72,9 @@ export class ClaudeExecutor {
       'Executing Claude Agent SDK query',
     );
 
-    // 设置 session updater 回调，MCP 工具 clone 后会调用
-    setSessionUpdater(onWorkspaceChanged ?? null);
+    // 每次 query 创建独立的 MCP 服务器实例，通过闭包绑定当前 session 的回调
+    // 确保多 chat 并发执行时互不干扰
+    const workspaceMcpServer = createWorkspaceMcpServer(onWorkspaceChanged);
 
     // 构建 SDK query
     const q = query({
@@ -171,7 +169,7 @@ export class ClaudeExecutor {
       }
     } catch (err) {
       this.runningQueries.delete(sessionKey);
-      setSessionUpdater(null);
+
 
       const durationMs = Date.now() - startTime;
       const errorMsg = err instanceof Error ? err.message : String(err);
@@ -187,7 +185,6 @@ export class ClaudeExecutor {
     }
 
     this.runningQueries.delete(sessionKey);
-    setSessionUpdater(null);
     const durationMs = Date.now() - startTime;
 
     // 解析结果消息
