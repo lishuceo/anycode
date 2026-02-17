@@ -210,6 +210,19 @@ async function handleSlashCommand(
   // /project <path> - 切换工作目录
   if (trimmed.startsWith('/project ')) {
     const dir = trimmed.slice('/project '.length).trim();
+    // 安全校验：路径必须在允许的基目录下
+    const { resolve } = await import('node:path');
+    const resolved = resolve(dir);
+    const allowedBase = resolve(config.claude.defaultWorkDir);
+    if (!resolved.startsWith(allowedBase + '/') && resolved !== allowedBase) {
+      const reply = `⚠️ 路径不在允许的目录范围内 (允许: ${allowedBase})`;
+      if (threadRootMsgId) {
+        await feishuClient.replyTextInThread(threadRootMsgId, reply);
+      } else {
+        await feishuClient.replyText(messageId, reply);
+      }
+      return true;
+    }
     sessionManager.getOrCreate(chatId, userId);
     sessionManager.setWorkingDir(chatId, userId, dir);
     const reply = `📂 工作目录已切换到: ${dir}`;
@@ -502,7 +515,12 @@ async function executeClaudeTask(
     );
   } catch (err) {
     logger.error({ err }, 'Error executing Claude Agent SDK query');
-    await feishuClient.replyText(messageId, `❌ 执行出错: ${(err as Error).message}`);
+    const errorReply = `❌ 执行出错: ${(err as Error).message}`;
+    if (threadRootMsgId) {
+      await feishuClient.replyTextInThread(threadRootMsgId, errorReply);
+    } else {
+      await feishuClient.replyText(messageId, errorReply);
+    }
   } finally {
     try {
       sessionManager.setStatus(chatId, userId, 'idle');

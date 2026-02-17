@@ -5,7 +5,7 @@ import { basename, resolve } from 'node:path';
 import { config } from '../config.js';
 import { logger } from '../utils/logger.js';
 import { ensureBareCache, sanitizeRepoUrl } from './cache.js';
-import { GIT_LOCAL_SECURITY_ARGS, GIT_REMOTE_SECURITY_ARGS } from './git-security.js';
+import { GIT_LOCAL_SECURITY_ARGS } from './git-security.js';
 
 // ============================================================
 // 工作区管理器
@@ -115,12 +115,11 @@ export function setupWorkspace(options: SetupWorkspaceOptions): SetupWorkspaceRe
     logger.info({ baseDir: config.workspace.baseDir }, 'Created workspace base directory');
   }
 
-  // git clone: 从 bare cache (本地路径) 用 LOCAL 参数，从远程/localPath 直接 clone 用 REMOTE 参数
-  // repoUrl 存在时 cloneSource 是 bare cache 本地路径，需要 file 协议
-  const securityArgs = repoUrl ? GIT_LOCAL_SECURITY_ARGS : GIT_REMOTE_SECURITY_ARGS;
+  // git clone: manager.ts 的 clone 源总是本地路径（bare cache 或 localPath），
+  // 远程 clone 由 cache.ts 的 cloneBareAtomic 负责（使用 GIT_REMOTE_SECURITY_ARGS）
   const cloneArgs: string[] = [
     'clone',
-    ...securityArgs,
+    ...GIT_LOCAL_SECURITY_ARGS,
   ];
   if (sourceBranch) {
     cloneArgs.push('--branch', sourceBranch);

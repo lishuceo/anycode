@@ -175,10 +175,8 @@ function fetchIfStale(cachePath: string): void {
   try {
     execFileSync('git', [
       '-C', cachePath,
-      '-c', 'core.hooksPath=/dev/null',
+      ...GIT_REMOTE_SECURITY_ARGS,
       'fetch', '--all',
-      '--no-recurse-submodules',
-      '-c', 'protocol.file.allow=never',
     ], {
       timeout: 120_000,
       stdio: ['ignore', 'pipe', 'pipe'],
