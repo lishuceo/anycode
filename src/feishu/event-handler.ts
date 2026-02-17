@@ -237,8 +237,8 @@ async function handleSlashCommand(
       return true;
     }
     sessionManager.getOrCreate(chatId, userId);
-    sessionManager.setWorkingDir(chatId, userId, dir);
-    const reply = `📂 工作目录已切换到: ${dir}`;
+    sessionManager.setWorkingDir(chatId, userId, realResolved);
+    const reply = `📂 工作目录已切换到: ${realResolved}`;
     if (threadRootMsgId) {
       await feishuClient.replyTextInThread(threadRootMsgId, reply);
     } else {

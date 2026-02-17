@@ -5,7 +5,7 @@ import { basename, resolve } from 'node:path';
 import { config } from '../config.js';
 import { logger } from '../utils/logger.js';
 import { ensureBareCache, sanitizeRepoUrl } from './cache.js';
-import { GIT_LOCAL_SECURITY_ARGS } from './git-security.js';
+import { GIT_LOCAL_CLONE_ARGS } from './git-security.js';
 
 // ============================================================
 // 工作区管理器
@@ -83,7 +83,8 @@ export function setupWorkspace(options: SetupWorkspaceOptions): SetupWorkspaceRe
     }
     // 安全校验：localPath 必须在允许的基目录下（用 realpathSync 跟踪 symlink）
     const realResolved = realpathSync(resolved);
-    const allowedBase = realpathSync(resolve(config.claude.defaultWorkDir));
+    const resolvedBase = resolve(config.claude.defaultWorkDir);
+    const allowedBase = existsSync(resolvedBase) ? realpathSync(resolvedBase) : resolvedBase;
     if (!realResolved.startsWith(allowedBase + '/') && realResolved !== allowedBase) {
       throw new Error(`本地路径不在允许的目录范围内: ${localPath} (允许: ${allowedBase})`);
     }
@@ -120,7 +121,7 @@ export function setupWorkspace(options: SetupWorkspaceOptions): SetupWorkspaceRe
   // 远程 clone 由 cache.ts 的 cloneBareAtomic 负责（使用 GIT_REMOTE_SECURITY_ARGS）
   const cloneArgs: string[] = [
     'clone',
-    ...GIT_LOCAL_SECURITY_ARGS,
+    ...GIT_LOCAL_CLONE_ARGS,
   ];
   if (sourceBranch) {
     cloneArgs.push('--branch', sourceBranch);

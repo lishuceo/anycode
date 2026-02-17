@@ -4,7 +4,7 @@ import { resolve, join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { config } from '../config.js';
 import { logger } from '../utils/logger.js';
-import { GIT_REMOTE_SECURITY_ARGS } from './git-security.js';
+import { GIT_REMOTE_CLONE_ARGS, GIT_REMOTE_FETCH_ARGS } from './git-security.js';
 
 // ============================================================
 // 仓库缓存管理
@@ -140,7 +140,7 @@ function cloneBareAtomic(repoUrl: string, cachePath: string): void {
   try {
     execFileSync('git', [
       'clone', '--bare',
-      ...GIT_REMOTE_SECURITY_ARGS,
+      ...GIT_REMOTE_CLONE_ARGS,
       repoUrl, tmpPath,
     ], {
       timeout: 300_000, // 5 min for large repos
@@ -175,7 +175,7 @@ function fetchIfStale(cachePath: string): void {
   try {
     execFileSync('git', [
       '-C', cachePath,
-      ...GIT_REMOTE_SECURITY_ARGS,
+      ...GIT_REMOTE_FETCH_ARGS,
       'fetch', '--all',
     ], {
       timeout: 120_000,
