@@ -35,12 +35,14 @@ function main(): void {
   process.on('SIGINT', () => {
     logger.info('Received SIGINT, shutting down...');
     claudeExecutor.killAll();
+    sessionManager.close();
     process.exit(0);
   });
 
   process.on('SIGTERM', () => {
     logger.info('Received SIGTERM, shutting down...');
     claudeExecutor.killAll();
+    sessionManager.close();
     process.exit(0);
   });
 }
