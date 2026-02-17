@@ -18,6 +18,7 @@ export class TaskQueue {
     userId: string,
     message: string,
     messageId: string,
+    rootId?: string,
   ): Promise<string> {
     return new Promise((resolve, reject) => {
       const task: QueueTask = {
@@ -26,6 +27,7 @@ export class TaskQueue {
         userId,
         message,
         messageId,
+        rootId,
         resolve,
         reject,
         createdAt: new Date(),

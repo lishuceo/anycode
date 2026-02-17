@@ -33,26 +33,28 @@ export function createWorkspaceMcpServer(onWorkspaceChanged?: SessionUpdater) {
       tool(
         'setup_workspace',
         [
-          '为代码修改任务创建隔离工作区。',
-          '将远程仓库 URL 或本地仓库路径 clone 到独立目录，并创建 feature 分支。',
+          '为代码任务创建隔离工作区。',
+          '将远程仓库 URL 或本地仓库路径 clone 到独立目录。',
+          '远程仓库会使用本地缓存加速 clone。',
           'clone 完成后会自动切换工作目录到新的工作区。',
           '',
-          '使用场景:',
-          '- 用户提供 GitHub/GitLab 等远程仓库 URL 需要修改代码时',
-          '- 用户指定本地仓库路径需要在隔离环境中修改时',
-          '- 需要确保修改不影响原始仓库时',
+          '模式选择:',
+          '- mode="readonly": 只读分析代码，不创建 feature 分支',
+          '- mode="writable": 修改代码，创建隔离工作区和 feature 分支',
         ].join('\n'),
         {
           repo_url: z.string().optional().describe('远程仓库 URL (如 https://github.com/user/repo)'),
           local_path: z.string().optional().describe('本地仓库绝对路径'),
+          mode: z.enum(['readonly', 'writable']).describe('访问模式: readonly 只读分析, writable 修改代码'),
           source_branch: z.string().optional().describe('源分支名 (默认使用仓库默认分支)'),
-          feature_branch: z.string().optional().describe('自定义 feature 分支名 (默认自动生成)'),
+          feature_branch: z.string().optional().describe('自定义 feature 分支名 (默认自动生成, 仅 writable 模式)'),
         },
         async (args) => {
           try {
             const result = setupWorkspace({
               repoUrl: args.repo_url,
               localPath: args.local_path,
+              mode: args.mode,
               sourceBranch: args.source_branch,
               featureBranch: args.feature_branch,
             });

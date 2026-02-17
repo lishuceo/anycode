@@ -50,3 +50,4 @@ argument-hint: "[commit message or description of changes]"
 - **绝不**提交 `.env`、credentials 等敏感文件
 - 如果没有任何变更，告知用户而不是创建空提交
 - 每一步都展示结果，出错时停下来说明原因
+- PR 创建成功后，提示用户：可以运行 `/pr-fixup` 自动等待 review 并修复问题
