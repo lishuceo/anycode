@@ -473,11 +473,28 @@ Feishu WebSocket connected
 #### 使用 PM2 守护进程
 
 ```bash
+# 安装 PM2
 npm install -g pm2
+
+# 构建并启动
 npm run build
-pm2 start dist/index.js --name feishu-claude
+pm2 start npm --name "feishu-claude" -- start
+
+# 持久化：保存进程列表 + 开机自启
 pm2 save
-pm2 startup  # 设置开机自启
+pm2 startup    # 按提示执行输出的命令
+```
+
+#### PM2 常用命令
+
+```bash
+pm2 status                    # 查看所有进程状态
+pm2 logs feishu-claude        # 查看实时日志 (Ctrl+C 退出)
+pm2 logs feishu-claude --lines 50  # 查看最近 50 行日志
+pm2 restart feishu-claude     # 重启服务
+pm2 stop feishu-claude        # 停止服务
+pm2 delete feishu-claude      # 删除进程（从 PM2 列表移除）
+pm2 monit                     # 终端监控面板（CPU/内存）
 ```
 
 ---
