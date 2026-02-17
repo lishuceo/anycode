@@ -1,0 +1,66 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Project Overview
+
+Feishu Claude Code Bridge — a TypeScript/Node.js server that bridges Feishu (Lark) messaging with Anthropic's Claude Code via the Agent SDK. Users send messages in Feishu chats, and the server executes Claude Code queries against a working directory on the host machine.
+
+## Commands
+
+```bash
+npm run dev          # Start dev server with auto-reload (tsx watch)
+npm run build        # Compile TypeScript to dist/
+npm start            # Run compiled JS from dist/
+npm run typecheck    # Type-check without emitting
+npm run lint         # ESLint on src/
+```
+
+No test framework is configured.
+
+## Architecture
+
+### Event Flow
+
+```
+Feishu User → Feishu Platform → Bridge Server → Claude Agent SDK → Claude Code subprocess
+                                     ↑
+                              Progress cards + result cards sent back to Feishu
+```
+
+### Key Modules
+
+- **`src/index.ts`** — Entry point: validates config, starts server, sets up 30-min cleanup interval and graceful shutdown (SIGINT/SIGTERM).
+- **`src/server.ts`** — Express server with dual event mode: WebSocket (default, no public IP needed) or HTTP webhook.
+- **`src/feishu/client.ts`** — Feishu API wrapper using `@larksuiteoapi/node-sdk` for sending/updating messages and cards.
+- **`src/feishu/event-handler.ts`** — EventDispatcher handlers for incoming messages and card actions. Orchestrates the full flow: parse message → check allowlist → get/create session → enqueue task → execute → send result.
+- **`src/feishu/message-builder.ts`** — Constructs interactive Feishu card messages for progress and results.
+- **`src/claude/executor.ts`** — Wraps `@anthropic-ai/claude-agent-sdk` `query()`. Streams SDKMessage async generator, extracts output text, tracks cost/duration. Supports session resumption via `resumeSessionId`. Uses `permissionMode: 'bypassPermissions'` (security delegated to Feishu layer). Budget: $5/query, max 50 turns.
+- **`src/session/manager.ts`** — In-memory session store keyed by `chatId:userId`. Maps each chat to a working directory. Auto-cleans sessions idle >2 hours.
+- **`src/session/queue.ts`** — Per-chat FIFO task queue ensuring one Claude query runs at a time per chat.
+- **`src/utils/security.ts`** — User allowlist check and dangerous command regex detection (`rm -rf /`, `mkfs`, `dd if=`, etc.).
+- **`src/utils/logger.ts`** — Pino logger singleton.
+
+### Key Patterns
+
+- **ESM throughout** — `"type": "module"` in package.json, ES2022 target, `.js` extensions in imports.
+- **Singleton instances** — `sessionManager`, `claudeExecutor`, `taskQueue`, `feishuClient`, `logger` are module-level singletons.
+- **Two-phase messaging** — Send a progress card first, then update it with the final result card.
+- **Session isolation** — Each Feishu chat gets its own working directory and serialized task queue.
+
+## Configuration
+
+Environment variables loaded via dotenv (see `.env.example`):
+
+- **Required**: `FEISHU_APP_ID`, `FEISHU_APP_SECRET`
+- **Claude**: `ANTHROPIC_API_KEY`, `DEFAULT_WORK_DIR` (default: `/home/ubuntu/projects`), `CLAUDE_TIMEOUT` (default: 300s)
+- **Event mode**: `FEISHU_EVENT_MODE` (`websocket` | `webhook`), `FEISHU_ENCRYPT_KEY`, `FEISHU_VERIFY_TOKEN` (webhook only)
+- **Security**: `ALLOWED_USER_IDS` (comma-separated, empty = allow all)
+- **Server**: `PORT` (default: 3000), `NODE_ENV`, `LOG_LEVEL`
+
+## Tech Stack
+
+- TypeScript 5.7, Node.js 18+, Express 4
+- `@anthropic-ai/claude-agent-sdk` for Claude Code execution
+- `@larksuiteoapi/node-sdk` for Feishu API + WebSocket events
+- Pino for structured logging, Zod available for validation
