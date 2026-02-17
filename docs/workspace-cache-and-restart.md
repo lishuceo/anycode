@@ -201,9 +201,8 @@ executeClaudeTask(prompt, workingDir)
   │
   ▼
 query() 启动，cwd = 当前 workingDir
-  │    maxTurns = 5, maxBudgetUsd = 0.5 (workspace setup 专用限制)
-  │    注：如 Claude 判断不需要 setup_workspace，在此限制内正常执行完毕也可；
-  │        但若 output 为空或任务明显未完成，不触发 restart 也不重新执行
+  │    使用默认 maxTurns / maxBudgetUsd（不限制第一次 query，
+  │    确保不需要 setup_workspace 时也能完整执行任务）
   │
   ├─ Claude 判断不需要切换仓库 → 正常执行 → 返回结果
   │
@@ -301,7 +300,6 @@ const mcpServers = options?.disableWorkspaceTool
 const result = await claudeExecutor.execute(
   sessionKey, prompt, session.workingDir, session.conversationId,
   onProgress, onWorkspaceChanged,
-  { maxTurns: 5, maxBudgetUsd: 0.5 },  // workspace setup 阶段的限制
 );
 
 if (result.needsRestart && result.newWorkingDir) {
@@ -418,7 +416,7 @@ WORKSPACE_ROOT_DIR=/workspaces           # 工作区根目录 (现有 DEFAULT_WO
 
 ### 重启带来的额外耗时
 
-restart 意味着两次 query 调用。第一次 query 通过 `maxTurns: 5` 和 `maxBudgetUsd: 0.5` 限制开销，确保快速结束。进度卡片分阶段更新（"配置工作区..." → "加载项目配置..." → "执行任务..."），让用户了解进展。
+restart 意味着两次 query 调用。第一次 query 使用默认的 turns/budget 限制（不人为降低），如果 Claude 不需要 setup_workspace 则在第一次 query 中完整执行任务，不会触发 restart。system prompt 引导 Claude 在调用 setup_workspace 后尽快结束，使 restart 额外开销可控。进度卡片分阶段更新（"正在加载项目配置..." → 最终结果），让用户了解进展。
 
 ### 缓存一致性
 
