@@ -93,12 +93,30 @@ export class SessionManager {
   }
 
   /**
-   * 清理过期会话 (超过 24 小时不活跃)
+   * 保存会话摘要（独立于 sessions 表，不受 cleanup 影响）
+   */
+  saveSummary(chatId: string, userId: string, workingDir: string, summary: string): void {
+    this.db.insertSummary(chatId, userId, workingDir, summary);
+  }
+
+  /**
+   * 获取最近 N 条会话摘要（时间正序：旧 → 新）
+   */
+  getRecentSummaries(chatId: string, userId: string, limit: number = 5): string[] {
+    return this.db.getRecentSummaries(chatId, userId, limit);
+  }
+
+  /**
+   * 清理过期会话 (超过 24 小时不活跃) 和旧摘要 (超过 30 天)
    */
   cleanup(maxIdleMs: number = 24 * 60 * 60 * 1000): number {
     const cleaned = this.db.deleteExpired(maxIdleMs);
     if (cleaned > 0) {
       logger.info({ cleaned }, 'Cleaned up idle sessions');
+    }
+    const oldSummaries = this.db.cleanOldSummaries();
+    if (oldSummaries > 0) {
+      logger.info({ oldSummaries }, 'Cleaned up old session summaries');
     }
     return cleaned;
   }
