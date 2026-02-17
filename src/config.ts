@@ -27,6 +27,14 @@ export const config = {
     timeoutSeconds: parseInt(process.env.CLAUDE_TIMEOUT || '300', 10),
   },
 
+  // 工作区配置
+  workspace: {
+    baseDir:
+      process.env.WORKSPACE_BASE_DIR ||
+      `${process.env.DEFAULT_WORK_DIR || '/home/ubuntu/projects'}/anywhere-code-work-dir`,
+    branchPrefix: process.env.WORKSPACE_BRANCH_PREFIX || 'feat/claude-session',
+  },
+
   // 数据库配置
   db: {
     sessionDbPath: process.env.SESSION_DB_PATH || './data/sessions.db',

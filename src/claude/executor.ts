@@ -3,6 +3,7 @@ import type { Query, SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import { mkdirSync, existsSync } from 'node:fs';
 import { config } from '../config.js';
 import { logger } from '../utils/logger.js';
+import { createWorkspaceMcpServer } from '../workspace/tool.js';
 import type { ClaudeResult, ProgressCallback } from './types.js';
 
 // ============================================================
@@ -12,6 +13,28 @@ import type { ClaudeResult, ProgressCallback } from './types.js';
 // 每次调用 query() 会 spawn 一个 Claude Code 子进程
 // SDK 会自动管理工具执行、权限、流式输出等
 // ============================================================
+
+/** 工作区管理系统提示词 */
+const WORKSPACE_SYSTEM_PROMPT = `你正在通过飞书消息与用户交互。请保持回复简洁，适合在聊天消息中阅读。
+
+## 工作区管理
+
+你有一个 setup_workspace 工具可用，用于为代码修改任务创建隔离工作区。
+
+**何时使用 setup_workspace:**
+- 当用户提供了 GitHub/GitLab 等远程仓库 URL，需要 clone 并修改代码时
+- 当用户指定了本地仓库路径，需要在隔离环境中修改代码时（避免影响原始仓库）
+- 当用户的请求涉及对某个仓库的代码修改，且当前工作目录不是该仓库时
+
+**如何使用:**
+- 远程仓库: 使用 repo_url 参数传入仓库 URL
+- 本地仓库: 使用 local_path 参数传入仓库绝对路径
+- 可选指定 source_branch (源分支) 和 feature_branch (自定义分支名)
+
+**无需使用的场景:**
+- 用户只是询问问题、不涉及代码修改
+- 当前工作目录已经是目标仓库
+- 用户明确表示要在当前目录操作`;
 
 export class ClaudeExecutor {
   /** 运行中的 query 实例 (用于 abort) */
@@ -25,6 +48,7 @@ export class ClaudeExecutor {
    * @param workingDir  工作目录
    * @param resumeSessionId  可选：恢复之前的会话
    * @param onProgress  进度回调
+   * @param onWorkspaceChanged  工作区变更回调 (MCP 工具 clone 后更新 session)
    */
   async execute(
     sessionKey: string,
@@ -32,6 +56,7 @@ export class ClaudeExecutor {
     workingDir: string,
     resumeSessionId?: string,
     onProgress?: ProgressCallback,
+    onWorkspaceChanged?: (newDir: string) => void,
   ): Promise<ClaudeResult> {
     const startTime = Date.now();
     const abortController = new AbortController();
@@ -46,6 +71,10 @@ export class ClaudeExecutor {
       { sessionKey, workingDir, promptLength: prompt.length, resume: !!resumeSessionId },
       'Executing Claude Agent SDK query',
     );
+
+    // 每次 query 创建独立的 MCP 服务器实例，通过闭包绑定当前 session 的回调
+    // 确保多 chat 并发执行时互不干扰
+    const workspaceMcpServer = createWorkspaceMcpServer(onWorkspaceChanged);
 
     // 构建 SDK query
     const q = query({
@@ -77,15 +106,20 @@ export class ClaudeExecutor {
         // 会话续接
         ...(resumeSessionId ? { resume: resumeSessionId } : {}),
 
-        // 系统提示词：使用 Claude Code 默认 + 飞书场景附加
+        // 系统提示词：使用 Claude Code 默认 + 飞书场景附加 + 工作区管理指引
         systemPrompt: {
           type: 'preset',
           preset: 'claude_code',
-          append: '你正在通过飞书消息与用户交互。请保持回复简洁，适合在聊天消息中阅读。',
+          append: WORKSPACE_SYSTEM_PROMPT,
         },
 
         // 加载项目设置 (CLAUDE.md 等)
         settingSources: ['project'],
+
+        // MCP 服务器：工作区管理工具
+        mcpServers: {
+          'workspace-manager': workspaceMcpServer,
+        },
       },
     });
 
@@ -135,6 +169,7 @@ export class ClaudeExecutor {
       }
     } catch (err) {
       this.runningQueries.delete(sessionKey);
+
 
       const durationMs = Date.now() - startTime;
       const errorMsg = err instanceof Error ? err.message : String(err);
