@@ -25,6 +25,23 @@ import { parallelReview } from './reviewer.js';
 const MAX_RETRIES = 2;
 
 export class PipelineOrchestrator {
+  private aborted = false;
+  private currentSessionKey?: string;
+
+  /**
+   * 中止管道 — 设置标志，阻止下一阶段启动
+   */
+  abort(): void {
+    this.aborted = true;
+  }
+
+  /**
+   * 获取当前正在执行的 session key（用于外部 kill）
+   */
+  getCurrentSessionKey(): string | undefined {
+    return this.currentSessionKey;
+  }
+
   /**
    * 执行完整管道
    */
@@ -52,6 +69,12 @@ export class PipelineOrchestrator {
     let iterations = 0;
 
     while (state.phase !== 'done' && state.phase !== 'failed') {
+      // 中止检查：用户手动中止
+      if (this.aborted) {
+        state = { ...state, phase: 'failed', failedAtPhase: state.phase, failureReason: '用户手动中止' };
+        break;
+      }
+
       if (++iterations > MAX_ITERATIONS) {
         state = { ...state, phase: 'failed', failedAtPhase: state.phase, failureReason: '管道超过最大迭代次数，可能存在循环' };
         break;
@@ -361,6 +384,7 @@ export class PipelineOrchestrator {
     historySummaries?: string,
     onStreamUpdate?: (text: string) => Promise<void>,
   ): Promise<ClaudeResult> {
+    this.currentSessionKey = sessionKey;
     return claudeExecutor.execute({
       sessionKey,
       prompt,

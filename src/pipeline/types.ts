@@ -12,6 +12,16 @@ export type PipelinePhase =
   | 'done'
   | 'failed';
 
+/** 管道生命周期状态（比 PipelinePhase 更宽泛） */
+export type PipelineStatus =
+  | 'pending_confirm'
+  | 'running'
+  | 'done'
+  | 'failed'
+  | 'aborted'
+  | 'interrupted'
+  | 'cancelled';
+
 /** 阶段元信息（用于卡片展示） */
 export const PHASE_META: Record<PipelinePhase, { label: string; index: number }> = {
   plan:        { label: '方案设计', index: 1 },
