@@ -144,6 +144,7 @@ export function buildPipelineCard(
   elapsedSec: number,
   costUsd?: number,
   detail?: string,
+  pipelineId?: string,
 ): Record<string, unknown> {
 
   const isDone = phase === 'done';
@@ -201,6 +202,43 @@ export function buildPipelineCard(
     });
   }
 
+  // 交互按钮
+  if (pipelineId) {
+    if (!isDone && !isFailed) {
+      // 执行中：添加「中止」按钮
+      elements.push({ tag: 'hr' });
+      elements.push({
+        tag: 'action',
+        actions: [
+          {
+            tag: 'button',
+            text: { tag: 'plain_text', content: '🛑 中止' },
+            type: 'danger',
+            confirm: {
+              title: { tag: 'plain_text', content: '确认中止' },
+              text: { tag: 'plain_text', content: '中止后当前阶段将运行至结束，但不会进入下一阶段。确定要中止吗？' },
+            },
+            value: { action: 'pipeline_abort', pipelineId },
+          },
+        ],
+      });
+    } else if (isFailed) {
+      // 失败：添加「重试」按钮
+      elements.push({ tag: 'hr' });
+      elements.push({
+        tag: 'action',
+        actions: [
+          {
+            tag: 'button',
+            text: { tag: 'plain_text', content: '🔄 重试' },
+            type: 'primary',
+            value: { action: 'pipeline_retry', pipelineId },
+          },
+        ],
+      });
+    }
+  }
+
   elements.push({ tag: 'hr' });
 
   const costStr = costUsd ? ` | 💰 $${costUsd.toFixed(4)}` : '';
@@ -252,6 +290,130 @@ export function buildStatusCard(
           {
             is_short: true,
             text: { tag: 'lark_md', content: `**排队任务:**\n${pendingTasks}` },
+          },
+        ],
+      },
+    ],
+  };
+}
+
+/** 构建管道确认卡片（/dev 命令后等待用户确认） */
+export function buildPipelineConfirmCard(
+  prompt: string,
+  pipelineId: string,
+  workingDir: string,
+): Record<string, unknown> {
+  return {
+    config: { wide_screen_mode: true },
+    header: {
+      title: { tag: 'plain_text', content: '🤖 Claude Code - 自动开发管道' },
+      template: 'blue',
+    },
+    elements: [
+      {
+        tag: 'div',
+        text: {
+          tag: 'lark_md',
+          content: `**任务:** ${escapeMarkdown(truncate(prompt, 300))}`,
+        },
+      },
+      { tag: 'hr' },
+      {
+        tag: 'div',
+        text: {
+          tag: 'lark_md',
+          content: [
+            `**工作目录:** ${workingDir}`,
+            `**预估查询数:** ~9 次 (最多 17 次，含重试)`,
+            `**流程:** 方案设计 → 方案审查 → 代码实现 → 代码审查 → 推送 PR`,
+          ].join('\n'),
+        },
+      },
+      { tag: 'hr' },
+      {
+        tag: 'action',
+        actions: [
+          {
+            tag: 'button',
+            text: { tag: 'plain_text', content: '✅ 确认执行' },
+            type: 'primary',
+            value: { action: 'pipeline_confirm', pipelineId },
+          },
+          {
+            tag: 'button',
+            text: { tag: 'plain_text', content: '❌ 取消' },
+            type: 'default',
+            value: { action: 'pipeline_cancel', pipelineId },
+          },
+        ],
+      },
+    ],
+  };
+}
+
+/** 构建管道已取消卡片 */
+export function buildCancelledCard(prompt: string): Record<string, unknown> {
+  return {
+    config: { wide_screen_mode: true },
+    header: {
+      title: { tag: 'plain_text', content: '🤖 Claude Code - 已取消' },
+      template: 'grey',
+    },
+    elements: [
+      {
+        tag: 'div',
+        text: {
+          tag: 'lark_md',
+          content: `**指令:** ${escapeMarkdown(truncate(prompt, 200))}`,
+        },
+      },
+      { tag: 'hr' },
+      {
+        tag: 'note',
+        elements: [
+          { tag: 'plain_text', content: '❌ 用户已取消' },
+        ],
+      },
+    ],
+  };
+}
+
+/** 构建管道中断卡片（服务重启导致中断） */
+export function buildInterruptedCard(
+  prompt: string,
+  pipelineId: string,
+): Record<string, unknown> {
+  return {
+    config: { wide_screen_mode: true },
+    header: {
+      title: { tag: 'plain_text', content: '🤖 Claude Code - 管道中断' },
+      template: 'orange',
+    },
+    elements: [
+      {
+        tag: 'div',
+        text: {
+          tag: 'lark_md',
+          content: `**指令:** ${escapeMarkdown(truncate(prompt, 200))}`,
+        },
+      },
+      { tag: 'hr' },
+      {
+        tag: 'div',
+        text: {
+          tag: 'lark_md',
+          content: '⚠️ 服务重启，管道已中断',
+        },
+      },
+      { tag: 'hr' },
+      {
+        tag: 'action',
+        actions: [
+          {
+            tag: 'button',
+            text: { tag: 'plain_text', content: '🔄 重试' },
+            type: 'primary',
+            value: { action: 'pipeline_retry', pipelineId },
           },
         ],
       },

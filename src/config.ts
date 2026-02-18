@@ -50,6 +50,7 @@ export const config = {
   // 数据库配置
   db: {
     sessionDbPath: process.env.SESSION_DB_PATH || './data/sessions.db',
+    pipelineDbPath: process.env.PIPELINE_DB_PATH || './data/pipelines.db',
   },
 
   // 服务配置
