@@ -26,6 +26,8 @@ export interface ExecuteInput extends ExecuteOptions {
   historySummaries?: string;
   /** 覆盖 system prompt（用于 pipeline 各角色独立 prompt） */
   systemPromptOverride?: string;
+  /** 覆盖默认超时秒数 (默认使用 CLAUDE_TIMEOUT 配置) */
+  timeoutSeconds?: number;
 }
 
 /** 构建工作区管理系统提示词（注入实际目录路径） */
@@ -127,6 +129,13 @@ export class ClaudeExecutor {
 
     const startTime = Date.now();
     const abortController = new AbortController();
+    const timeoutMs = (input.timeoutSeconds ?? config.claude.timeoutSeconds) * 1000;
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      abortController.abort();
+      logger.warn({ sessionKey, timeoutMs }, 'Claude query timed out, aborting');
+    }, timeoutMs);
 
     // 确保工作目录存在，否则 spawn 会报 ENOENT
     if (!existsSync(workingDir)) {
@@ -273,11 +282,14 @@ export class ClaudeExecutor {
         }
       }
     } catch (err) {
+      clearTimeout(timer);
       this.runningQueries.delete(sessionKey);
 
       const durationMs = Date.now() - startTime;
-      const errorMsg = err instanceof Error ? err.message : String(err);
-      logger.error({ sessionKey, err: errorMsg }, 'Claude Agent SDK query error');
+      const errorMsg = timedOut
+        ? `Query timed out after ${timeoutMs / 1000}s`
+        : (err instanceof Error ? err.message : String(err));
+      logger.error({ sessionKey, err: errorMsg, timedOut }, 'Claude Agent SDK query error');
 
       return {
         success: false,
@@ -287,6 +299,8 @@ export class ClaudeExecutor {
         durationMs,
       };
     }
+
+    clearTimeout(timer);
 
     // 等待最后一个流式更新完成，防止与最终卡片更新竞态
     if (lastStreamPromise) await lastStreamPromise.catch(() => {});
