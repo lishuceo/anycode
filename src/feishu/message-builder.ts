@@ -5,6 +5,7 @@
 
 import { PHASE_META, TOTAL_PHASES } from '../pipeline/types.js';
 import type { PipelinePhase } from '../pipeline/types.js';
+import type { TurnInfo, ToolCallInfo } from '../claude/types.js';
 
 /** 构建 "执行中" 状态卡片 */
 export function buildProgressCard(prompt: string, statusText: string = '正在处理...'): Record<string, unknown> {
@@ -419,6 +420,195 @@ export function buildInterruptedCard(
       },
     ],
   };
+}
+
+/** 构建单轮 turn 消息卡片（逐条展示） */
+export function buildTurnCard(turn: TurnInfo): Record<string, unknown> {
+  const parts: string[] = [];
+
+  // 文字内容（截断 3000 字符）
+  if (turn.textContent) {
+    const maxLen = 3000;
+    const text = turn.textContent.length > maxLen
+      ? turn.textContent.slice(0, maxLen) + '\n\n_(内容过长，已截断)_'
+      : turn.textContent;
+    parts.push(text.trim());
+  }
+
+  // 工具调用列表
+  if (turn.toolCalls.length > 0) {
+    const toolLines = turn.toolCalls.map(formatToolCall);
+    parts.push(toolLines.join('\n'));
+  }
+
+  return {
+    config: { wide_screen_mode: true },
+    header: {
+      title: { tag: 'plain_text', content: `Turn ${turn.turnIndex}` },
+      template: 'default',
+    },
+    elements: [
+      {
+        tag: 'div',
+        text: {
+          tag: 'lark_md',
+          content: parts.join('\n\n') || '_(无内容)_',
+        },
+      },
+    ],
+  };
+}
+
+/** 话题概览卡片状态 */
+export type OverviewState = 'processing' | 'success' | 'error';
+
+/** 构建话题概览卡片（置顶，随查询状态更新） */
+export function buildOverviewCard(
+  prompt: string,
+  state: OverviewState,
+  turnCount: number,
+  elapsedSec: number,
+  costUsd?: number,
+): Record<string, unknown> {
+  const stateConfig = {
+    processing: { template: 'blue',  icon: '⏳', label: '处理中' },
+    success:    { template: 'green', icon: '✅', label: '完成' },
+    error:      { template: 'red',   icon: '❌', label: '失败' },
+  }[state];
+  const costStr = costUsd ? ` | 💰 $${costUsd.toFixed(4)}` : '';
+
+  return {
+    config: { wide_screen_mode: true },
+    header: {
+      title: { tag: 'plain_text', content: '🤖 Claude Code' },
+      template: stateConfig.template,
+    },
+    elements: [
+      {
+        tag: 'div',
+        text: {
+          tag: 'lark_md',
+          content: `**指令:** ${escapeMarkdown(truncate(prompt, 200))}`,
+        },
+      },
+      { tag: 'hr' },
+      {
+        tag: 'note',
+        elements: [
+          {
+            tag: 'plain_text',
+            content: `${stateConfig.icon} ${stateConfig.label} | 🔄 ${turnCount} 轮 | ⏱️ ${elapsedSec}s${costStr}`,
+          },
+        ],
+      },
+    ],
+  };
+}
+
+/** 构建底部结果卡片（逐条模式用，最后一轮内容合并进来，指令已在顶部概览中） */
+export function buildSimpleResultCard(
+  _prompt: string,
+  success: boolean,
+  durationStr: string,
+  error?: string,
+  lastTurn?: TurnInfo,
+): Record<string, unknown> {
+  const icon = success ? '✅' : '❌';
+  const status = success ? '执行完成' : '执行失败';
+  const headerTemplate = success ? 'green' : 'red';
+
+  const elements: Record<string, unknown>[] = [];
+
+  // 合并最后一轮 turn 的内容
+  if (lastTurn) {
+    const parts: string[] = [];
+    if (lastTurn.textContent) {
+      const maxLen = 3000;
+      const text = lastTurn.textContent.length > maxLen
+        ? lastTurn.textContent.slice(0, maxLen) + '\n\n_(内容过长，已截断)_'
+        : lastTurn.textContent;
+      parts.push(text.trim());
+    }
+    if (lastTurn.toolCalls.length > 0) {
+      parts.push(lastTurn.toolCalls.map(formatToolCall).join('\n'));
+    }
+    if (parts.length > 0) {
+      elements.push({
+        tag: 'div',
+        text: {
+          tag: 'lark_md',
+          content: parts.join('\n\n'),
+        },
+      });
+    }
+  }
+
+  // 失败时显示错误信息
+  if (!success && error) {
+    if (elements.length > 0) elements.push({ tag: 'hr' });
+    elements.push({
+      tag: 'div',
+      text: {
+        tag: 'lark_md',
+        content: truncate(error, 1000),
+      },
+    });
+  }
+
+  if (elements.length > 0) elements.push({ tag: 'hr' });
+  elements.push({
+    tag: 'note',
+    elements: [
+      {
+        tag: 'plain_text',
+        content: `${icon} ${status} | ⏱️ ${durationStr}`,
+      },
+    ],
+  });
+
+  return {
+    config: { wide_screen_mode: true },
+    header: {
+      title: { tag: 'plain_text', content: `🤖 Claude Code - ${status}` },
+      template: headerTemplate,
+    },
+    elements,
+  };
+}
+
+/** 工具调用 → 图标 + 摘要 */
+const TOOL_ICONS: Record<string, string> = {
+  Read: '📖',
+  Edit: '✏️',
+  Write: '📝',
+  Bash: '💻',
+  Glob: '🔍',
+  Grep: '🔍',
+  setup_workspace: '📦',
+};
+
+function formatToolCall(tool: ToolCallInfo): string {
+  const icon = TOOL_ICONS[tool.name] ?? '🔧';
+
+  switch (tool.name) {
+    case 'Read':
+    case 'Edit':
+    case 'Write':
+      return `${icon} **${tool.name}** ${(tool.input.file_path as string) ?? ''}`;
+    case 'Bash': {
+      const cmd = String(tool.input.command ?? '');
+      const display = cmd.length > 80 ? cmd.slice(0, 80) + '...' : cmd;
+      return `${icon} \`${display}\``;
+    }
+    case 'Glob':
+      return `${icon} **Glob** ${(tool.input.pattern as string) ?? ''}`;
+    case 'Grep':
+      return `${icon} **Grep** ${(tool.input.pattern as string) ?? ''}`;
+    case 'setup_workspace':
+      return `${icon} **setup_workspace** ${(tool.input.repo_url as string) ?? (tool.input.local_path as string) ?? ''}`;
+    default:
+      return `${icon} **${tool.name}**`;
+  }
 }
 
 // === 工具函数 ===
