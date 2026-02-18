@@ -13,6 +13,8 @@ vi.mock('node:fs', () => ({
 vi.mock('../../config.js', () => ({
   config: {
     claude: { defaultWorkDir: '/tmp/work' },
+    repoCache: { dir: '/repos/cache' },
+    workspace: { baseDir: '/tmp/workspaces' },
   },
 }));
 

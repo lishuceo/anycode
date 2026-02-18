@@ -313,3 +313,117 @@ describe('executeClaudeTask restart logic', () => {
     expect(lastCall).toEqual(['chat1', 'user1', 'sess-restart']);
   });
 });
+
+// ============================================================
+// ensureThread 逻辑测试
+//
+// 提取 ensureThread 的核心逻辑进行测试:
+// - 有 rootId → 复用该话题
+// - 无 rootId → 新建话题 + 清空旧 conversationId
+// ============================================================
+
+/**
+ * 模拟 ensureThread 的核心逻辑
+ * (从 event-handler.ts 提取，用于可测试性)
+ */
+async function simulateEnsureThread(
+  chatId: string,
+  userId: string,
+  messageId: string,
+  rootId?: string,
+): Promise<string | undefined> {
+  const { sessionManager } = await import('../../session/manager.js');
+  const { feishuClient } = await import('../client.js');
+
+  sessionManager.getOrCreate(chatId, userId);
+
+  // 1. 用户在已有话题内发消息 — 复用
+  if (rootId) {
+    sessionManager.setThread(chatId, userId, rootId, rootId);
+    return rootId;
+  }
+
+  // 2. 用户在主聊天区发消息 — 新会话
+  sessionManager.setConversationId(chatId, userId, '');
+
+  const { messageId: botMsgId, threadId } = await feishuClient.replyInThread(
+    messageId,
+    '🤖 新会话已创建',
+  );
+
+  if (threadId && botMsgId) {
+    sessionManager.setThread(chatId, userId, threadId, messageId);
+    return messageId;
+  }
+
+  return undefined;
+}
+
+describe('ensureThread session routing', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockReplyInThread.mockResolvedValue({ messageId: 'bot-msg-1', threadId: 'thread-new' });
+  });
+
+  it('should reuse existing thread when rootId is provided', async () => {
+    mockSessionGetOrCreate.mockReturnValue({
+      chatId: 'chat1', userId: 'user1', workingDir: '/tmp/work', status: 'idle',
+      threadId: 'thread-old', threadRootMessageId: 'old-root-msg',
+      conversationId: 'old-conv-id',
+    });
+
+    const result = await simulateEnsureThread('chat1', 'user1', 'msg-1', 'root-msg-in-thread');
+
+    expect(result).toBe('root-msg-in-thread');
+    expect(mockSessionSetThread).toHaveBeenCalledWith('chat1', 'user1', 'root-msg-in-thread', 'root-msg-in-thread');
+    // 不应清空 conversationId
+    expect(mockSessionSetConversationId).not.toHaveBeenCalled();
+    // 不应创建新话题
+    expect(mockReplyInThread).not.toHaveBeenCalled();
+  });
+
+  it('should create new thread and clear conversationId when no rootId — even if old thread exists', async () => {
+    // 这是修复的 bug 场景：session 有旧话题信息，但用户在主区发消息
+    mockSessionGetOrCreate.mockReturnValue({
+      chatId: 'chat1', userId: 'user1', workingDir: '/tmp/work', status: 'idle',
+      threadId: 'thread-old', threadRootMessageId: 'old-root-msg',
+      conversationId: 'old-conv-id',
+    });
+
+    const result = await simulateEnsureThread('chat1', 'user1', 'msg-new');
+
+    // 应创建新话题，返回新消息 ID
+    expect(result).toBe('msg-new');
+    // 旧 conversationId 应被清空
+    expect(mockSessionSetConversationId).toHaveBeenCalledWith('chat1', 'user1', '');
+    // 应通过 replyInThread 创建新话题
+    expect(mockReplyInThread).toHaveBeenCalledWith('msg-new', '🤖 新会话已创建');
+    // 新话题信息应保存到 session
+    expect(mockSessionSetThread).toHaveBeenCalledWith('chat1', 'user1', 'thread-new', 'msg-new');
+  });
+
+  it('should create new thread for first-time user (no old session data)', async () => {
+    mockSessionGetOrCreate.mockReturnValue({
+      chatId: 'chat1', userId: 'user1', workingDir: '/tmp/work', status: 'idle',
+    });
+
+    const result = await simulateEnsureThread('chat1', 'user1', 'msg-first');
+
+    expect(result).toBe('msg-first');
+    expect(mockSessionSetConversationId).toHaveBeenCalledWith('chat1', 'user1', '');
+    expect(mockReplyInThread).toHaveBeenCalled();
+  });
+
+  it('should fall back to undefined when thread creation fails', async () => {
+    mockSessionGetOrCreate.mockReturnValue({
+      chatId: 'chat1', userId: 'user1', workingDir: '/tmp/work', status: 'idle',
+    });
+    mockReplyInThread.mockResolvedValue({ messageId: undefined, threadId: undefined });
+
+    const result = await simulateEnsureThread('chat1', 'user1', 'msg-1');
+
+    expect(result).toBeUndefined();
+    // conversationId 仍应被清空（在创建话题之前就清了）
+    expect(mockSessionSetConversationId).toHaveBeenCalledWith('chat1', 'user1', '');
+  });
+});
