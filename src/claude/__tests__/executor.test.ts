@@ -12,7 +12,7 @@ vi.mock('node:fs', () => ({
 
 vi.mock('../../config.js', () => ({
   config: {
-    claude: { defaultWorkDir: '/tmp/work', timeoutSeconds: 300 },
+    claude: { defaultWorkDir: '/tmp/work', timeoutSeconds: 300, model: 'claude-opus-4-6', thinking: 'adaptive', effort: 'max' },
     repoCache: { dir: '/repos/cache' },
     workspace: { baseDir: '/tmp/workspaces' },
   },
