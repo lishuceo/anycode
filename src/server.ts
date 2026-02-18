@@ -84,13 +84,25 @@ function startWebSocketMode(eventDispatcher: lark.EventDispatcher, port: number)
     logger.error({ err }, 'Failed to connect Feishu WebSocket');
   });
 
-  // 仍然启动 Express 用于健康检查
+  // 仍然启动 Express 用于健康检查 + 卡片交互回调
+  // 注意：飞书卡片交互始终通过 HTTP POST 回调（即使事件使用 WebSocket），
+  // 因此需要在两种模式下都注册卡片回调端点
   const app = express();
+  app.use(express.json());
+
   app.get('/health', (_req, res) => {
     res.json({ status: 'ok', mode: 'websocket', timestamp: new Date().toISOString() });
   });
 
+  // 飞书卡片交互回调
+  const cardHandler = createCardActionHandler();
+  app.post(
+    '/feishu/card',
+    lark.adaptExpress(cardHandler, { autoChallenge: true }),
+  );
+
   app.listen(port, () => {
-    logger.info({ port, mode: 'websocket' }, 'Health check server started');
+    logger.info({ port, mode: 'websocket' }, 'Health check + card action server started');
+    logger.info(`  Card action URL: http://localhost:${port}/feishu/card`);
   });
 }

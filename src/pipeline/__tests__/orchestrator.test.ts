@@ -585,6 +585,75 @@ describe('PipelineOrchestrator', () => {
   });
 
   // ============================================================
+  // Abort 支持
+  // ============================================================
+
+  describe('abort', () => {
+    it('should stop pipeline when abort is called before first phase', async () => {
+      const orchestrator = new PipelineOrchestrator();
+      orchestrator.abort();
+
+      const result = await orchestrator.run('task', '/tmp', noopCallbacks);
+
+      expect(result.success).toBe(false);
+      expect(result.state.phase).toBe('failed');
+      expect(result.state.failureReason).toBe('用户手动中止');
+      expect(mockExecute).not.toHaveBeenCalled();
+    });
+
+    it('should stop pipeline between phases when abort is called', async () => {
+      // Plan executes, plan_review passes, then abort before implement runs
+      mockExecute.mockResolvedValueOnce(makeResult({ output: 'plan' }));
+      mockParallelReview.mockResolvedValueOnce(makeReviewResult());
+
+      const orch = new PipelineOrchestrator();
+
+      // Abort right when we see implement about to start
+      // onPhaseChange is called BEFORE the phase executes
+      const onPhaseChange = vi.fn().mockImplementation(async (state: { phase: string }) => {
+        if (state.phase === 'implement') {
+          orch.abort();
+        }
+      });
+
+      // Need to provide a mock for implement in case abort timing doesn't prevent it
+      mockExecute.mockResolvedValueOnce(makeResult({ output: 'impl' }));
+
+      const result = await orch.run('task', '/tmp', { onPhaseChange });
+
+      expect(result.success).toBe(false);
+      expect(result.state.phase).toBe('failed');
+      expect(result.state.failureReason).toBe('用户手动中止');
+    });
+
+    it('should expose current session key via getCurrentSessionKey()', async () => {
+      let capturedKey: string | undefined;
+
+      mockExecute.mockImplementation(async (opts) => {
+        capturedKey = opts.sessionKey;
+        return makeResult({ output: 'plan' });
+      });
+
+      mockParallelReview
+        .mockResolvedValueOnce(makeReviewResult())
+        .mockResolvedValueOnce(makeReviewResult());
+
+      mockExecute
+        .mockResolvedValueOnce(makeResult({ output: 'plan' }))
+        .mockResolvedValueOnce(makeResult({ output: 'impl' }))
+        .mockResolvedValueOnce(makeResult({ output: 'pushed' }));
+
+      const orchestrator = new PipelineOrchestrator();
+      await orchestrator.run('task', '/tmp', noopCallbacks);
+
+      // getCurrentSessionKey should return the last session key used
+      const key = orchestrator.getCurrentSessionKey();
+      expect(key).toBeDefined();
+      expect(key).toContain('pipeline-');
+    });
+  });
+
+  // ============================================================
   // MAX_ITERATIONS 循环保护
   // ============================================================
 

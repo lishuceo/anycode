@@ -4,12 +4,19 @@ import { isUserAllowed, containsDangerousCommand } from '../utils/security.js';
 import { sessionManager } from '../session/manager.js';
 import { taskQueue } from '../session/queue.js';
 import { claudeExecutor } from '../claude/executor.js';
-import { buildProgressCard, buildResultCard, buildStreamingCard, buildPipelineCard, buildStatusCard } from './message-builder.js';
-import { PipelineOrchestrator } from '../pipeline/orchestrator.js';
-import { PHASE_META, TOTAL_PHASES } from '../pipeline/types.js';
+import { buildProgressCard, buildResultCard, buildStreamingCard, buildStatusCard, buildCancelledCard, buildPipelineCard, buildPipelineConfirmCard } from './message-builder.js';
 import { feishuClient } from './client.js';
 import { config } from '../config.js';
 import { setupWorkspace } from '../workspace/manager.js';
+import { ensureThread } from './thread-utils.js';
+import { pipelineStore } from '../pipeline/store.js';
+import {
+  createPendingPipeline,
+  startPipeline,
+  abortPipeline,
+  cancelPipeline,
+  retryPipeline,
+} from '../pipeline/runner.js';
 
 // ============================================================
 // 使用飞书 SDK 的 EventDispatcher 处理事件
@@ -73,12 +80,93 @@ export function createCardActionHandler(): lark.CardActionHandler {
     encryptKey: config.feishu.encryptKey || undefined,
     verificationToken: config.feishu.verifyToken || undefined,
   }, async (data: Record<string, unknown>) => {
-    logger.debug({ action: data }, 'Card action received');
-    // TODO: 处理卡片按钮点击等交互
-    return {};
+    const action = data.action as { value?: Record<string, unknown> } | undefined;
+    const actionType = action?.value?.action as string | undefined;
+    const pipelineId = action?.value?.pipelineId as string | undefined;
+
+    // 提取操作者 user ID
+    const operatorId = (data.operator as { open_id?: string } | undefined)?.open_id;
+
+    logger.info({ actionType, pipelineId, operatorId }, 'Card action received');
+
+    if (!actionType || !pipelineId) return {};
+
+    // 验证操作者身份：无法识别身份时拒绝操作（fail closed）
+    if (!operatorId) {
+      logger.warn({ pipelineId }, 'Card action rejected: no operator identity');
+      return {};
+    }
+
+    // 只有管道创建者可以操作
+    const record = pipelineStore.get(pipelineId);
+    if (record && record.userId !== operatorId) {
+      logger.warn({ pipelineId, operatorId, ownerId: record.userId }, 'Card action rejected: operator is not pipeline owner');
+      return {};
+    }
+
+    switch (actionType) {
+      case 'pipeline_confirm':
+        return handlePipelineConfirm(pipelineId);
+      case 'pipeline_cancel':
+        return handlePipelineCancel(pipelineId);
+      case 'pipeline_abort':
+        return handlePipelineAbort(pipelineId);
+      case 'pipeline_retry':
+        return handlePipelineRetry(pipelineId);
+      default:
+        logger.warn({ actionType }, 'Unknown card action');
+        return {};
+    }
   });
 
   return handler;
+}
+
+async function handlePipelineConfirm(pipelineId: string): Promise<Record<string, unknown>> {
+  const record = pipelineStore.get(pipelineId);
+  if (!record) return {};
+
+  // 同步执行 CAS，确保只在转换成功后才返回进度卡片
+  // 避免 CAS 失败时用户看到卡住的进度卡片
+  if (!pipelineStore.tryStart(pipelineId)) {
+    // 已经被处理过（double-click 或并发取消）
+    return {};
+  }
+
+  // CAS 成功，在后台启动管道（startPipeline 会跳过自身的 tryStart）
+  startPipeline(pipelineId).catch((err) => {
+    logger.error({ err, pipelineId }, 'Failed to start pipeline');
+  });
+
+  // 立即返回初始进度卡片
+  return buildPipelineCard(record.prompt, 'plan', 1, 5, 0, undefined, undefined, pipelineId);
+}
+
+async function handlePipelineCancel(pipelineId: string): Promise<Record<string, unknown>> {
+  const record = pipelineStore.get(pipelineId);
+  if (!record) return {};
+
+  cancelPipeline(pipelineId);
+  return buildCancelledCard(record.prompt);
+}
+
+async function handlePipelineAbort(pipelineId: string): Promise<Record<string, unknown>> {
+  abortPipeline(pipelineId);
+  // 不立即替换卡片 — orchestrator 的 onPhaseChange 会在最终状态时更新
+  return {};
+}
+
+async function handlePipelineRetry(pipelineId: string): Promise<Record<string, unknown>> {
+  const record = pipelineStore.get(pipelineId);
+  if (!record) return {};
+
+  const newId = await retryPipeline(pipelineId);
+  if (!newId) return {};
+
+  const newRecord = pipelineStore.get(newId);
+  if (!newRecord) return {};
+
+  return buildPipelineConfirmCard(newRecord.prompt, newId, newRecord.workingDir);
 }
 
 // ============================================================
@@ -344,7 +432,7 @@ async function handleSlashCommand(
     return true;
   }
 
-  // /dev <task> - 自动开发管道（绕过 taskQueue，使用 acquireSession 并发保护）
+  // /dev <task> - 自动开发管道
   if (trimmed.startsWith('/dev ')) {
     const task = trimmed.slice('/dev '.length).trim();
     if (!task) {
@@ -392,62 +480,6 @@ async function handleSlashCommand(
   }
 
   return false;
-}
-
-/**
- * 确保会话有话题，如果没有则创建一个
- * 返回 threadRootMessageId (用于后续 reply_in_thread)，失败返回 undefined
- */
-async function ensureThread(
-  chatId: string,
-  userId: string,
-  messageId: string,
-  rootId?: string,
-): Promise<string | undefined> {
-  sessionManager.getOrCreate(chatId, userId);
-
-  // 1. 用户在已有话题内发消息 — 直接复用该话题，无需发送问候
-  if (rootId) {
-    // 更新 session 的话题信息，确保后续回复也发到这个话题
-    sessionManager.setThread(chatId, userId, rootId, rootId);
-    return rootId;
-  }
-
-  // 2. 用户在主聊天区发消息（无 rootId）— 新会话意图
-  //    如果想继续旧话题，用户应在话题内回复；在主区发消息 = 新对话
-  const greeting = '🤖 新会话已创建';
-  const { messageId: botMsgId, threadId } = await feishuClient.replyInThread(
-    messageId,
-    greeting,
-  );
-
-  if (threadId && botMsgId) {
-    // 话题创建成功后才清空旧 conversationId，避免 replyInThread 失败时
-    // 既没有新话题又丢失了续接旧对话的能力
-    sessionManager.setConversationId(chatId, userId, '');
-    sessionManager.setThread(chatId, userId, threadId, messageId);
-    return messageId;
-  }
-
-  logger.warn({ chatId, userId }, 'Failed to create thread, falling back to main chat');
-  return undefined;
-}
-
-/**
- * 并发保护：原子地尝试获取会话锁（CAS: idle → busy）
- * @returns true 如果成功获取锁，false 如果已被占用
- */
-async function acquireSession(
-  chatId: string,
-  userId: string,
-  messageId: string,
-): Promise<boolean> {
-  // 原子 CAS：UPDATE ... WHERE status != 'busy'，单条 SQL 防止 TOCTOU 竞态
-  if (!sessionManager.tryAcquire(chatId, userId)) {
-    await feishuClient.replyText(messageId, '⏳ 当前会话正在执行任务，请等待完成或使用 /stop 中断');
-    return false;
-  }
-  return true;
 }
 
 /**
@@ -671,7 +703,7 @@ async function sendResultCard(
 
 /**
  * 执行自动开发管道（/dev 命令触发）
- * 绕过 taskQueue，使用 acquireSession 进行并发保护
+ * 创建待确认管道，等待用户卡片确认后再开始执行
  */
 async function executePipelineTask(
   prompt: string,
@@ -680,136 +712,15 @@ async function executePipelineTask(
   messageId: string,
   rootId?: string,
 ): Promise<void> {
-  if (!await acquireSession(chatId, userId, messageId)) return;
-
   const session = sessionManager.getOrCreate(chatId, userId);
-  const pipelineStartTime = Date.now();
-
-  // 确保话题存在
-  const threadRootMsgId = await ensureThread(chatId, userId, messageId, rootId);
-
-  // 发送管道初始卡片
-  let progressMsgId: string | undefined;
-  const initialCard = buildPipelineCard(prompt, 'plan', 1, TOTAL_PHASES, 0);
-  if (threadRootMsgId) {
-    progressMsgId = await feishuClient.replyCardInThread(threadRootMsgId, initialCard);
-  }
-  if (!progressMsgId) {
-    progressMsgId = await feishuClient.sendCard(chatId, initialCard);
-  }
-
-  // 获取历史摘要
-  const summaries = sessionManager.getRecentSummaries(chatId, userId, 5);
-  let historySummaries: string | undefined;
-  if (summaries.length > 0) {
-    let combined = summaries.join('\n');
-    if (combined.length > 3000) {
-      combined = combined.slice(-3000);
-    }
-    historySummaries = combined;
-  }
-
-  try {
-    const orchestrator = new PipelineOrchestrator();
-
-    // 跟踪当前 phase 供 onStreamUpdate 使用
-    let currentPipelinePhase: string = 'plan';
-    let currentPhaseIndex = 1;
-
-    const pipelineResult = await orchestrator.run(
-      prompt,
-      session.workingDir,
-      {
-        onPhaseChange: async (state) => {
-          currentPipelinePhase = state.phase;
-          currentPhaseIndex = PHASE_META[state.phase]?.index ?? currentPhaseIndex;
-          if (!progressMsgId) return;
-          const elapsed = Math.floor((Date.now() - pipelineStartTime) / 1000);
-          await feishuClient.updateCard(
-            progressMsgId,
-            buildPipelineCard(
-              prompt,
-              state.phase,
-              currentPhaseIndex,
-              TOTAL_PHASES,
-              elapsed,
-              state.totalCostUsd || undefined,
-            ),
-          );
-        },
-        onStreamUpdate: async (text: string) => {
-          if (!progressMsgId) return;
-          const elapsed = Math.floor((Date.now() - pipelineStartTime) / 1000);
-          // 使用 pipeline 卡片 + detail 区域展示流式输出，保留阶段进度
-          const tail = text.length > 2000 ? '...\n' + text.slice(-2000) : text;
-          await feishuClient.updateCard(
-            progressMsgId,
-            buildPipelineCard(prompt, currentPipelinePhase, currentPhaseIndex, TOTAL_PHASES, elapsed, undefined, tail),
-          );
-        },
-      },
-      historySummaries,
-    );
-
-    // 最终结果卡片
-    const totalElapsed = Math.floor((Date.now() - pipelineStartTime) / 1000);
-    const costStr = pipelineResult.totalCostUsd
-      ? ` | 💰 $${pipelineResult.totalCostUsd.toFixed(4)}`
-      : '';
-
-    // 失败时用 failedAtPhase 定位实际失败的阶段
-    const failedIndex = pipelineResult.state.failedAtPhase
-      ? PHASE_META[pipelineResult.state.failedAtPhase]?.index ?? TOTAL_PHASES
-      : TOTAL_PHASES;
-
-    const finalCard = buildPipelineCard(
-      prompt,
-      pipelineResult.success ? 'done' : 'failed',
-      pipelineResult.success ? TOTAL_PHASES + 1 : failedIndex,
-      TOTAL_PHASES,
-      totalElapsed,
-      pipelineResult.totalCostUsd || undefined,
-      pipelineResult.summary.slice(0, 2500),
-    );
-
-    if (progressMsgId) {
-      await feishuClient.updateCard(progressMsgId, finalCard);
-    } else if (threadRootMsgId) {
-      await feishuClient.replyCardInThread(threadRootMsgId, finalCard);
-    } else {
-      await feishuClient.sendCard(chatId, finalCard);
-    }
-
-    // 如果摘要太长，额外发送完整文本
-    if (pipelineResult.summary.length > 2500) {
-      if (threadRootMsgId) {
-        await feishuClient.replyTextInThread(threadRootMsgId, pipelineResult.summary);
-      } else {
-        await feishuClient.sendText(chatId, pipelineResult.summary);
-      }
-    }
-
-    // 保存摘要
-    if (pipelineResult.summary.length > 100) {
-      try {
-        const date = new Date().toISOString().slice(0, 10);
-        const tail = pipelineResult.summary.slice(-500).trim();
-        const summary = `[${date}] [pipeline] dir: ${session.workingDir} | ${tail}`;
-        sessionManager.saveSummary(chatId, userId, session.workingDir, summary);
-      } catch (err) {
-        logger.warn({ err }, 'Failed to save pipeline summary');
-      }
-    }
-  } catch (err) {
-    logger.error({ err }, 'Error executing pipeline');
-    await feishuClient.replyText(messageId, `❌ 管道执行出错: ${(err as Error).message}`);
-  } finally {
-    try {
-      sessionManager.setStatus(chatId, userId, 'idle');
-    } catch (err) {
-      logger.error({ err, chatId, userId }, 'Failed to reset session status');
-    }
-  }
+  await createPendingPipeline({
+    chatId,
+    userId,
+    messageId,
+    rootId,
+    prompt,
+    workingDir: session.workingDir,
+  });
 }
 
 /**
