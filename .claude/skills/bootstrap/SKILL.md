@@ -548,7 +548,7 @@ jobs:
           claude_args: |
             --model opus
             --max-budget-usd 10
-            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr checks:*),Bash(git log:*),Bash(git blame:*),Bash(git diff:*),Read,Glob,Grep"
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh api:*),Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr checks:*),Bash(git log:*),Bash(git blame:*),Bash(git diff:*),Read,Glob,Grep"
           prompt: |
             REPO: ${{ github.repository }}
 
