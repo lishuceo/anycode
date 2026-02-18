@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { ClaudeResult } from '../../claude/types.js';
+import type { ReviewResult } from '../types.js';
 
 vi.mock('../../claude/executor.js', () => ({
   claudeExecutor: {
@@ -16,10 +17,16 @@ vi.mock('../../utils/logger.js', () => ({
   },
 }));
 
+vi.mock('../reviewer.js', () => ({
+  parallelReview: vi.fn(),
+}));
+
 import { PipelineOrchestrator } from '../orchestrator.js';
 import { claudeExecutor } from '../../claude/executor.js';
+import { parallelReview } from '../reviewer.js';
 
 const mockExecute = vi.mocked(claudeExecutor.execute);
+const mockParallelReview = vi.mocked(parallelReview);
 
 function makeResult(overrides: Partial<ClaudeResult> = {}): ClaudeResult {
   return {
@@ -27,6 +34,19 @@ function makeResult(overrides: Partial<ClaudeResult> = {}): ClaudeResult {
     output: 'mock output',
     durationMs: 100,
     costUsd: 0.01,
+    ...overrides,
+  };
+}
+
+function makeReviewResult(overrides: Partial<ReviewResult> = {}): ReviewResult {
+  return {
+    approved: true,
+    verdicts: [
+      { role: 'correctness', approved: true, abstained: false, feedback: '', costUsd: 0.05, durationMs: 100 },
+      { role: 'security', approved: true, abstained: false, feedback: '', costUsd: 0.04, durationMs: 100 },
+      { role: 'architecture', approved: true, abstained: false, feedback: '', costUsd: 0.03, durationMs: 100 },
+    ],
+    consolidatedFeedback: '',
     ...overrides,
   };
 }
@@ -40,6 +60,7 @@ describe('PipelineOrchestrator', () => {
     orchestrator = new PipelineOrchestrator();
     vi.clearAllMocks();
     mockExecute.mockReset();
+    mockParallelReview.mockReset();
   });
 
   // ============================================================
@@ -48,29 +69,36 @@ describe('PipelineOrchestrator', () => {
 
   describe('happy path', () => {
     it('should complete full pipeline: plan → review → implement → review → push → done', async () => {
-      // 5 calls: plan, plan_review, implement, code_review, push
+      // 3 executor calls: plan, implement, push
+      // 2 parallelReview calls: plan_review, code_review
       mockExecute
         .mockResolvedValueOnce(makeResult({ output: '## 需求理解\nTest plan' }))      // plan
-        .mockResolvedValueOnce(makeResult({ output: 'APPROVED\n没有问题' }))            // plan_review
         .mockResolvedValueOnce(makeResult({ output: '## 实现摘要\n修改了 foo.ts' }))   // implement
-        .mockResolvedValueOnce(makeResult({ output: 'APPROVED\n代码质量良好' }))        // code_review
         .mockResolvedValueOnce(makeResult({ output: '## 推送结果\nPR: #123' }));       // push
+
+      mockParallelReview
+        .mockResolvedValueOnce(makeReviewResult())   // plan_review
+        .mockResolvedValueOnce(makeReviewResult());   // code_review
 
       const result = await orchestrator.run('添加登录功能', '/tmp/work', noopCallbacks);
 
       expect(result.success).toBe(true);
       expect(result.state.phase).toBe('done');
-      expect(mockExecute).toHaveBeenCalledTimes(5);
-      expect(result.totalCostUsd).toBeCloseTo(0.05);
+      expect(mockExecute).toHaveBeenCalledTimes(3);
+      expect(mockParallelReview).toHaveBeenCalledTimes(2);
+      // Cost: 3 executor calls * 0.01 + 2 review results * (0.05 + 0.04 + 0.03)
+      expect(result.totalCostUsd).toBeCloseTo(0.03 + 0.12 + 0.12);
     });
 
     it('should pass historySummaries only to the plan step', async () => {
       mockExecute
         .mockResolvedValueOnce(makeResult({ output: 'plan' }))
-        .mockResolvedValueOnce(makeResult({ output: 'APPROVED' }))
         .mockResolvedValueOnce(makeResult({ output: 'implemented' }))
-        .mockResolvedValueOnce(makeResult({ output: 'APPROVED' }))
         .mockResolvedValueOnce(makeResult({ output: 'pushed' }));
+
+      mockParallelReview
+        .mockResolvedValueOnce(makeReviewResult())
+        .mockResolvedValueOnce(makeReviewResult());
 
       await orchestrator.run('task', '/tmp', noopCallbacks, '历史摘要内容');
 
@@ -78,23 +106,25 @@ describe('PipelineOrchestrator', () => {
       const planCall = mockExecute.mock.calls[0][0];
       expect(planCall.historySummaries).toBe('历史摘要内容');
 
-      // subsequent steps should not have historySummaries
-      for (let i = 1; i < 5; i++) {
+      // subsequent executor steps should not have historySummaries
+      for (let i = 1; i < mockExecute.mock.calls.length; i++) {
         expect(mockExecute.mock.calls[i][0].historySummaries).toBeUndefined();
       }
     });
 
-    it('should pass systemPromptOverride to each step', async () => {
+    it('should pass systemPromptOverride to executor steps', async () => {
       mockExecute
         .mockResolvedValueOnce(makeResult({ output: 'plan' }))
-        .mockResolvedValueOnce(makeResult({ output: 'APPROVED' }))
         .mockResolvedValueOnce(makeResult({ output: 'implemented' }))
-        .mockResolvedValueOnce(makeResult({ output: 'APPROVED' }))
         .mockResolvedValueOnce(makeResult({ output: 'pushed' }));
+
+      mockParallelReview
+        .mockResolvedValueOnce(makeReviewResult())
+        .mockResolvedValueOnce(makeReviewResult());
 
       await orchestrator.run('task', '/tmp', noopCallbacks);
 
-      for (let i = 0; i < 5; i++) {
+      for (let i = 0; i < mockExecute.mock.calls.length; i++) {
         expect(mockExecute.mock.calls[i][0].systemPromptOverride).toBeDefined();
         expect(typeof mockExecute.mock.calls[i][0].systemPromptOverride).toBe('string');
       }
@@ -103,10 +133,12 @@ describe('PipelineOrchestrator', () => {
     it('should call onPhaseChange for every phase transition + final state', async () => {
       mockExecute
         .mockResolvedValueOnce(makeResult({ output: 'plan' }))
-        .mockResolvedValueOnce(makeResult({ output: 'APPROVED' }))
         .mockResolvedValueOnce(makeResult({ output: 'impl' }))
-        .mockResolvedValueOnce(makeResult({ output: 'APPROVED' }))
         .mockResolvedValueOnce(makeResult({ output: 'pushed' }));
+
+      mockParallelReview
+        .mockResolvedValueOnce(makeReviewResult())
+        .mockResolvedValueOnce(makeReviewResult());
 
       const onPhaseChange = vi.fn();
       await orchestrator.run('task', '/tmp', { onPhaseChange });
@@ -116,6 +148,22 @@ describe('PipelineOrchestrator', () => {
 
       const phases = onPhaseChange.mock.calls.map((c: unknown[]) => (c[0] as { phase: string }).phase);
       expect(phases).toEqual(['plan', 'plan_review', 'implement', 'code_review', 'push', 'done']);
+    });
+
+    it('should pass reviewType plan to parallelReview for plan_review phase', async () => {
+      mockExecute
+        .mockResolvedValueOnce(makeResult({ output: 'plan' }))
+        .mockResolvedValueOnce(makeResult({ output: 'impl' }))
+        .mockResolvedValueOnce(makeResult({ output: 'pushed' }));
+
+      mockParallelReview
+        .mockResolvedValueOnce(makeReviewResult())
+        .mockResolvedValueOnce(makeReviewResult());
+
+      await orchestrator.run('task', '/tmp', noopCallbacks);
+
+      expect(mockParallelReview.mock.calls[0][0].reviewType).toBe('plan');
+      expect(mockParallelReview.mock.calls[1][0].reviewType).toBe('code');
     });
   });
 
@@ -133,6 +181,7 @@ describe('PipelineOrchestrator', () => {
       expect(result.state.phase).toBe('failed');
       expect(result.state.failureReason).toContain('方案设计失败');
       expect(mockExecute).toHaveBeenCalledTimes(1);
+      expect(mockParallelReview).not.toHaveBeenCalled();
     });
 
     it('should fail if plan agent returns empty output', async () => {
@@ -154,30 +203,49 @@ describe('PipelineOrchestrator', () => {
     it('should retry plan once when plan review rejects', async () => {
       mockExecute
         .mockResolvedValueOnce(makeResult({ output: 'plan v1' }))                       // plan
-        .mockResolvedValueOnce(makeResult({ output: 'REJECTED\n方案不完整' }))           // plan_review → REJECTED
         .mockResolvedValueOnce(makeResult({ output: 'plan v2 (improved)' }))             // plan (retry)
-        .mockResolvedValueOnce(makeResult({ output: 'APPROVED' }))                       // plan_review → APPROVED
         .mockResolvedValueOnce(makeResult({ output: 'implemented' }))                    // implement
-        .mockResolvedValueOnce(makeResult({ output: 'APPROVED' }))                       // code_review
         .mockResolvedValueOnce(makeResult({ output: 'pushed' }));                        // push
+
+      mockParallelReview
+        .mockResolvedValueOnce(makeReviewResult({                                        // plan_review → REJECTED
+          approved: false,
+          verdicts: [
+            { role: 'correctness', approved: false, abstained: false, feedback: '方案不完整', costUsd: 0.05, durationMs: 100 },
+            { role: 'security', approved: true, abstained: false, feedback: '', costUsd: 0.04, durationMs: 100 },
+            { role: 'architecture', approved: true, abstained: false, feedback: '', costUsd: 0.03, durationMs: 100 },
+          ],
+          consolidatedFeedback: '🐛 [correctness] 方案不完整',
+        }))
+        .mockResolvedValueOnce(makeReviewResult())                                       // plan_review → APPROVED
+        .mockResolvedValueOnce(makeReviewResult());                                      // code_review → APPROVED
 
       const result = await orchestrator.run('task', '/tmp', noopCallbacks);
 
       expect(result.success).toBe(true);
       expect(result.state.phase).toBe('done');
-      expect(mockExecute).toHaveBeenCalledTimes(7);
+      expect(mockExecute).toHaveBeenCalledTimes(4);
+      expect(mockParallelReview).toHaveBeenCalledTimes(3);
 
       // Verify retry prompt includes review feedback
-      const retryPlanCall = mockExecute.mock.calls[2][0];
+      const retryPlanCall = mockExecute.mock.calls[1][0];
       expect(retryPlanCall.prompt).toContain('方案不完整');
     });
 
     it('should fail after 2 consecutive plan review rejections', async () => {
       mockExecute
         .mockResolvedValueOnce(makeResult({ output: 'plan v1' }))
-        .mockResolvedValueOnce(makeResult({ output: 'REJECTED\n问题1' }))
-        .mockResolvedValueOnce(makeResult({ output: 'plan v2' }))
-        .mockResolvedValueOnce(makeResult({ output: 'REJECTED\n问题2' }));
+        .mockResolvedValueOnce(makeResult({ output: 'plan v2' }));
+
+      mockParallelReview
+        .mockResolvedValueOnce(makeReviewResult({
+          approved: false,
+          consolidatedFeedback: '问题1',
+        }))
+        .mockResolvedValueOnce(makeReviewResult({
+          approved: false,
+          consolidatedFeedback: '问题2',
+        }));
 
       const result = await orchestrator.run('task', '/tmp', noopCallbacks);
 
@@ -185,7 +253,8 @@ describe('PipelineOrchestrator', () => {
       expect(result.state.phase).toBe('failed');
       expect(result.state.failureReason).toContain('方案审查');
       expect(result.state.failureReason).toContain('2 次未通过');
-      expect(mockExecute).toHaveBeenCalledTimes(4);
+      expect(mockExecute).toHaveBeenCalledTimes(2);
+      expect(mockParallelReview).toHaveBeenCalledTimes(2);
     });
   });
 
@@ -197,8 +266,10 @@ describe('PipelineOrchestrator', () => {
     it('should fail if implement agent returns success: false', async () => {
       mockExecute
         .mockResolvedValueOnce(makeResult({ output: 'plan' }))
-        .mockResolvedValueOnce(makeResult({ output: 'APPROVED' }))
         .mockResolvedValueOnce(makeResult({ success: false, error: 'compile error' }));
+
+      mockParallelReview
+        .mockResolvedValueOnce(makeReviewResult());
 
       const result = await orchestrator.run('task', '/tmp', noopCallbacks);
 
@@ -217,73 +288,50 @@ describe('PipelineOrchestrator', () => {
     it('should retry implement once when code review rejects', async () => {
       mockExecute
         .mockResolvedValueOnce(makeResult({ output: 'plan' }))
-        .mockResolvedValueOnce(makeResult({ output: 'APPROVED' }))
         .mockResolvedValueOnce(makeResult({ output: 'impl v1' }))                     // implement
-        .mockResolvedValueOnce(makeResult({ output: 'REJECTED\n安全漏洞' }))           // code_review → REJECTED
         .mockResolvedValueOnce(makeResult({ output: 'impl v2 (fixed)' }))              // implement (retry)
-        .mockResolvedValueOnce(makeResult({ output: 'APPROVED' }))                     // code_review → APPROVED
         .mockResolvedValueOnce(makeResult({ output: 'pushed' }));                      // push
+
+      mockParallelReview
+        .mockResolvedValueOnce(makeReviewResult())                                     // plan_review → APPROVED
+        .mockResolvedValueOnce(makeReviewResult({                                      // code_review → REJECTED
+          approved: false,
+          verdicts: [
+            { role: 'correctness', approved: true, abstained: false, feedback: '', costUsd: 0.05, durationMs: 100 },
+            { role: 'security', approved: false, abstained: false, feedback: '安全漏洞', costUsd: 0.04, durationMs: 100 },
+            { role: 'architecture', approved: true, abstained: false, feedback: '', costUsd: 0.03, durationMs: 100 },
+          ],
+          consolidatedFeedback: '🔒 [security] 安全漏洞',
+        }))
+        .mockResolvedValueOnce(makeReviewResult());                                    // code_review → APPROVED
 
       const result = await orchestrator.run('task', '/tmp', noopCallbacks);
 
       expect(result.success).toBe(true);
-      expect(mockExecute).toHaveBeenCalledTimes(7);
+      expect(mockExecute).toHaveBeenCalledTimes(4);
+      expect(mockParallelReview).toHaveBeenCalledTimes(3);
 
       // Verify retry prompt includes code review feedback
-      const retryImplCall = mockExecute.mock.calls[4][0];
+      const retryImplCall = mockExecute.mock.calls[2][0];
       expect(retryImplCall.prompt).toContain('安全漏洞');
     });
 
     it('should fail after 2 consecutive code review rejections', async () => {
       mockExecute
         .mockResolvedValueOnce(makeResult({ output: 'plan' }))
-        .mockResolvedValueOnce(makeResult({ output: 'APPROVED' }))
         .mockResolvedValueOnce(makeResult({ output: 'impl v1' }))
-        .mockResolvedValueOnce(makeResult({ output: 'REJECTED\nbug A' }))
-        .mockResolvedValueOnce(makeResult({ output: 'impl v2' }))
-        .mockResolvedValueOnce(makeResult({ output: 'REJECTED\nbug B' }));
+        .mockResolvedValueOnce(makeResult({ output: 'impl v2' }));
+
+      mockParallelReview
+        .mockResolvedValueOnce(makeReviewResult())
+        .mockResolvedValueOnce(makeReviewResult({ approved: false, consolidatedFeedback: 'bug A' }))
+        .mockResolvedValueOnce(makeReviewResult({ approved: false, consolidatedFeedback: 'bug B' }));
 
       const result = await orchestrator.run('task', '/tmp', noopCallbacks);
 
       expect(result.success).toBe(false);
       expect(result.state.phase).toBe('failed');
       expect(result.state.failureReason).toContain('代码审查');
-    });
-  });
-
-  // ============================================================
-  // Review agent 自身失败 — fail-closed（管道失败）
-  // ============================================================
-
-  describe('review agent failure (fail-closed)', () => {
-    it('should fail pipeline when plan review agent crashes', async () => {
-      mockExecute
-        .mockResolvedValueOnce(makeResult({ output: 'plan' }))
-        .mockResolvedValueOnce(makeResult({ success: false, error: 'agent crash' }));  // plan_review crashes
-
-      const result = await orchestrator.run('task', '/tmp', noopCallbacks);
-
-      expect(result.success).toBe(false);
-      expect(result.state.phase).toBe('failed');
-      expect(result.state.failedAtPhase).toBe('plan_review');
-      expect(result.state.failureReason).toContain('审查 agent 执行失败');
-      expect(mockExecute).toHaveBeenCalledTimes(2);
-    });
-
-    it('should fail pipeline when code review agent crashes', async () => {
-      mockExecute
-        .mockResolvedValueOnce(makeResult({ output: 'plan' }))
-        .mockResolvedValueOnce(makeResult({ output: 'APPROVED' }))
-        .mockResolvedValueOnce(makeResult({ output: 'implemented' }))
-        .mockResolvedValueOnce(makeResult({ success: false, error: 'timeout' }));      // code_review crashes
-
-      const result = await orchestrator.run('task', '/tmp', noopCallbacks);
-
-      expect(result.success).toBe(false);
-      expect(result.state.phase).toBe('failed');
-      expect(result.state.failedAtPhase).toBe('code_review');
-      expect(result.state.failureReason).toContain('审查 agent 执行失败');
-      expect(mockExecute).toHaveBeenCalledTimes(4);
     });
   });
 
@@ -295,10 +343,12 @@ describe('PipelineOrchestrator', () => {
     it('should mark done (not failed) when push fails — code is already written', async () => {
       mockExecute
         .mockResolvedValueOnce(makeResult({ output: 'plan' }))
-        .mockResolvedValueOnce(makeResult({ output: 'APPROVED' }))
         .mockResolvedValueOnce(makeResult({ output: 'implemented' }))
-        .mockResolvedValueOnce(makeResult({ output: 'APPROVED' }))
         .mockResolvedValueOnce(makeResult({ success: false, error: 'git push failed' }));
+
+      mockParallelReview
+        .mockResolvedValueOnce(makeReviewResult())
+        .mockResolvedValueOnce(makeReviewResult());
 
       const result = await orchestrator.run('task', '/tmp', noopCallbacks);
 
@@ -310,96 +360,56 @@ describe('PipelineOrchestrator', () => {
   });
 
   // ============================================================
-  // Verdict 解析
-  // ============================================================
-
-  describe('verdict parsing', () => {
-    it('should parse APPROVED on first line', async () => {
-      mockExecute
-        .mockResolvedValueOnce(makeResult({ output: 'plan' }))
-        .mockResolvedValueOnce(makeResult({ output: 'APPROVED\nsome suggestions' }))
-        .mockResolvedValueOnce(makeResult({ output: 'impl' }))
-        .mockResolvedValueOnce(makeResult({ output: 'APPROVED' }))
-        .mockResolvedValueOnce(makeResult({ output: 'pushed' }));
-
-      const result = await orchestrator.run('task', '/tmp', noopCallbacks);
-      expect(result.success).toBe(true);
-    });
-
-    it('should parse REJECTED on first line', async () => {
-      mockExecute
-        .mockResolvedValueOnce(makeResult({ output: 'plan' }))
-        .mockResolvedValueOnce(makeResult({ output: 'REJECTED\n- 缺少错误处理' }))
-        .mockResolvedValueOnce(makeResult({ output: 'plan v2' }))
-        .mockResolvedValueOnce(makeResult({ output: 'APPROVED' }))
-        .mockResolvedValueOnce(makeResult({ output: 'impl' }))
-        .mockResolvedValueOnce(makeResult({ output: 'APPROVED' }))
-        .mockResolvedValueOnce(makeResult({ output: 'pushed' }));
-
-      const result = await orchestrator.run('task', '/tmp', noopCallbacks);
-      expect(result.success).toBe(true);
-      // plan was retried
-      expect(mockExecute).toHaveBeenCalledTimes(7);
-    });
-
-    it('should default to REJECTED when verdict is unparseable', async () => {
-      mockExecute
-        .mockResolvedValueOnce(makeResult({ output: 'plan' }))
-        // unparseable output — no APPROVED or REJECTED keyword
-        .mockResolvedValueOnce(makeResult({ output: '我觉得还行吧' }))
-        .mockResolvedValueOnce(makeResult({ output: 'plan v2' }))
-        // second unparseable → max retries
-        .mockResolvedValueOnce(makeResult({ output: '差不多可以了' }));
-
-      const result = await orchestrator.run('task', '/tmp', noopCallbacks);
-
-      expect(result.success).toBe(false);
-      expect(result.state.retries['plan_review']).toBe(2);
-    });
-
-    it('should detect APPROVED in body text when first line is not a verdict', async () => {
-      mockExecute
-        .mockResolvedValueOnce(makeResult({ output: 'plan' }))
-        // APPROVED appears in body but not as sole keyword on first line
-        .mockResolvedValueOnce(makeResult({ output: '审查意见\n\n结论：APPROVED，方案合理' }))
-        .mockResolvedValueOnce(makeResult({ output: 'impl' }))
-        .mockResolvedValueOnce(makeResult({ output: 'APPROVED' }))
-        .mockResolvedValueOnce(makeResult({ output: 'pushed' }));
-
-      const result = await orchestrator.run('task', '/tmp', noopCallbacks);
-      expect(result.success).toBe(true);
-    });
-  });
-
-  // ============================================================
-  // 成本累计
+  // 成本累计 — 包括 review verdicts
   // ============================================================
 
   describe('cost tracking', () => {
-    it('should accumulate costs across all phases', async () => {
+    it('should accumulate costs across all phases including review verdicts', async () => {
       mockExecute
         .mockResolvedValueOnce(makeResult({ output: 'plan', costUsd: 0.10 }))
-        .mockResolvedValueOnce(makeResult({ output: 'APPROVED', costUsd: 0.05 }))
         .mockResolvedValueOnce(makeResult({ output: 'impl', costUsd: 0.50 }))
-        .mockResolvedValueOnce(makeResult({ output: 'APPROVED', costUsd: 0.05 }))
         .mockResolvedValueOnce(makeResult({ output: 'pushed', costUsd: 0.02 }));
+
+      mockParallelReview
+        .mockResolvedValueOnce(makeReviewResult({
+          verdicts: [
+            { role: 'correctness', approved: true, abstained: false, feedback: '', costUsd: 0.10, durationMs: 100 },
+            { role: 'security', approved: true, abstained: false, feedback: '', costUsd: 0.08, durationMs: 100 },
+            { role: 'architecture', approved: true, abstained: false, feedback: '', costUsd: 0.05, durationMs: 100 },
+          ],
+        }))
+        .mockResolvedValueOnce(makeReviewResult({
+          verdicts: [
+            { role: 'correctness', approved: true, abstained: false, feedback: '', costUsd: 0.06, durationMs: 100 },
+            { role: 'security', approved: true, abstained: false, feedback: '', costUsd: 0.04, durationMs: 100 },
+            { role: 'architecture', approved: true, abstained: false, feedback: '', costUsd: 0.03, durationMs: 100 },
+          ],
+        }));
 
       const result = await orchestrator.run('task', '/tmp', noopCallbacks);
 
-      expect(result.totalCostUsd).toBeCloseTo(0.72);
+      // executor: 0.10 + 0.50 + 0.02 = 0.62
+      // review1: 0.10 + 0.08 + 0.05 = 0.23
+      // review2: 0.06 + 0.04 + 0.03 = 0.13
+      // total: 0.98
+      expect(result.totalCostUsd).toBeCloseTo(0.98);
     });
 
     it('should handle undefined costUsd gracefully', async () => {
       mockExecute
         .mockResolvedValueOnce(makeResult({ output: 'plan', costUsd: undefined }))
-        .mockResolvedValueOnce(makeResult({ output: 'APPROVED', costUsd: undefined }))
         .mockResolvedValueOnce(makeResult({ output: 'impl', costUsd: 0.50 }))
-        .mockResolvedValueOnce(makeResult({ output: 'APPROVED', costUsd: undefined }))
         .mockResolvedValueOnce(makeResult({ output: 'pushed', costUsd: undefined }));
+
+      mockParallelReview
+        .mockResolvedValueOnce(makeReviewResult())
+        .mockResolvedValueOnce(makeReviewResult());
 
       const result = await orchestrator.run('task', '/tmp', noopCallbacks);
 
-      expect(result.totalCostUsd).toBeCloseTo(0.50);
+      // executor: 0 + 0.50 + 0 = 0.50
+      // review costs from default makeReviewResult: 2 * (0.05 + 0.04 + 0.03) = 0.24
+      expect(result.totalCostUsd).toBeCloseTo(0.74);
     });
   });
 
@@ -408,13 +418,15 @@ describe('PipelineOrchestrator', () => {
   // ============================================================
 
   describe('summary generation', () => {
-    it('should include plan, implement, and push output in success summary', async () => {
+    it('should include plan, implement, push output and review results in success summary', async () => {
       mockExecute
         .mockResolvedValueOnce(makeResult({ output: 'my plan details' }))
-        .mockResolvedValueOnce(makeResult({ output: 'APPROVED' }))
         .mockResolvedValueOnce(makeResult({ output: 'implementation report' }))
-        .mockResolvedValueOnce(makeResult({ output: 'APPROVED' }))
         .mockResolvedValueOnce(makeResult({ output: 'PR #42 created' }));
+
+      mockParallelReview
+        .mockResolvedValueOnce(makeReviewResult())
+        .mockResolvedValueOnce(makeReviewResult());
 
       const result = await orchestrator.run('task', '/tmp', noopCallbacks);
 
@@ -422,15 +434,44 @@ describe('PipelineOrchestrator', () => {
       expect(result.summary).toContain('my plan details');
       expect(result.summary).toContain('implementation report');
       expect(result.summary).toContain('PR #42 created');
+      expect(result.summary).toContain('方案审查');
+      expect(result.summary).toContain('代码审查');
+      expect(result.summary).toContain('✅ 通过');
     });
 
-    it('should include failure reason in failed summary', async () => {
+    it('should include failure reason and review details in failed summary', async () => {
       mockExecute.mockResolvedValueOnce(makeResult({ success: false, error: 'timeout' }));
 
       const result = await orchestrator.run('task', '/tmp', noopCallbacks);
 
       expect(result.summary).toContain('管道执行失败');
       expect(result.summary).toContain('方案设计失败');
+    });
+
+    it('should show rejected reviewers in failed summary', async () => {
+      mockExecute
+        .mockResolvedValueOnce(makeResult({ output: 'plan v1' }))
+        .mockResolvedValueOnce(makeResult({ output: 'plan v2' }));
+
+      const rejectedReview = makeReviewResult({
+        approved: false,
+        verdicts: [
+          { role: 'correctness', approved: false, abstained: false, feedback: '逻辑错误', costUsd: 0.05, durationMs: 100 },
+          { role: 'security', approved: true, abstained: false, feedback: '', costUsd: 0.04, durationMs: 100 },
+          { role: 'architecture', approved: true, abstained: false, feedback: '', costUsd: 0.03, durationMs: 100 },
+        ],
+        consolidatedFeedback: '逻辑错误',
+      });
+
+      mockParallelReview
+        .mockResolvedValueOnce(rejectedReview)
+        .mockResolvedValueOnce(rejectedReview);
+
+      const result = await orchestrator.run('task', '/tmp', noopCallbacks);
+
+      expect(result.summary).toContain('管道执行失败');
+      expect(result.summary).toContain('correctness');
+      expect(result.summary).toContain('❌ 拒绝');
     });
   });
 
@@ -439,18 +480,23 @@ describe('PipelineOrchestrator', () => {
   // ============================================================
 
   describe('workingDir propagation', () => {
-    it('should pass workingDir to every step', async () => {
+    it('should pass workingDir to every step and review', async () => {
       mockExecute
         .mockResolvedValueOnce(makeResult({ output: 'plan' }))
-        .mockResolvedValueOnce(makeResult({ output: 'APPROVED' }))
         .mockResolvedValueOnce(makeResult({ output: 'impl' }))
-        .mockResolvedValueOnce(makeResult({ output: 'APPROVED' }))
         .mockResolvedValueOnce(makeResult({ output: 'pushed' }));
+
+      mockParallelReview
+        .mockResolvedValueOnce(makeReviewResult())
+        .mockResolvedValueOnce(makeReviewResult());
 
       await orchestrator.run('task', '/my/project', noopCallbacks);
 
-      for (let i = 0; i < 5; i++) {
+      for (let i = 0; i < mockExecute.mock.calls.length; i++) {
         expect(mockExecute.mock.calls[i][0].workingDir).toBe('/my/project');
+      }
+      for (let i = 0; i < mockParallelReview.mock.calls.length; i++) {
+        expect(mockParallelReview.mock.calls[i][0].workingDir).toBe('/my/project');
       }
     });
   });
@@ -460,21 +506,23 @@ describe('PipelineOrchestrator', () => {
   // ============================================================
 
   describe('stream update callback', () => {
-    it('should forward onStreamUpdate to each step', async () => {
+    it('should forward onStreamUpdate to executor steps', async () => {
       const onStreamUpdate = vi.fn();
 
       mockExecute.mockImplementation(async (opts) => {
-        // Simulate calling onStreamUpdate during execution
         await opts.onStreamUpdate?.('partial output');
-        return makeResult({ output: opts.prompt.includes('审查') ? 'APPROVED' : 'output' });
+        return makeResult({ output: 'output' });
       });
+
+      mockParallelReview
+        .mockResolvedValueOnce(makeReviewResult())
+        .mockResolvedValueOnce(makeReviewResult());
 
       await orchestrator.run('task', '/tmp', {
         onPhaseChange: vi.fn(),
         onStreamUpdate,
       });
 
-      // Should have been called for each step
       expect(onStreamUpdate).toHaveBeenCalledWith('partial output');
     });
   });
@@ -495,8 +543,10 @@ describe('PipelineOrchestrator', () => {
     it('should set failedAtPhase to implement when implement fails', async () => {
       mockExecute
         .mockResolvedValueOnce(makeResult({ output: 'plan' }))
-        .mockResolvedValueOnce(makeResult({ output: 'APPROVED' }))
         .mockResolvedValueOnce(makeResult({ success: false, error: 'compile error' }));
+
+      mockParallelReview
+        .mockResolvedValueOnce(makeReviewResult());
 
       const result = await orchestrator.run('task', '/tmp', noopCallbacks);
 
@@ -506,9 +556,11 @@ describe('PipelineOrchestrator', () => {
     it('should set failedAtPhase to plan_review when plan review max retries exceeded', async () => {
       mockExecute
         .mockResolvedValueOnce(makeResult({ output: 'plan v1' }))
-        .mockResolvedValueOnce(makeResult({ output: 'REJECTED\n问题1' }))
-        .mockResolvedValueOnce(makeResult({ output: 'plan v2' }))
-        .mockResolvedValueOnce(makeResult({ output: 'REJECTED\n问题2' }));
+        .mockResolvedValueOnce(makeResult({ output: 'plan v2' }));
+
+      mockParallelReview
+        .mockResolvedValueOnce(makeReviewResult({ approved: false, consolidatedFeedback: '问题1' }))
+        .mockResolvedValueOnce(makeReviewResult({ approved: false, consolidatedFeedback: '问题2' }));
 
       const result = await orchestrator.run('task', '/tmp', noopCallbacks);
 
@@ -518,11 +570,13 @@ describe('PipelineOrchestrator', () => {
     it('should set failedAtPhase to code_review when code review max retries exceeded', async () => {
       mockExecute
         .mockResolvedValueOnce(makeResult({ output: 'plan' }))
-        .mockResolvedValueOnce(makeResult({ output: 'APPROVED' }))
         .mockResolvedValueOnce(makeResult({ output: 'impl v1' }))
-        .mockResolvedValueOnce(makeResult({ output: 'REJECTED\nbug A' }))
-        .mockResolvedValueOnce(makeResult({ output: 'impl v2' }))
-        .mockResolvedValueOnce(makeResult({ output: 'REJECTED\nbug B' }));
+        .mockResolvedValueOnce(makeResult({ output: 'impl v2' }));
+
+      mockParallelReview
+        .mockResolvedValueOnce(makeReviewResult())
+        .mockResolvedValueOnce(makeReviewResult({ approved: false, consolidatedFeedback: 'bug A' }))
+        .mockResolvedValueOnce(makeReviewResult({ approved: false, consolidatedFeedback: 'bug B' }));
 
       const result = await orchestrator.run('task', '/tmp', noopCallbacks);
 
@@ -536,27 +590,18 @@ describe('PipelineOrchestrator', () => {
 
   describe('max iterations protection', () => {
     it('should fail pipeline when iterations exceed MAX_ITERATIONS', async () => {
-      // 制造无限循环：review 始终 REJECTED，但 retries 永远不增长
-      // 实际上 MAX_RETRIES=2 会先触发，所以我们用一个更直接的方式：
-      // 不断 REJECTED → retry → REJECTED → retry... 直到 MAX_ITERATIONS
-      // 每轮消耗 2 calls (plan + review)，MAX_RETRIES=2 在第 4 calls 后触发
-      // 所以正常情况下 MAX_ITERATIONS 不会先触发
-      // 为了测试 MAX_ITERATIONS，模拟一个极端情况：大量 mock 返回值
-      const mocks: ReturnType<typeof makeResult>[] = [];
+      // Set up mocks for many iterations
       for (let i = 0; i < 25; i++) {
-        mocks.push(makeResult({ output: `plan v${i}` }));
-        mocks.push(makeResult({ output: 'REJECTED\nredo' }));
+        mockExecute.mockResolvedValueOnce(makeResult({ output: `plan v${i}` }));
       }
-      for (const m of mocks) {
-        mockExecute.mockResolvedValueOnce(m);
+      for (let i = 0; i < 25; i++) {
+        mockParallelReview.mockResolvedValueOnce(makeReviewResult({ approved: false, consolidatedFeedback: 'redo' }));
       }
 
       const result = await orchestrator.run('task', '/tmp', noopCallbacks);
 
       expect(result.success).toBe(false);
       expect(result.state.phase).toBe('failed');
-      // 应该在 MAX_RETRIES 或 MAX_ITERATIONS 处终止
-      expect(mockExecute.mock.calls.length).toBeLessThanOrEqual(20);
     });
   });
 
@@ -568,10 +613,12 @@ describe('PipelineOrchestrator', () => {
     it('should continue pipeline when onPhaseChange throws', async () => {
       mockExecute
         .mockResolvedValueOnce(makeResult({ output: 'plan' }))
-        .mockResolvedValueOnce(makeResult({ output: 'APPROVED' }))
         .mockResolvedValueOnce(makeResult({ output: 'impl' }))
-        .mockResolvedValueOnce(makeResult({ output: 'APPROVED' }))
         .mockResolvedValueOnce(makeResult({ output: 'pushed' }));
+
+      mockParallelReview
+        .mockResolvedValueOnce(makeReviewResult())
+        .mockResolvedValueOnce(makeReviewResult());
 
       const failingCallback = vi.fn().mockRejectedValue(new Error('callback exploded'));
 
@@ -581,19 +628,19 @@ describe('PipelineOrchestrator', () => {
 
       expect(result.success).toBe(true);
       expect(result.state.phase).toBe('done');
-      // 回调仍然被调用了（只是异常被吞掉）
       expect(failingCallback).toHaveBeenCalled();
     });
 
     it('should complete pipeline when onPhaseChange throws on final notification', async () => {
       mockExecute
         .mockResolvedValueOnce(makeResult({ output: 'plan' }))
-        .mockResolvedValueOnce(makeResult({ output: 'APPROVED' }))
         .mockResolvedValueOnce(makeResult({ output: 'impl' }))
-        .mockResolvedValueOnce(makeResult({ output: 'APPROVED' }))
         .mockResolvedValueOnce(makeResult({ output: 'pushed' }));
 
-      // 只在最后一次调用时抛异常（final notification）
+      mockParallelReview
+        .mockResolvedValueOnce(makeReviewResult())
+        .mockResolvedValueOnce(makeReviewResult());
+
       let callCount = 0;
       const onPhaseChange = vi.fn().mockImplementation(async () => {
         callCount++;

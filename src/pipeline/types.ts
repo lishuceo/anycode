@@ -25,6 +25,31 @@ export const PHASE_META: Record<PipelinePhase, { label: string; index: number }>
 
 export const TOTAL_PHASES = 5;
 
+/** Review agent 角色配置 */
+export interface ReviewAgentConfig {
+  role: string;
+  icon: string;
+  planReviewSystemPrompt: string;
+  codeReviewSystemPrompt: string;
+}
+
+/** 单个 review agent 的裁决 */
+export interface ReviewVerdict {
+  role: string;
+  approved: boolean;
+  abstained: boolean;  // agent 崩溃/超时时 true
+  feedback: string;
+  costUsd: number;
+  durationMs: number;
+}
+
+/** 并行 review 聚合结果 */
+export interface ReviewResult {
+  approved: boolean;
+  verdicts: ReviewVerdict[];
+  consolidatedFeedback: string;  // 合并的拒绝反馈，用于注入重试 prompt
+}
+
 /** 管道状态（可序列化，用于恢复） */
 export interface PipelineState {
   phase: PipelinePhase;
@@ -32,12 +57,12 @@ export interface PipelineState {
   workingDir: string;
   /** Step 1 输出：实施方案文本 */
   plan?: string;
-  /** Step 2 输出：审查结果 */
-  planReviewFeedback?: string;
+  /** Step 2 输出：方案审查结果 */
+  planReviewResult?: ReviewResult;
   /** Step 3 输出：实现摘要 */
   implementOutput?: string;
   /** Step 4 输出：代码审查结果 */
-  codeReviewFeedback?: string;
+  codeReviewResult?: ReviewResult;
   /** Step 5 输出：推送/PR 结果 */
   pushOutput?: string;
   /** 各阶段重试计数 */
