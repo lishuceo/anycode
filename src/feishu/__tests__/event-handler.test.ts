@@ -344,14 +344,13 @@ async function simulateEnsureThread(
   }
 
   // 2. 用户在主聊天区发消息 — 新会话
-  sessionManager.setConversationId(chatId, userId, '');
-
   const { messageId: botMsgId, threadId } = await feishuClient.replyInThread(
     messageId,
     '🤖 新会话已创建',
   );
 
   if (threadId && botMsgId) {
+    sessionManager.setConversationId(chatId, userId, '');
     sessionManager.setThread(chatId, userId, threadId, messageId);
     return messageId;
   }
@@ -423,7 +422,7 @@ describe('ensureThread session routing', () => {
     const result = await simulateEnsureThread('chat1', 'user1', 'msg-1');
 
     expect(result).toBeUndefined();
-    // conversationId 仍应被清空（在创建话题之前就清了）
-    expect(mockSessionSetConversationId).toHaveBeenCalledWith('chat1', 'user1', '');
+    // 话题创建失败时不应清空 conversationId，保留续接旧对话的能力
+    expect(mockSessionSetConversationId).not.toHaveBeenCalled();
   });
 });

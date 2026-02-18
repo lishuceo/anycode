@@ -415,9 +415,6 @@ async function ensureThread(
 
   // 2. 用户在主聊天区发消息（无 rootId）— 新会话意图
   //    如果想继续旧话题，用户应在话题内回复；在主区发消息 = 新对话
-  //    清空旧的 Claude 会话 ID，防止续接到无关的旧对话
-  sessionManager.setConversationId(chatId, userId, '');
-
   const greeting = '🤖 新会话已创建';
   const { messageId: botMsgId, threadId } = await feishuClient.replyInThread(
     messageId,
@@ -425,7 +422,9 @@ async function ensureThread(
   );
 
   if (threadId && botMsgId) {
-    // 保存用户原始消息 ID 作为话题锚点（话题附着在此消息上）
+    // 话题创建成功后才清空旧 conversationId，避免 replyInThread 失败时
+    // 既没有新话题又丢失了续接旧对话的能力
+    sessionManager.setConversationId(chatId, userId, '');
     sessionManager.setThread(chatId, userId, threadId, messageId);
     return messageId;
   }
