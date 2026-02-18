@@ -50,6 +50,7 @@ export function createWorkspaceMcpServer(onWorkspaceChanged?: SessionUpdater) {
           feature_branch: z.string().optional().describe('自定义 feature 分支名 (默认自动生成, 仅 writable 模式)'),
         },
         async (args) => {
+          logger.info({ args: { repo_url: args.repo_url, local_path: args.local_path, mode: args.mode } }, 'setup_workspace tool invoked');
           try {
             const result = setupWorkspace({
               repoUrl: args.repo_url,
