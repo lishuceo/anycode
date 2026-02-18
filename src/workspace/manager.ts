@@ -42,6 +42,20 @@ export interface SetupWorkspaceResult {
 const SAFE_BRANCH_RE = /^[a-zA-Z0-9._\/-]+$/;
 /** git 远程 URL 协议前缀 */
 const GIT_URL_RE = /^(https?:\/\/|git@|ssh:\/\/|git:\/\/)/;
+/** SSH 简写格式: github.com:user/repo.git (缺少 git@ 前缀) */
+const SSH_SHORTHAND_RE = /^[\w.-]+\.\w{2,}:[\w./-]+$/;
+
+/**
+ * 归一化仓库 URL
+ * - SSH 简写 (github.com:user/repo) → git@github.com:user/repo
+ * - 其他格式原样返回
+ */
+function normalizeRepoUrl(url: string): string {
+  if (!GIT_URL_RE.test(url) && SSH_SHORTHAND_RE.test(url)) {
+    return `git@${url}`;
+  }
+  return url;
+}
 
 
 /**
@@ -65,7 +79,9 @@ export function deriveRepoName(source: string): string {
  *   直接从本地路径 clone (不经过缓存层)
  */
 export function setupWorkspace(options: SetupWorkspaceOptions): SetupWorkspaceResult {
-  const { repoUrl, localPath, mode = 'writable', sourceBranch, featureBranch } = options;
+  const { localPath, mode = 'writable', sourceBranch, featureBranch } = options;
+  // 归一化 URL: github.com:user/repo → git@github.com:user/repo
+  const repoUrl = options.repoUrl ? normalizeRepoUrl(options.repoUrl) : undefined;
 
   const source = repoUrl || localPath;
   if (!source) {
