@@ -50,5 +50,18 @@ export interface ExecuteOptions {
   disableWorkspaceTool?: boolean;
 }
 
+/** 工具调用信息 */
+export interface ToolCallInfo {
+  name: string;
+  input: Record<string, unknown>;
+}
+
+/** 单轮 assistant turn 信息 */
+export interface TurnInfo {
+  turnIndex: number;
+  textContent: string;
+  toolCalls: ToolCallInfo[];
+}
+
 /** 执行进度回调 — 接收 SDK 的 SDKMessage */
 export type ProgressCallback = (message: import('@anthropic-ai/claude-agent-sdk').SDKMessage) => void;
