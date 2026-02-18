@@ -9,11 +9,11 @@ import type {
 } from './types.js';
 import {
   PLAN_SYSTEM_PROMPT,
-  PLAN_REVIEW_SYSTEM_PROMPT,
   IMPLEMENT_SYSTEM_PROMPT,
-  CODE_REVIEW_SYSTEM_PROMPT,
   PUSH_SYSTEM_PROMPT,
+  REVIEW_AGENT_CONFIGS,
 } from './prompts.js';
+import { parallelReview } from './reviewer.js';
 
 // ============================================================
 // Pipeline Orchestrator — 状态机驱动的多步开发管道
@@ -120,8 +120,8 @@ export class PipelineOrchestrator {
   ): Promise<PipelineState> {
     // 如果是重试，带上上次 review 的反馈
     let prompt = state.userPrompt;
-    if (state.planReviewFeedback) {
-      prompt = `${state.userPrompt}\n\n---\n上一版方案被审查拒绝，请根据以下反馈修改方案：\n${state.planReviewFeedback}`;
+    if (state.planReviewResult && !state.planReviewResult.approved) {
+      prompt = `${state.userPrompt}\n\n---\n上一版方案被审查拒绝，请根据以下反馈修改方案：\n${state.planReviewResult.consolidatedFeedback}`;
     }
 
     const result = await this.executeStep(
@@ -155,6 +155,7 @@ export class PipelineOrchestrator {
 
   // ============================================================
   // Phase: Review (plan_review 和 code_review 共用)
+  // 使用并行多 agent review (Phase B)
   // ============================================================
 
   private async doReview(
@@ -163,17 +164,13 @@ export class PipelineOrchestrator {
     callbacks: PipelineCallbacks,
   ): Promise<PipelineState> {
     const isPlanReview = reviewPhase === 'plan_review';
-    const systemPrompt = isPlanReview
-      ? PLAN_REVIEW_SYSTEM_PROMPT
-      : CODE_REVIEW_SYSTEM_PROMPT;
 
     // 构建 review prompt
-    let prompt: string;
+    let content: string;
     if (isPlanReview) {
-      prompt = `请审查以下实施方案：\n\n${state.plan}`;
+      content = `请审查以下实施方案：\n\n${state.plan}`;
     } else {
-      // 代码审查：让 reviewer 自己 git diff
-      prompt = [
+      content = [
         `请审查当前工作目录中的代码变更。`,
         ``,
         `原始需求: ${state.userPrompt}`,
@@ -186,40 +183,44 @@ export class PipelineOrchestrator {
       ].join('\n');
     }
 
-    const result = await this.executeStep(
-      `pipeline-${reviewPhase}-${Date.now()}`,
-      prompt,
-      state.workingDir,
-      systemPrompt,
-      undefined,
-      callbacks.onStreamUpdate,
-    );
-
-    const totalCostUsd = state.totalCostUsd + (result.costUsd ?? 0);
-
-    if (!result.success) {
-      // review agent 自身失败（超时/崩溃等）— fail-closed，不跳过审查
-      logger.warn({ reviewPhase, error: result.error }, 'Review agent failed, treating as pipeline failure');
-      return {
-        ...state,
-        totalCostUsd,
-        phase: 'failed',
-        failedAtPhase: reviewPhase,
-        failureReason: `${isPlanReview ? '方案' : '代码'}审查 agent 执行失败: ${result.error || '未知错误'}`,
-      };
+    // 构建进度状态 map，用于增量更新
+    const agentStatus = new Map<string, string>();
+    for (const config of REVIEW_AGENT_CONFIGS) {
+      agentStatus.set(config.role, `${config.icon} ${config.role} ⏳`);
     }
 
-    const verdict = this.parseVerdict(result.output);
+    const reviewResult = await parallelReview({
+      reviewType: isPlanReview ? 'plan' : 'code',
+      content,
+      workingDir: state.workingDir,
+      onAgentComplete: async (_completed, _total, role, approved, abstained) => {
+        const config = REVIEW_AGENT_CONFIGS.find(c => c.role === role);
+        const icon = config?.icon ?? '❓';
+        const statusIcon = abstained ? '⚠️' : approved ? '✅' : '❌';
+        agentStatus.set(role, `${icon} ${role} ${statusIcon}`);
 
-    if (verdict.approved) {
-      logger.info({ reviewPhase }, 'Review approved');
+        const progressText = Array.from(agentStatus.values()).join(' | ');
+        try {
+          await callbacks.onStreamUpdate?.(progressText);
+        } catch {
+          // ignore callback errors
+        }
+      },
+    });
+
+    // 累加所有 agent 的 cost
+    const reviewCost = reviewResult.verdicts.reduce((sum, v) => sum + v.costUsd, 0);
+    const totalCostUsd = state.totalCostUsd + reviewCost;
+
+    if (reviewResult.approved) {
+      logger.info({ reviewPhase, verdicts: reviewResult.verdicts.map(v => ({ role: v.role, approved: v.approved, abstained: v.abstained })) }, 'Review approved');
       return {
         ...state,
         totalCostUsd,
         phase: isPlanReview ? 'implement' : 'push',
         ...(isPlanReview
-          ? { planReviewFeedback: undefined }
-          : { codeReviewFeedback: undefined }),
+          ? { planReviewResult: reviewResult }
+          : { codeReviewResult: reviewResult }),
       };
     }
 
@@ -235,11 +236,14 @@ export class PipelineOrchestrator {
         phase: 'failed',
         failedAtPhase: reviewPhase,
         retries: { ...state.retries, [retryKey]: retryCount },
-        failureReason: `${isPlanReview ? '方案' : '代码'}审查连续 ${retryCount} 次未通过:\n${verdict.feedback}`,
+        ...(isPlanReview
+          ? { planReviewResult: reviewResult }
+          : { codeReviewResult: reviewResult }),
+        failureReason: `${isPlanReview ? '方案' : '代码'}审查连续 ${retryCount} 次未通过:\n${reviewResult.consolidatedFeedback}`,
       };
     }
 
-    logger.info({ reviewPhase, retryCount, feedback: verdict.feedback.slice(0, 200) }, 'Review rejected, retrying');
+    logger.info({ reviewPhase, retryCount, feedback: reviewResult.consolidatedFeedback.slice(0, 200) }, 'Review rejected, retrying');
 
     // 回退到上一步重做
     return {
@@ -248,8 +252,8 @@ export class PipelineOrchestrator {
       phase: isPlanReview ? 'plan' : 'implement',
       retries: { ...state.retries, [retryKey]: retryCount },
       ...(isPlanReview
-        ? { planReviewFeedback: verdict.feedback }
-        : { codeReviewFeedback: verdict.feedback }),
+        ? { planReviewResult: reviewResult }
+        : { codeReviewResult: reviewResult }),
     };
   }
 
@@ -264,8 +268,8 @@ export class PipelineOrchestrator {
     let prompt = `请按照以下已审批方案实施代码修改：\n\n${state.plan}`;
 
     // 如果是重试，带上 code review 反馈
-    if (state.codeReviewFeedback) {
-      prompt += `\n\n---\n上一版实现被代码审查拒绝，请根据以下反馈修改：\n${state.codeReviewFeedback}`;
+    if (state.codeReviewResult && !state.codeReviewResult.approved) {
+      prompt += `\n\n---\n上一版实现被代码审查拒绝，请根据以下反馈修改：\n${state.codeReviewResult.consolidatedFeedback}`;
     }
 
     const result = await this.executeStep(
@@ -370,28 +374,17 @@ export class PipelineOrchestrator {
   }
 
   /**
-   * 解析 review 输出中的 APPROVED/REJECTED
+   * 格式化 review 结果为摘要文本
    */
-  private parseVerdict(output: string): { approved: boolean; feedback: string } {
-    const lines = output.trim().split('\n');
-    const firstLine = lines[0]?.trim().toUpperCase() ?? '';
-
-    if (firstLine === 'APPROVED' || firstLine.startsWith('APPROVED')) {
-      return { approved: true, feedback: lines.slice(1).join('\n').trim() };
-    }
-
-    if (firstLine === 'REJECTED' || firstLine.startsWith('REJECTED')) {
-      return { approved: false, feedback: lines.slice(1).join('\n').trim() };
-    }
-
-    // 无法解析 → 搜索全文（使用词边界避免匹配 "NOT APPROVED" 等子串）
-    if (/\bAPPROVED\b/i.test(output) && !/\bREJECTED\b/i.test(output)) {
-      return { approved: true, feedback: output };
-    }
-
-    // 默认 REJECTED（宁可多审一轮）
-    logger.warn({ firstLine: lines[0] }, 'Could not parse review verdict, defaulting to REJECTED');
-    return { approved: false, feedback: output };
+  private formatReviewSummary(label: string, result: import('./types.js').ReviewResult): string {
+    const lines = result.verdicts.map((v) => {
+      const config = REVIEW_AGENT_CONFIGS.find(c => c.role === v.role);
+      const icon = config?.icon ?? '❓';
+      const status = v.abstained ? '⚠️ 弃权' : v.approved ? '✅ 通过' : '❌ 拒绝';
+      return `  ${icon} ${v.role}: ${status}`;
+    });
+    const overall = result.approved ? '✅ 通过' : '❌ 未通过';
+    return `**${label}:** ${overall}\n${lines.join('\n')}`;
   }
 
   /**
@@ -401,7 +394,13 @@ export class PipelineOrchestrator {
     if (state.phase === 'failed') {
       const parts: string[] = ['## 管道执行失败'];
       if (state.failureReason) parts.push(`\n**原因:** ${state.failureReason}`);
+      if (state.planReviewResult) {
+        parts.push(`\n${this.formatReviewSummary('方案审查', state.planReviewResult)}`);
+      }
       if (state.plan) parts.push(`\n**方案:**\n${state.plan.slice(0, 1000)}`);
+      if (state.codeReviewResult) {
+        parts.push(`\n${this.formatReviewSummary('代码审查', state.codeReviewResult)}`);
+      }
       if (state.implementOutput) parts.push(`\n**已完成的实现:**\n${state.implementOutput.slice(0, 1000)}`);
       return parts.join('\n');
     }
@@ -411,8 +410,14 @@ export class PipelineOrchestrator {
     if (state.plan) {
       parts.push(`\n**方案:**\n${state.plan.slice(0, 800)}`);
     }
+    if (state.planReviewResult) {
+      parts.push(`\n${this.formatReviewSummary('方案审查', state.planReviewResult)}`);
+    }
     if (state.implementOutput) {
       parts.push(`\n**实现:**\n${state.implementOutput.slice(0, 800)}`);
+    }
+    if (state.codeReviewResult) {
+      parts.push(`\n${this.formatReviewSummary('代码审查', state.codeReviewResult)}`);
     }
     if (state.pushOutput) {
       parts.push(`\n**推送:**\n${state.pushOutput.slice(0, 500)}`);
