@@ -505,6 +505,8 @@ async function executeClaudeTask(
   // 发送轻量处理提示（即时反馈）
   if (threadRootMsgId) {
     await feishuClient.replyTextInThread(threadRootMsgId, '🤖 处理中...');
+  } else {
+    await feishuClient.replyText(messageId, '🤖 处理中...');
   }
 
   // 标记会话为忙碌
@@ -615,7 +617,7 @@ async function executeClaudeTask(
 
       await sendResultCard(
         prompt, restartResult, totalDurationMs, totalCostUsd,
-        threadRootMsgId, chatId, pendingTurn, turnCount,
+        threadRootMsgId, chatId, threadRootMsgId ? pendingTurn : undefined, turnCount,
       );
       return;
     }
@@ -627,7 +629,7 @@ async function executeClaudeTask(
 
     await sendResultCard(
       prompt, result, result.durationMs, result.costUsd,
-      threadRootMsgId, chatId, pendingTurn, turnCount,
+      threadRootMsgId, chatId, threadRootMsgId ? pendingTurn : undefined, turnCount,
     );
 
     // 保存会话摘要（用户 prompt + 输出末尾）
