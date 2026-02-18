@@ -404,7 +404,7 @@ async function ensureThread(
   messageId: string,
   rootId?: string,
 ): Promise<string | undefined> {
-  const session = sessionManager.getOrCreate(chatId, userId);
+  sessionManager.getOrCreate(chatId, userId);
 
   // 1. 用户在已有话题内发消息 — 直接复用该话题，无需发送问候
   if (rootId) {
@@ -413,21 +413,18 @@ async function ensureThread(
     return rootId;
   }
 
-  // 2. session 已有话题信息（用户在话题外发消息，但之前的话题仍在）
-  if (session.threadId && session.threadRootMessageId) {
-    return session.threadRootMessageId;
-  }
-
-  // 3. 全新场景 — 创建话题，根据是否有 conversationId 判断是新建还是恢复
-  const isResumed = !!session.conversationId;
-  const greeting = isResumed ? '🤖 会话已恢复' : '🤖 新会话已创建';
+  // 2. 用户在主聊天区发消息（无 rootId）— 新会话意图
+  //    如果想继续旧话题，用户应在话题内回复；在主区发消息 = 新对话
+  const greeting = '🤖 新会话已创建';
   const { messageId: botMsgId, threadId } = await feishuClient.replyInThread(
     messageId,
     greeting,
   );
 
   if (threadId && botMsgId) {
-    // 保存用户原始消息 ID 作为话题锚点（话题附着在此消息上）
+    // 话题创建成功后才清空旧 conversationId，避免 replyInThread 失败时
+    // 既没有新话题又丢失了续接旧对话的能力
+    sessionManager.setConversationId(chatId, userId, '');
     sessionManager.setThread(chatId, userId, threadId, messageId);
     return messageId;
   }
@@ -465,11 +462,12 @@ async function executeClaudeTask(
   messageId: string,
   rootId?: string,
 ): Promise<void> {
-  const session = sessionManager.getOrCreate(chatId, userId);
   const sessionKey = `${chatId}:${userId}`;
 
   // 确保话题存在，返回话题锚点消息 ID
+  // ensureThread 在新话题场景下会清空 conversationId，需要之后重新读取 session
   const threadRootMsgId = await ensureThread(chatId, userId, messageId, rootId);
+  const session = sessionManager.getOrCreate(chatId, userId);
 
   // 发送 "处理中" 卡片（优先发到话题内）
   let progressMsgId: string | undefined;
