@@ -6,6 +6,7 @@ import { claudeExecutor } from './claude/executor.js';
 import { cleanupTmpDirs, cleanupExpiredCaches } from './workspace/cache.js';
 import { pipelineStore } from './pipeline/store.js';
 import { recoverInterruptedPipelines } from './pipeline/runner.js';
+import { killOrphanedClaudeProcesses } from './utils/process-cleanup.js';
 
 function main(): void {
   logger.info('Starting Feishu Claude Code Bridge...');
@@ -25,8 +26,9 @@ function main(): void {
     timeoutSeconds: config.claude.timeoutSeconds,
   }, 'Configuration loaded');
 
-  // 启动时清理残留的 .tmp-* 临时目录
+  // 启动时清理残留的 .tmp-* 临时目录和孤儿 Claude 子进程
   cleanupTmpDirs();
+  killOrphanedClaudeProcesses();
 
   // 启动 HTTP 服务
   startServer();
@@ -45,23 +47,24 @@ function main(): void {
   }, 30 * 60 * 1000);
 
   // 优雅退出
-  process.on('SIGINT', () => {
-    logger.info('Received SIGINT, shutting down...');
-    claudeExecutor.killAll();
-    pipelineStore.markRunningAsInterrupted();
-    pipelineStore.close();
-    sessionManager.close();
-    process.exit(0);
-  });
+  let shuttingDown = false;
 
-  process.on('SIGTERM', () => {
-    logger.info('Received SIGTERM, shutting down...');
+  function shutdown(signal: string): void {
+    if (shuttingDown) return;
+    shuttingDown = true;
+
+    logger.info({ signal }, 'Shutting down...');
     claudeExecutor.killAll();
     pipelineStore.markRunningAsInterrupted();
     pipelineStore.close();
     sessionManager.close();
-    process.exit(0);
-  });
+
+    // 给子进程时间响应 SIGTERM 后再退出（PM2 kill_timeout 内）
+    setTimeout(() => process.exit(0), 3000);
+  }
+
+  process.on('SIGINT', () => shutdown('SIGINT'));
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
 }
 
 main();
