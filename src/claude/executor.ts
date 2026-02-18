@@ -198,6 +198,13 @@ export class ClaudeExecutor {
           return { behavior: 'allow' as const, updatedInput: inputObj };
         },
 
+        // 模型 + thinking + effort
+        model: config.claude.model,
+        thinking: config.claude.thinking === 'adaptive'
+          ? { type: 'adaptive' as const }
+          : { type: 'disabled' as const },
+        effort: config.claude.effort,
+
         // 预算和限制
         maxTurns: maxTurns ?? 50,
         maxBudgetUsd: maxBudgetUsd ?? 5,
