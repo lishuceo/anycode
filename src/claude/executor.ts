@@ -71,14 +71,15 @@ function buildWorkspaceSystemPrompt(): string {
 - mode="writable": 需要修改代码、提交变更时使用。会创建隔离工作区和 feature 分支。
 
 **如何使用:**
-- 远程仓库: 使用 repo_url 参数传入仓库 URL
-- 本地仓库: 使用 local_path 参数传入仓库绝对路径
+- **优先使用 repo_url**: 当用户提供了仓库 URL（或你能从上下文推断出 URL），始终用 repo_url 参数。这会自动走缓存 + 隔离工作区流程
+- local_path 仅用于项目目录（\`${projectsDir}\`）下已有的仓库，且路径必须在该目录范围内
 - 根据意图选择 mode (readonly 或 writable)
 - 可选指定 source_branch (源分支) 和 feature_branch (自定义分支名, 仅 writable)
 
 **无需使用的场景:**
 - 当前工作目录已经是目标仓库
 - 用户只是查看/分析代码，且仓库已在项目目录中（直接 cd 或用绝对路径读取即可）
+- 注意：如果用户要**修改**项目目录中已有的仓库代码，应使用 repo_url 创建隔离工作区，不要直接在原始仓库上改
 
 **重要：调用 setup_workspace 后，系统将自动重启以加载项目配置（CLAUDE.md 等）。
 请在调用后仅输出简短确认（如"工作区已就绪，正在重新加载项目配置..."），不要继续执行后续任务。**
