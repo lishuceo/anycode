@@ -14,7 +14,7 @@ vi.mock('../../utils/logger.js', () => ({
 
 vi.mock('../../config.js', () => ({
   config: {
-    db: { sessionDbPath: '/tmp/test.db' },
+    db: { sessionDbPath: '/tmp/test.db', pipelineDbPath: '/tmp/test-pipeline.db' },
   },
 }));
 

@@ -230,4 +230,4 @@ export function generatePipelineId(): string {
   return `pipe_${Date.now()}_${randomBytes(4).toString('hex')}`;
 }
 
-export const pipelineStore = new PipelineStore(config.db.sessionDbPath);
+export const pipelineStore = new PipelineStore(config.db.pipelineDbPath);

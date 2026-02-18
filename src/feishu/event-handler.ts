@@ -8,6 +8,7 @@ import { buildProgressCard, buildResultCard, buildStreamingCard, buildStatusCard
 import { feishuClient } from './client.js';
 import { config } from '../config.js';
 import { setupWorkspace } from '../workspace/manager.js';
+import { ensureThread } from './thread-utils.js';
 import { pipelineStore } from '../pipeline/store.js';
 import {
   createPendingPipeline,
@@ -90,9 +91,15 @@ export function createCardActionHandler(): lark.CardActionHandler {
 
     if (!actionType || !pipelineId) return {};
 
-    // 验证操作者身份：只有管道创建者可以操作
+    // 验证操作者身份：无法识别身份时拒绝操作（fail closed）
+    if (!operatorId) {
+      logger.warn({ pipelineId }, 'Card action rejected: no operator identity');
+      return {};
+    }
+
+    // 只有管道创建者可以操作
     const record = pipelineStore.get(pipelineId);
-    if (record && operatorId && record.userId !== operatorId) {
+    if (record && record.userId !== operatorId) {
       logger.warn({ pipelineId, operatorId, ownerId: record.userId }, 'Card action rejected: operator is not pipeline owner');
       return {};
     }
@@ -119,12 +126,14 @@ async function handlePipelineConfirm(pipelineId: string): Promise<Record<string,
   const record = pipelineStore.get(pipelineId);
   if (!record) return {};
 
-  if (record.status !== 'pending_confirm') {
-    // 已经被处理过（double-click），返回当前卡片
+  // 同步执行 CAS，确保只在转换成功后才返回进度卡片
+  // 避免 CAS 失败时用户看到卡住的进度卡片
+  if (!pipelineStore.tryStart(pipelineId)) {
+    // 已经被处理过（double-click 或并发取消）
     return {};
   }
 
-  // 在后台启动管道
+  // CAS 成功，在后台启动管道（startPipeline 会跳过自身的 tryStart）
   startPipeline(pipelineId).catch((err) => {
     logger.error({ err, pipelineId }, 'Failed to start pipeline');
   });
@@ -471,45 +480,6 @@ async function handleSlashCommand(
   }
 
   return false;
-}
-
-/**
- * 确保会话有话题，如果没有则创建一个
- * 返回 threadRootMessageId (用于后续 reply_in_thread)，失败返回 undefined
- */
-async function ensureThread(
-  chatId: string,
-  userId: string,
-  messageId: string,
-  rootId?: string,
-): Promise<string | undefined> {
-  sessionManager.getOrCreate(chatId, userId);
-
-  // 1. 用户在已有话题内发消息 — 直接复用该话题，无需发送问候
-  if (rootId) {
-    // 更新 session 的话题信息，确保后续回复也发到这个话题
-    sessionManager.setThread(chatId, userId, rootId, rootId);
-    return rootId;
-  }
-
-  // 2. 用户在主聊天区发消息（无 rootId）— 新会话意图
-  //    如果想继续旧话题，用户应在话题内回复；在主区发消息 = 新对话
-  const greeting = '🤖 新会话已创建';
-  const { messageId: botMsgId, threadId } = await feishuClient.replyInThread(
-    messageId,
-    greeting,
-  );
-
-  if (threadId && botMsgId) {
-    // 话题创建成功后才清空旧 conversationId，避免 replyInThread 失败时
-    // 既没有新话题又丢失了续接旧对话的能力
-    sessionManager.setConversationId(chatId, userId, '');
-    sessionManager.setThread(chatId, userId, threadId, messageId);
-    return messageId;
-  }
-
-  logger.warn({ chatId, userId }, 'Failed to create thread, falling back to main chat');
-  return undefined;
 }
 
 /**

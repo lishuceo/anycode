@@ -34,37 +34,7 @@ export interface CreatePipelineParams {
   workingDir: string;
 }
 
-/**
- * 确保会话有话题（从 event-handler 导入的逻辑提取）
- */
-async function ensureThreadForPipeline(
-  chatId: string,
-  userId: string,
-  messageId: string,
-  rootId?: string,
-): Promise<string | undefined> {
-  sessionManager.getOrCreate(chatId, userId);
-
-  if (rootId) {
-    sessionManager.setThread(chatId, userId, rootId, rootId);
-    return rootId;
-  }
-
-  const greeting = '🤖 新会话已创建';
-  const { messageId: botMsgId, threadId } = await feishuClient.replyInThread(
-    messageId,
-    greeting,
-  );
-
-  if (threadId && botMsgId) {
-    sessionManager.setConversationId(chatId, userId, '');
-    sessionManager.setThread(chatId, userId, threadId, messageId);
-    return messageId;
-  }
-
-  logger.warn({ chatId, userId }, 'Failed to create thread for pipeline');
-  return undefined;
-}
+import { ensureThread } from '../feishu/thread-utils.js';
 
 /**
  * 创建待确认的管道（发送确认卡片，写入 store）
@@ -74,7 +44,7 @@ export async function createPendingPipeline(params: CreatePipelineParams): Promi
   const pipelineId = generatePipelineId();
 
   // 确保话题存在
-  const threadRootMsgId = await ensureThreadForPipeline(chatId, userId, messageId, rootId);
+  const threadRootMsgId = await ensureThread(chatId, userId, messageId, rootId);
 
   // 发送确认卡片
   const confirmCard = buildPipelineConfirmCard(prompt, pipelineId, workingDir);
@@ -112,10 +82,14 @@ export async function startPipeline(pipelineId: string): Promise<void> {
     return;
   }
 
-  // CAS: pending_confirm → running
-  if (!pipelineStore.tryStart(pipelineId)) {
-    logger.info({ pipelineId }, 'Pipeline already started (duplicate click)');
-    return;
+  // CAS 已在 handlePipelineConfirm 中完成（同步执行以确保卡片更新正确）
+  // 这里做防御性检查：如果状态不是 running，说明 CAS 未执行或被并发修改
+  if (record.status !== 'running') {
+    // 兜底尝试：兼容直接调用 startPipeline 的场景
+    if (!pipelineStore.tryStart(pipelineId)) {
+      logger.info({ pipelineId }, 'Pipeline already started or not in pending state');
+      return;
+    }
   }
 
   const { chatId, userId, prompt, workingDir, progressMsgId, threadRootMsgId } = record;
@@ -251,11 +225,15 @@ export async function startPipeline(pipelineId: string): Promise<void> {
     pipelineStore.updateState(pipelineId, 'failed', '', JSON.stringify({ failureReason: String(err) }));
 
     if (progressMsgId) {
-      const elapsed = Math.floor((Date.now() - pipelineStartTime) / 1000);
-      await feishuClient.updateCard(progressMsgId, buildPipelineCard(
-        prompt, 'failed', 1, TOTAL_PHASES, elapsed, undefined,
-        `❌ 管道执行出错: ${(err as Error).message}`, pipelineId,
-      ));
+      try {
+        const elapsed = Math.floor((Date.now() - pipelineStartTime) / 1000);
+        await feishuClient.updateCard(progressMsgId, buildPipelineCard(
+          prompt, 'failed', 1, TOTAL_PHASES, elapsed, undefined,
+          `❌ 管道执行出错: ${(err as Error).message}`, pipelineId,
+        ));
+      } catch (cardErr) {
+        logger.warn({ cardErr, pipelineId }, 'Failed to update error card');
+      }
     }
   } finally {
     runningPipelines.delete(pipelineId);

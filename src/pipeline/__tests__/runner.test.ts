@@ -16,7 +16,7 @@ vi.mock('../../utils/logger.js', () => ({
 
 vi.mock('../../config.js', () => ({
   config: {
-    db: { sessionDbPath: '/tmp/test-runner.db' },
+    db: { sessionDbPath: '/tmp/test-runner.db', pipelineDbPath: '/tmp/test-runner-pipeline.db' },
     claude: { defaultWorkDir: '/tmp' },
   },
 }));
@@ -61,6 +61,10 @@ vi.mock('../../claude/executor.js', () => ({
 
 vi.mock('../reviewer.js', () => ({
   parallelReview: vi.fn(),
+}));
+
+vi.mock('../../feishu/thread-utils.js', () => ({
+  ensureThread: vi.fn().mockResolvedValue('root1'),
 }));
 
 // Use a dynamic import pattern to handle the store mock properly
