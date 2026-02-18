@@ -83,9 +83,19 @@ export function createCardActionHandler(): lark.CardActionHandler {
     const actionType = action?.value?.action as string | undefined;
     const pipelineId = action?.value?.pipelineId as string | undefined;
 
-    logger.info({ actionType, pipelineId }, 'Card action received');
+    // 提取操作者 user ID
+    const operatorId = (data.operator as { open_id?: string } | undefined)?.open_id;
+
+    logger.info({ actionType, pipelineId, operatorId }, 'Card action received');
 
     if (!actionType || !pipelineId) return {};
+
+    // 验证操作者身份：只有管道创建者可以操作
+    const record = pipelineStore.get(pipelineId);
+    if (record && operatorId && record.userId !== operatorId) {
+      logger.warn({ pipelineId, operatorId, ownerId: record.userId }, 'Card action rejected: operator is not pipeline owner');
+      return {};
+    }
 
     switch (actionType) {
       case 'pipeline_confirm':

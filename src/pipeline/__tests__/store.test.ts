@@ -280,7 +280,7 @@ describe('PipelineStore', () => {
   describe('generatePipelineId', () => {
     it('should generate IDs with pipe_ prefix', () => {
       const id = generatePipelineId();
-      expect(id).toMatch(/^pipe_\d+_[0-9a-f]{4}$/);
+      expect(id).toMatch(/^pipe_\d+_[0-9a-f]{8}$/);
     });
 
     it('should generate unique IDs', () => {

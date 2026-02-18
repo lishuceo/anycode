@@ -36,6 +36,13 @@ export class PipelineOrchestrator {
   }
 
   /**
+   * 是否已被中止
+   */
+  isAborted(): boolean {
+    return this.aborted;
+  }
+
+  /**
    * 获取当前正在执行的 session key（用于外部 kill）
    */
   getCurrentSessionKey(): string | undefined {

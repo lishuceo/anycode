@@ -227,7 +227,7 @@ export class PipelineStore {
 }
 
 export function generatePipelineId(): string {
-  return `pipe_${Date.now()}_${randomBytes(2).toString('hex')}`;
+  return `pipe_${Date.now()}_${randomBytes(4).toString('hex')}`;
 }
 
 export const pipelineStore = new PipelineStore(config.db.sessionDbPath);

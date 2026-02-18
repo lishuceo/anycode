@@ -195,8 +195,10 @@ export async function startPipeline(pipelineId: string): Promise<void> {
       historySummaries,
     );
 
-    // 更新最终状态
-    const finalStatus = pipelineResult.success ? 'done' as const : 'failed' as const;
+    // 更新最终状态（中止的管道保留 aborted 状态，不覆盖为 failed）
+    const finalStatus = orchestrator.isAborted()
+      ? 'aborted' as const
+      : pipelineResult.success ? 'done' as const : 'failed' as const;
     pipelineStore.updateState(pipelineId, finalStatus, pipelineResult.state.phase, JSON.stringify(pipelineResult.state));
 
     // 最终卡片
@@ -280,7 +282,8 @@ export function abortPipeline(pipelineId: string): boolean {
     claudeExecutor.killSession(sessionKey);
   }
 
-  pipelineStore.updateState(pipelineId, 'aborted', '', '{}');
+  // 不在这里设置 aborted 状态 — startPipeline 的完成处理器会检查
+  // orchestrator.isAborted() 来决定最终状态是 aborted 还是 failed
   logger.info({ pipelineId }, 'Pipeline abort requested');
   return true;
 }
