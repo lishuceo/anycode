@@ -631,12 +631,13 @@ async function executeClaudeTask(
       progressMsgId, threadRootMsgId, chatId,
     );
 
-    // 保存会话摘要（取输出末尾 500 字符作为摘要）
+    // 保存会话摘要（用户 prompt + 输出末尾）
     if (result.success && result.output && result.output.length > 100) {
       try {
         const date = new Date().toISOString().slice(0, 10);
-        const tail = result.output.slice(-500).trim();
-        const summary = `[${date}] dir: ${session.workingDir} | ${tail}`;
+        const promptSnippet = prompt.length > 200 ? prompt.slice(0, 200) + '...' : prompt;
+        const tail = result.output.slice(-300).trim();
+        const summary = `[${date}] dir: ${session.workingDir} | 用户: ${promptSnippet} | 回复: ${tail}`;
         sessionManager.saveSummary(chatId, userId, session.workingDir, summary);
       } catch (err) {
         logger.warn({ err }, 'Failed to save session summary');
