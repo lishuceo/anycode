@@ -185,7 +185,8 @@ export class ClaudeExecutor {
         permissionMode: 'acceptEdits',
         canUseTool: async (toolName: string, inputObj: Record<string, unknown>) => {
           logger.info({ toolName, inputKeys: Object.keys(inputObj) }, 'canUseTool called — auto allowing');
-          return { behavior: 'allow' as const };
+          // updatedInput 必须显式传回，否则 SDK 内部 Zod 校验会因 undefined 报错
+          return { behavior: 'allow' as const, updatedInput: inputObj };
         },
 
         // 预算和限制
