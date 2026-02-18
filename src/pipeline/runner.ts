@@ -209,12 +209,13 @@ export async function startPipeline(pipelineId: string): Promise<void> {
       }
     }
 
-    // 保存摘要
+    // 保存摘要（含用户原始 prompt）
     if (pipelineResult.summary.length > 100) {
       try {
         const date = new Date().toISOString().slice(0, 10);
-        const tail = pipelineResult.summary.slice(-500).trim();
-        const summary = `[${date}] [pipeline] dir: ${workingDir} | ${tail}`;
+        const promptSnippet = prompt.length > 200 ? prompt.slice(0, 200) + '...' : prompt;
+        const tail = pipelineResult.summary.slice(-300).trim();
+        const summary = `[${date}] [pipeline] dir: ${workingDir} | 用户: ${promptSnippet} | 回复: ${tail}`;
         sessionManager.saveSummary(chatId, userId, workingDir, summary);
       } catch (err) {
         logger.warn({ err }, 'Failed to save pipeline summary');

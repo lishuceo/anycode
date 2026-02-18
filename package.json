@@ -26,7 +26,7 @@
     "node": ">=18.0.0"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.2.42",
+    "@anthropic-ai/claude-agent-sdk": "^0.2.45",
     "@larksuiteoapi/node-sdk": "^1.40.0",
     "better-sqlite3": "^12.6.2",
     "dotenv": "^16.4.0",
