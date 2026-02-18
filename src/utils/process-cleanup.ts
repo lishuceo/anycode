@@ -34,6 +34,14 @@ export function killOrphanedClaudeProcesses(): number {
       const basename = cmd.split('/').pop();
       if (basename !== 'claude') continue;
 
+      // 仅清理真正的孤儿进程（PPID=1 表示父进程已退出，被 init 接管）
+      try {
+        const ppid = execSync(`ps -o ppid= -p ${pid} 2>/dev/null`, { encoding: 'utf-8' }).trim();
+        if (ppid !== '1') continue;
+      } catch {
+        continue; // 无法获取 PPID，跳过
+      }
+
       try {
         process.kill(pid, 'SIGTERM');
         killed++;

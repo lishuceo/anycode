@@ -39,7 +39,7 @@ function main(): void {
   });
 
   // 定时清理过期会话、Claude Code 进程、缓存和管道记录 (每 30 分钟)
-  setInterval(() => {
+  const cleanupInterval = setInterval(() => {
     sessionManager.cleanup();
     claudeExecutor.cleanup();
     cleanupExpiredCaches();
@@ -54,6 +54,7 @@ function main(): void {
     shuttingDown = true;
 
     logger.info({ signal }, 'Shutting down...');
+    clearInterval(cleanupInterval);
     claudeExecutor.killAll();
     pipelineStore.markRunningAsInterrupted();
     pipelineStore.close();
