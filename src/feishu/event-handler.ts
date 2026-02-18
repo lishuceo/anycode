@@ -4,7 +4,8 @@ import { isUserAllowed, containsDangerousCommand } from '../utils/security.js';
 import { sessionManager } from '../session/manager.js';
 import { taskQueue } from '../session/queue.js';
 import { claudeExecutor } from '../claude/executor.js';
-import { buildProgressCard, buildResultCard, buildStreamingCard, buildStatusCard, buildCancelledCard, buildPipelineCard, buildPipelineConfirmCard } from './message-builder.js';
+import type { TurnInfo } from '../claude/types.js';
+import { buildResultCard, buildStatusCard, buildCancelledCard, buildPipelineCard, buildPipelineConfirmCard, buildTurnCard, buildSimpleResultCard } from './message-builder.js';
 import { feishuClient } from './client.js';
 import { config } from '../config.js';
 import { setupWorkspace } from '../workspace/manager.js';
@@ -501,13 +502,9 @@ async function executeClaudeTask(
   const threadRootMsgId = await ensureThread(chatId, userId, messageId, rootId);
   const session = sessionManager.getOrCreate(chatId, userId);
 
-  // 发送 "处理中" 卡片（优先发到话题内）
-  let progressMsgId: string | undefined;
+  // 发送轻量处理提示（即时反馈）
   if (threadRootMsgId) {
-    progressMsgId = await feishuClient.replyCardInThread(threadRootMsgId, buildProgressCard(prompt));
-  }
-  if (!progressMsgId) {
-    progressMsgId = await feishuClient.sendCard(chatId, buildProgressCard(prompt));
+    await feishuClient.replyTextInThread(threadRootMsgId, '🤖 处理中...');
   }
 
   // 标记会话为忙碌
@@ -524,12 +521,19 @@ async function executeClaudeTask(
     historySummaries = combined;
   }
 
-  // 构造流式卡片更新回调
-  const executeStartTime = Date.now();
-  const onStreamUpdate = async (text: string) => {
-    if (!progressMsgId) return;
-    const elapsed = Math.floor((Date.now() - executeStartTime) / 1000);
-    await feishuClient.updateCard(progressMsgId, buildStreamingCard(prompt, text, elapsed));
+  // 构造逐条 turn 回调
+  // 策略：缓冲最后一个 turn，收到新 turn 时才发送前一个。
+  // 结束时把最后一个 turn 的内容合并进底部结果卡片，避免单轮查询出两张卡片。
+  let turnCount = 0;
+  let pendingTurn: TurnInfo | undefined;
+  const onTurn = async (turn: TurnInfo) => {
+    turnCount = turn.turnIndex;
+    // 发送前一个缓冲的 turn（当前 turn 的到来证明前一个不是最后一轮）
+    if (pendingTurn && threadRootMsgId) {
+      await feishuClient.replyCardInThread(threadRootMsgId, buildTurnCard(pendingTurn));
+    }
+    // 缓冲当前 turn
+    pendingTurn = turn;
   };
 
   // workspace 变更回调: MCP 工具 clone 后自动更新 session.workingDir
@@ -551,7 +555,7 @@ async function executeClaudeTask(
       resumeSessionId: session.conversationId,
       onProgress,
       onWorkspaceChanged,
-      onStreamUpdate,
+      onTurn,
       historySummaries,
     });
 
@@ -576,18 +580,13 @@ async function executeClaudeTask(
         await sendResultCard(
           prompt, { ...result, success: false, output: '', error: '工作区准备失败，目录不存在' },
           result.durationMs, result.costUsd,
-          progressMsgId, threadRootMsgId, chatId,
+          threadRootMsgId, chatId,
         );
         return;
       }
 
       // 清空残留的 conversationId，避免指向只做了 workspace setup 的短 session
       sessionManager.setConversationId(chatId, userId, '');
-
-      // 更新进度卡片
-      if (progressMsgId) {
-        await feishuClient.updateCard(progressMsgId, buildProgressCard(prompt, '正在加载项目配置...'));
-      }
 
       // 第二次 query：以新 cwd 执行，CLAUDE.md 正确加载
       // - 不传 resumeSessionId（全新 session）
@@ -598,7 +597,7 @@ async function executeClaudeTask(
         prompt,
         workingDir: result.newWorkingDir,
         onProgress,
-        onStreamUpdate,
+        onTurn,
         historySummaries,
         disableWorkspaceTool: true,
       });
@@ -616,7 +615,7 @@ async function executeClaudeTask(
 
       await sendResultCard(
         prompt, restartResult, totalDurationMs, totalCostUsd,
-        progressMsgId, threadRootMsgId, chatId,
+        threadRootMsgId, chatId, pendingTurn, turnCount,
       );
       return;
     }
@@ -628,7 +627,7 @@ async function executeClaudeTask(
 
     await sendResultCard(
       prompt, result, result.durationMs, result.costUsd,
-      progressMsgId, threadRootMsgId, chatId,
+      threadRootMsgId, chatId, pendingTurn, turnCount,
     );
 
     // 保存会话摘要（用户 prompt + 输出末尾）
@@ -668,32 +667,37 @@ async function sendResultCard(
   result: import('../claude/types.js').ClaudeResult,
   totalDurationMs: number,
   totalCostUsd: number | undefined,
-  progressMsgId: string | undefined,
   threadRootMsgId: string | undefined,
   chatId: string,
+  /** 最后一个缓冲的 turn（逐条模式），其内容合并进底部结果卡片 */
+  lastTurn?: TurnInfo,
+  /** 逐条模式的轮次计数 */
+  _turnCount?: number,
 ): Promise<void> {
   const durationStr = formatDuration(totalDurationMs);
   const costInfo = totalCostUsd
     ? ` | 💰 $${totalCostUsd.toFixed(4)}`
     : '';
 
-  const resultCard = buildResultCard(
-    prompt,
-    result.output || result.error || '(无输出)',
-    result.success,
-    durationStr + costInfo,
-  );
+  // 结果卡片：逐条模式包含最后一轮内容，否则包含完整输出
+  const resultCard = lastTurn
+    ? buildSimpleResultCard(prompt, result.success, durationStr + costInfo, result.error, lastTurn)
+    : buildResultCard(
+        prompt,
+        result.output || result.error || '(无输出)',
+        result.success,
+        durationStr + costInfo,
+      );
 
-  if (progressMsgId) {
-    await feishuClient.updateCard(progressMsgId, resultCard);
-  } else if (threadRootMsgId) {
+  // 发送到话题底部（作为新消息）
+  if (threadRootMsgId) {
     await feishuClient.replyCardInThread(threadRootMsgId, resultCard);
   } else {
     await feishuClient.sendCard(chatId, resultCard);
   }
 
-  // 如果输出特别长，额外发送完整文本
-  if (result.output && result.output.length > 3000) {
+  // 非逐条模式下，如果输出特别长，额外发送完整文本
+  if (!lastTurn && result.output && result.output.length > 3000) {
     if (threadRootMsgId) {
       await feishuClient.replyTextInThread(threadRootMsgId, result.output);
     } else {

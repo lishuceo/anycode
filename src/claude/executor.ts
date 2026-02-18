@@ -4,7 +4,7 @@ import { mkdirSync, existsSync } from 'node:fs';
 import { config } from '../config.js';
 import { logger } from '../utils/logger.js';
 import { createWorkspaceMcpServer } from '../workspace/tool.js';
-import type { ClaudeResult, ExecuteOptions, ProgressCallback } from './types.js';
+import type { ClaudeResult, ExecuteOptions, ProgressCallback, TurnInfo, ToolCallInfo } from './types.js';
 
 // ============================================================
 // Claude Agent SDK 执行器
@@ -23,6 +23,7 @@ export interface ExecuteInput extends ExecuteOptions {
   onProgress?: ProgressCallback;
   onWorkspaceChanged?: (newDir: string) => void;
   onStreamUpdate?: (text: string) => Promise<void>;
+  onTurn?: (turn: TurnInfo) => Promise<void>;
   historySummaries?: string;
   /** 覆盖 system prompt（用于 pipeline 各角色独立 prompt） */
   systemPromptOverride?: string;
@@ -123,7 +124,7 @@ export class ClaudeExecutor {
   async execute(input: ExecuteInput): Promise<ClaudeResult> {
     const {
       sessionKey, prompt, workingDir, resumeSessionId,
-      onProgress, onWorkspaceChanged, onStreamUpdate, historySummaries,
+      onProgress, onWorkspaceChanged, onStreamUpdate, onTurn, historySummaries,
       systemPromptOverride, disableWorkspaceTool, maxTurns, maxBudgetUsd,
     } = input;
 
@@ -233,6 +234,11 @@ export class ClaudeExecutor {
     let lastStreamPromise: Promise<void> | undefined;
     let streamFailed = 0;
 
+    // Turn 回调状态
+    let turnIndex = 0;
+    let turnFailed = 0;
+    let lastTurnPromise: Promise<void> | undefined;
+
     try {
       // 遍历 SDK 流式消息
       for await (const message of q) {
@@ -250,17 +256,33 @@ export class ClaudeExecutor {
             }
             break;
 
-          case 'assistant':
-            // 提取文本输出
+          case 'assistant': {
+            // 提取文本输出和工具调用
+            const turnText: string[] = [];
+            const turnTools: ToolCallInfo[] = [];
+
             if (message.message?.content) {
               for (const block of message.message.content) {
                 if ('text' in block && block.text) {
                   output += block.text;
+                  turnText.push(block.text);
+                }
+                if ('type' in block && block.type === 'tool_use' && 'name' in block && 'input' in block) {
+                  turnTools.push({ name: block.name as string, input: block.input as Record<string, unknown> });
                 }
               }
             }
 
-            // 流式卡片更新（节流：3秒 或 500字符，连续失败 3 次后停止）
+            // 逐条 turn 回调（新机制，连续失败 3 次后停止）
+            if (onTurn && turnFailed < 3 && (turnText.length > 0 || turnTools.length > 0)) {
+              turnIndex++;
+              // 等待前一个 turn 完成再发，保证顺序
+              if (lastTurnPromise) await lastTurnPromise.catch(() => {});
+              lastTurnPromise = onTurn({ turnIndex, textContent: turnText.join(''), toolCalls: turnTools })
+                .catch(() => { turnFailed++; });
+            }
+
+            // 旧流式卡片更新（pipeline 仍在用，节流：3秒 或 500字符，连续失败 3 次后停止）
             if (onStreamUpdate && streamFailed < 3) {
               const now = Date.now();
               const newChars = output.length - lastStreamLen;
@@ -271,6 +293,7 @@ export class ClaudeExecutor {
               }
             }
             break;
+          }
 
           case 'result':
             resultMessage = message;
@@ -302,7 +325,8 @@ export class ClaudeExecutor {
 
     clearTimeout(timer);
 
-    // 等待最后一个流式更新完成，防止与最终卡片更新竞态
+    // 等待最后一个回调完成，防止与最终卡片更新竞态
+    if (lastTurnPromise) await lastTurnPromise.catch(() => {});
     if (lastStreamPromise) await lastStreamPromise.catch(() => {});
 
     this.runningQueries.delete(sessionKey);

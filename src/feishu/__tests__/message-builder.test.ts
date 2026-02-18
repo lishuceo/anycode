@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { buildProgressCard, buildResultCard, buildStreamingCard, buildPipelineCard, buildStatusCard } from '../message-builder.js';
+import { buildProgressCard, buildResultCard, buildStreamingCard, buildPipelineCard, buildStatusCard, buildTurnCard, buildOverviewCard, buildSimpleResultCard } from '../message-builder.js';
+import type { TurnInfo } from '../../claude/types.js';
 
 describe('buildProgressCard', () => {
   it('should build a card with the given prompt', () => {
@@ -171,5 +172,188 @@ describe('buildStatusCard', () => {
     expect(fields[0].text.content).toContain('/home/user/project');
     expect(fields[1].text.content).toContain('idle');
     expect(fields[2].text.content).toContain('3');
+  });
+});
+
+describe('buildTurnCard', () => {
+  it('should build a card with text content and tool calls', () => {
+    const turn: TurnInfo = {
+      turnIndex: 1,
+      textContent: 'Let me read the file.',
+      toolCalls: [{ name: 'Read', input: { file_path: '/src/index.ts' } }],
+    };
+    const card = buildTurnCard(turn) as any;
+    expect(card.header.title.content).toBe('Turn 1');
+    expect(card.header.template).toBe('default');
+    const body = card.elements[0].text.content as string;
+    expect(body).toContain('Let me read the file.');
+    expect(body).toContain('📖');
+    expect(body).toContain('/src/index.ts');
+  });
+
+  it('should show only tool calls when no text', () => {
+    const turn: TurnInfo = {
+      turnIndex: 3,
+      textContent: '',
+      toolCalls: [
+        { name: 'Bash', input: { command: 'npm test' } },
+        { name: 'Edit', input: { file_path: '/src/app.ts' } },
+      ],
+    };
+    const card = buildTurnCard(turn) as any;
+    const body = card.elements[0].text.content as string;
+    expect(body).toContain('💻');
+    expect(body).toContain('npm test');
+    expect(body).toContain('✏️');
+    expect(body).toContain('/src/app.ts');
+  });
+
+  it('should show only text when no tool calls', () => {
+    const turn: TurnInfo = {
+      turnIndex: 2,
+      textContent: 'Here is my analysis.',
+      toolCalls: [],
+    };
+    const card = buildTurnCard(turn) as any;
+    const body = card.elements[0].text.content as string;
+    expect(body).toContain('Here is my analysis.');
+    expect(body).not.toContain('📖');
+  });
+
+  it('should truncate long text content at 3000 chars', () => {
+    const turn: TurnInfo = {
+      turnIndex: 1,
+      textContent: 'X'.repeat(4000),
+      toolCalls: [],
+    };
+    const card = buildTurnCard(turn) as any;
+    const body = card.elements[0].text.content as string;
+    expect(body).toContain('_(内容过长，已截断)_');
+    expect(body.length).toBeLessThan(4000);
+  });
+
+  it('should truncate long Bash commands at 80 chars', () => {
+    const turn: TurnInfo = {
+      turnIndex: 1,
+      textContent: '',
+      toolCalls: [{ name: 'Bash', input: { command: 'a'.repeat(100) } }],
+    };
+    const card = buildTurnCard(turn) as any;
+    const body = card.elements[0].text.content as string;
+    expect(body).toContain('...');
+    // 80 chars + "..." + backticks overhead
+    expect(body.length).toBeLessThan(100 + 20);
+  });
+
+  it('should format Glob, Grep, Write, and setup_workspace tools', () => {
+    const turn: TurnInfo = {
+      turnIndex: 1,
+      textContent: '',
+      toolCalls: [
+        { name: 'Glob', input: { pattern: '**/*.ts' } },
+        { name: 'Grep', input: { pattern: 'TODO' } },
+        { name: 'Write', input: { file_path: '/tmp/out.txt' } },
+        { name: 'setup_workspace', input: { repo_url: 'https://github.com/user/repo' } },
+      ],
+    };
+    const card = buildTurnCard(turn) as any;
+    const body = card.elements[0].text.content as string;
+    expect(body).toContain('🔍 **Glob** **/*.ts');
+    expect(body).toContain('🔍 **Grep** TODO');
+    expect(body).toContain('📝 **Write** /tmp/out.txt');
+    expect(body).toContain('📦 **setup_workspace** https://github.com/user/repo');
+  });
+
+  it('should use fallback icon for unknown tools', () => {
+    const turn: TurnInfo = {
+      turnIndex: 1,
+      textContent: '',
+      toolCalls: [{ name: 'CustomTool', input: {} }],
+    };
+    const card = buildTurnCard(turn) as any;
+    const body = card.elements[0].text.content as string;
+    expect(body).toContain('🔧 **CustomTool**');
+  });
+});
+
+describe('buildOverviewCard', () => {
+  it('should show processing state', () => {
+    const card = buildOverviewCard('analyze code', 'processing', 3, 25) as any;
+    expect(card.header.template).toBe('blue');
+    expect(card.elements[0].text.content).toContain('analyze code');
+    const note = card.elements[2];
+    expect(note.elements[0].content).toContain('处理中');
+    expect(note.elements[0].content).toContain('3 轮');
+    expect(note.elements[0].content).toContain('25s');
+  });
+
+  it('should show success state with cost', () => {
+    const card = buildOverviewCard('fix bug', 'success', 5, 60, 0.0312) as any;
+    expect(card.header.template).toBe('green');
+    const note = card.elements[2];
+    expect(note.elements[0].content).toContain('完成');
+    expect(note.elements[0].content).toContain('5 轮');
+    expect(note.elements[0].content).toContain('$0.0312');
+  });
+
+  it('should show error state', () => {
+    const card = buildOverviewCard('test', 'error', 2, 10) as any;
+    expect(card.header.template).toBe('red');
+    const note = card.elements[2];
+    expect(note.elements[0].content).toContain('失败');
+  });
+
+  it('should show 0 turns initially', () => {
+    const card = buildOverviewCard('test', 'processing', 0, 0) as any;
+    const note = card.elements[2];
+    expect(note.elements[0].content).toContain('0 轮');
+    expect(note.elements[0].content).toContain('0s');
+  });
+});
+
+describe('buildSimpleResultCard', () => {
+  it('should show minimal card when no lastTurn', () => {
+    const card = buildSimpleResultCard('do something', true, '5s | 💰 $0.02') as any;
+    expect(card.header.template).toBe('green');
+    expect(card.header.title.content).toContain('执行完成');
+    // only note (no prompt, no content, no hr)
+    expect(card.elements).toHaveLength(1);
+    expect(card.elements[0].elements[0].content).toContain('✅');
+    expect(card.elements[0].elements[0].content).toContain('5s');
+  });
+
+  it('should merge lastTurn content into the card', () => {
+    const lastTurn: TurnInfo = {
+      turnIndex: 1,
+      textContent: 'Here is the answer.',
+      toolCalls: [{ name: 'Read', input: { file_path: '/src/app.ts' } }],
+    };
+    const card = buildSimpleResultCard('question', true, '3s', undefined, lastTurn) as any;
+    // content + hr + note = 3 elements
+    expect(card.elements).toHaveLength(3);
+    const allText = card.elements.map((e: any) => e.text?.content ?? '').join(' ');
+    expect(allText).toContain('Here is the answer.');
+    expect(allText).toContain('📖');
+    expect(allText).toContain('/src/app.ts');
+  });
+
+  it('should show error message on failure', () => {
+    const card = buildSimpleResultCard('test', false, '10s', 'something broke') as any;
+    expect(card.header.template).toBe('red');
+    expect(card.header.title.content).toContain('执行失败');
+    // error + hr + note = 3 elements
+    expect(card.elements).toHaveLength(3);
+    const allText = card.elements.map((e: any) => e.text?.content ?? '').join(' ');
+    expect(allText).toContain('something broke');
+  });
+
+  it('should show both lastTurn and error on failure', () => {
+    const lastTurn: TurnInfo = { turnIndex: 1, textContent: 'partial work', toolCalls: [] };
+    const card = buildSimpleResultCard('test', false, '10s', 'something broke', lastTurn) as any;
+    // content + hr + error + hr + note = 5 elements
+    expect(card.elements).toHaveLength(5);
+    const allText = card.elements.map((e: any) => e.text?.content ?? '').join(' ');
+    expect(allText).toContain('partial work');
+    expect(allText).toContain('something broke');
   });
 });
