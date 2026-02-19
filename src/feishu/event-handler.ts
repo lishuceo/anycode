@@ -571,34 +571,8 @@ async function executeClaudeTask(
       historySummaries,
     });
 
-    // Resume 失败：报错给用户，保留 session ID 不动（会话记录是用户数据，不擅自清除）
-    // 用户可发 /reset 主动放弃旧会话
-    if (!result.success && canResume) {
-      logger.error(
-        { sessionKey, error: result.error, sessionId: session.conversationId, durationMs: result.durationMs },
-        'Resume failed — session ID preserved for user to decide',
-      );
-
-      const errorDetail = [
-        '⚠️ 会话恢复失败',
-        '',
-        `**Session ID**: \`${session.conversationId}\``,
-        `**工作目录**: \`${session.workingDir}\``,
-        `**错误**: ${result.error || '未知错误'}`,
-        `**耗时**: ${formatDuration(result.durationMs)}`,
-        '',
-        '再次发送消息会继续尝试恢复。如需放弃旧会话重新开始，请发送 `/reset`。',
-      ].join('\n');
-
-      if (threadRootMsgId) {
-        await feishuClient.replyTextInThread(threadRootMsgId, errorDetail);
-      } else {
-        await feishuClient.replyText(messageId, errorDetail);
-      }
-      return;
-    }
-
     // 检测是否需要 restart（workspace 变更后重新执行以加载 CLAUDE.md）
+    // 优先级高于 resume 失败检查：即使 query 失败，只要 workspace 已变更就应重启
     if (result.needsRestart && result.newWorkingDir) {
       logger.info(
         { chatId, userId, newWorkingDir: result.newWorkingDir },
@@ -656,6 +630,33 @@ async function executeClaudeTask(
         prompt, restartResult, totalDurationMs, totalCostUsd,
         threadRootMsgId, chatId, threadRootMsgId ? pendingTurn : undefined, turnCount,
       );
+      return;
+    }
+
+    // Resume 失败（非 workspace 变更场景）：报错给用户，保留 session ID 不动
+    // 用户可发 /reset 主动放弃旧会话
+    if (!result.success && canResume) {
+      logger.error(
+        { sessionKey, error: result.error, sessionId: session.conversationId, durationMs: result.durationMs },
+        'Resume failed — session ID preserved for user to decide',
+      );
+
+      const errorDetail = [
+        '⚠️ 会话恢复失败',
+        '',
+        `**Session ID**: \`${session.conversationId}\``,
+        `**工作目录**: \`${session.workingDir}\``,
+        `**错误**: ${result.error || '未知错误'}`,
+        `**耗时**: ${formatDuration(result.durationMs)}`,
+        '',
+        '再次发送消息会继续尝试恢复。如需放弃旧会话重新开始，请发送 `/reset`。',
+      ].join('\n');
+
+      if (threadRootMsgId) {
+        await feishuClient.replyTextInThread(threadRootMsgId, errorDetail);
+      } else {
+        await feishuClient.replyText(messageId, errorDetail);
+      }
       return;
     }
 

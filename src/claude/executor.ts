@@ -339,6 +339,8 @@ export class ClaudeExecutor {
         error: errorMsg,
         sessionId,
         durationMs,
+        needsRestart: workspaceChanged,
+        newWorkingDir,
       };
     }
 
