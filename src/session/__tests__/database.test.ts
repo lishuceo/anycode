@@ -151,3 +151,200 @@ describe('SessionDatabase — session_summaries', () => {
     });
   });
 });
+
+describe('SessionDatabase — thread_sessions', () => {
+  let db: SessionDatabase;
+  let tempDir: string;
+
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), 'session-db-test-'));
+    db = new SessionDatabase(join(tempDir, 'test.db'));
+  });
+
+  afterEach(() => {
+    db.close();
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  describe('upsertThreadSession', () => {
+    it('should insert a new thread session', () => {
+      const now = new Date();
+      db.upsertThreadSession({
+        threadId: 'thread-1',
+        chatId: 'chat-1',
+        userId: 'user-1',
+        workingDir: '/projects/repo-a',
+        createdAt: now,
+        updatedAt: now,
+      });
+
+      const session = db.getThreadSession('thread-1');
+      expect(session).toBeDefined();
+      expect(session!.threadId).toBe('thread-1');
+      expect(session!.chatId).toBe('chat-1');
+      expect(session!.userId).toBe('user-1');
+      expect(session!.workingDir).toBe('/projects/repo-a');
+      expect(session!.conversationId).toBeUndefined();
+    });
+
+    it('should update existing thread session on conflict', () => {
+      const now = new Date();
+      db.upsertThreadSession({
+        threadId: 'thread-1',
+        chatId: 'chat-1',
+        userId: 'user-1',
+        workingDir: '/projects/repo-a',
+        createdAt: now,
+        updatedAt: now,
+      });
+
+      db.upsertThreadSession({
+        threadId: 'thread-1',
+        chatId: 'chat-1',
+        userId: 'user-1',
+        workingDir: '/projects/repo-b',
+        conversationId: 'conv-1',
+        conversationCwd: '/projects/repo-b',
+        createdAt: now,
+        updatedAt: new Date(),
+      });
+
+      const session = db.getThreadSession('thread-1');
+      expect(session!.workingDir).toBe('/projects/repo-b');
+      expect(session!.conversationId).toBe('conv-1');
+    });
+  });
+
+  describe('getThreadSession', () => {
+    it('should return undefined for non-existent thread', () => {
+      expect(db.getThreadSession('non-existent')).toBeUndefined();
+    });
+  });
+
+  describe('updateThreadConversationId', () => {
+    it('should update conversationId and cwd', () => {
+      const now = new Date();
+      db.upsertThreadSession({
+        threadId: 'thread-1',
+        chatId: 'chat-1',
+        userId: 'user-1',
+        workingDir: '/projects/repo-a',
+        createdAt: now,
+        updatedAt: now,
+      });
+
+      db.updateThreadConversationId('thread-1', 'conv-abc', '/projects/repo-a');
+
+      const session = db.getThreadSession('thread-1');
+      expect(session!.conversationId).toBe('conv-abc');
+      expect(session!.conversationCwd).toBe('/projects/repo-a');
+    });
+  });
+
+  describe('updateThreadWorkingDir', () => {
+    it('should update workingDir and clear conversationId', () => {
+      const now = new Date();
+      db.upsertThreadSession({
+        threadId: 'thread-1',
+        chatId: 'chat-1',
+        userId: 'user-1',
+        workingDir: '/projects/repo-a',
+        conversationId: 'conv-old',
+        conversationCwd: '/projects/repo-a',
+        createdAt: now,
+        updatedAt: now,
+      });
+
+      db.updateThreadWorkingDir('thread-1', '/projects/repo-b');
+
+      const session = db.getThreadSession('thread-1');
+      expect(session!.workingDir).toBe('/projects/repo-b');
+      expect(session!.conversationId).toBeUndefined();
+      expect(session!.conversationCwd).toBeUndefined();
+    });
+  });
+
+  describe('deleteExpiredThreadSessions', () => {
+    it('should return 0 when no thread sessions exist', () => {
+      const cleaned = db.deleteExpiredThreadSessions(30 * 24 * 60 * 60 * 1000);
+      expect(cleaned).toBe(0);
+    });
+
+    it('should not delete recent thread sessions', () => {
+      const now = new Date();
+      db.upsertThreadSession({
+        threadId: 'thread-1',
+        chatId: 'chat-1',
+        userId: 'user-1',
+        workingDir: '/projects/repo-a',
+        createdAt: now,
+        updatedAt: now,
+      });
+
+      const cleaned = db.deleteExpiredThreadSessions(30 * 24 * 60 * 60 * 1000);
+      expect(cleaned).toBe(0);
+      expect(db.getThreadSession('thread-1')).toBeDefined();
+    });
+
+    it('should delete thread sessions older than threshold', () => {
+      const now = new Date();
+      db.upsertThreadSession({
+        threadId: 'thread-old',
+        chatId: 'chat-1',
+        userId: 'user-1',
+        workingDir: '/projects/repo-a',
+        createdAt: now,
+        updatedAt: now,
+      });
+      db.upsertThreadSession({
+        threadId: 'thread-new',
+        chatId: 'chat-1',
+        userId: 'user-1',
+        workingDir: '/projects/repo-b',
+        createdAt: now,
+        updatedAt: now,
+      });
+
+      // Back-date the old thread session
+      const oldDate = new Date(Date.now() - 31 * 24 * 60 * 60 * 1000).toISOString();
+      (db as any).db.prepare(
+        "UPDATE thread_sessions SET updated_at = ? WHERE thread_id = 'thread-old'"
+      ).run(oldDate);
+
+      const cleaned = db.deleteExpiredThreadSessions(30 * 24 * 60 * 60 * 1000);
+      expect(cleaned).toBe(1);
+      expect(db.getThreadSession('thread-old')).toBeUndefined();
+      expect(db.getThreadSession('thread-new')).toBeDefined();
+    });
+  });
+
+  describe('thread_sessions survive session cleanup', () => {
+    it('should not be affected by deleteExpired on sessions table', () => {
+      const now = new Date();
+      db.upsertThreadSession({
+        threadId: 'thread-1',
+        chatId: 'chat-1',
+        userId: 'user-1',
+        workingDir: '/projects/repo-a',
+        createdAt: now,
+        updatedAt: now,
+      });
+
+      // Create and expire a global session
+      db.upsert('chat-1:user-1', {
+        chatId: 'chat-1',
+        userId: 'user-1',
+        workingDir: '/tmp',
+        status: 'idle',
+        createdAt: new Date(),
+        lastActiveAt: new Date(Date.now() - 48 * 60 * 60 * 1000),
+      });
+
+      db.deleteExpired(24 * 60 * 60 * 1000);
+
+      // Global session gone, but thread session survives
+      expect(db.get('chat-1:user-1')).toBeUndefined();
+      expect(db.getThreadSession('thread-1')).toBeDefined();
+    });
+  });
+});

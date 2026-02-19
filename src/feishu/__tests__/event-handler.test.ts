@@ -21,6 +21,12 @@ const mockSessionSetWorkingDir = vi.fn();
 const mockSessionSetStatus = vi.fn();
 const mockSessionSetConversationId = vi.fn();
 const mockSessionSetThread = vi.fn();
+const mockGetThreadSession = vi.fn();
+const mockUpsertThreadSession = vi.fn();
+const mockSetThreadConversationId = vi.fn();
+const mockSetThreadWorkingDir = vi.fn();
+const mockGetRecentSummaries = vi.fn(() => []);
+const mockSaveSummary = vi.fn();
 
 vi.mock('../../session/manager.js', () => ({
   sessionManager: {
@@ -30,6 +36,12 @@ vi.mock('../../session/manager.js', () => ({
     setStatus: (...args: unknown[]) => mockSessionSetStatus(...args),
     setConversationId: (...args: unknown[]) => mockSessionSetConversationId(...args),
     setThread: (...args: unknown[]) => mockSessionSetThread(...args),
+    getThreadSession: (...args: unknown[]) => mockGetThreadSession(...args),
+    upsertThreadSession: (...args: unknown[]) => mockUpsertThreadSession(...args),
+    setThreadConversationId: (...args: unknown[]) => mockSetThreadConversationId(...args),
+    setThreadWorkingDir: (...args: unknown[]) => mockSetThreadWorkingDir(...args),
+    getRecentSummaries: (...args: unknown[]) => mockGetRecentSummaries(...args),
+    saveSummary: (...args: unknown[]) => mockSaveSummary(...args),
     reset: vi.fn(),
   },
 }));
@@ -350,7 +362,7 @@ async function simulateEnsureThread(
   );
 
   if (threadId && botMsgId) {
-    sessionManager.setConversationId(chatId, userId, '');
+    // 不清空全局 conversationId——各 thread 通过 thread_sessions 表独立管理
     sessionManager.setThread(chatId, userId, threadId, messageId);
     return messageId;
   }
@@ -381,8 +393,9 @@ describe('ensureThread session routing', () => {
     expect(mockReplyInThread).not.toHaveBeenCalled();
   });
 
-  it('should create new thread and clear conversationId when no rootId — even if old thread exists', async () => {
-    // 这是修复的 bug 场景：session 有旧话题信息，但用户在主区发消息
+  it('should create new thread without clearing conversationId when no rootId', async () => {
+    // thread_sessions 表独立管理每个 thread 的 conversationId，
+    // 不需要在创建新话题时清空全局 conversationId
     mockSessionGetOrCreate.mockReturnValue({
       chatId: 'chat1', userId: 'user1', workingDir: '/tmp/work', status: 'idle',
       threadId: 'thread-old', threadRootMessageId: 'old-root-msg',
@@ -393,8 +406,8 @@ describe('ensureThread session routing', () => {
 
     // 应创建新话题，返回新消息 ID
     expect(result).toBe('msg-new');
-    // 旧 conversationId 应被清空
-    expect(mockSessionSetConversationId).toHaveBeenCalledWith('chat1', 'user1', '');
+    // 不应清空全局 conversationId（thread_sessions 独立管理）
+    expect(mockSessionSetConversationId).not.toHaveBeenCalled();
     // 应通过 replyInThread 创建新话题
     expect(mockReplyInThread).toHaveBeenCalledWith('msg-new', '🤖 新会话已创建');
     // 新话题信息应保存到 session
@@ -409,7 +422,8 @@ describe('ensureThread session routing', () => {
     const result = await simulateEnsureThread('chat1', 'user1', 'msg-first');
 
     expect(result).toBe('msg-first');
-    expect(mockSessionSetConversationId).toHaveBeenCalledWith('chat1', 'user1', '');
+    // 不应清空全局 conversationId
+    expect(mockSessionSetConversationId).not.toHaveBeenCalled();
     expect(mockReplyInThread).toHaveBeenCalled();
   });
 
@@ -424,5 +438,188 @@ describe('ensureThread session routing', () => {
     expect(result).toBeUndefined();
     // 话题创建失败时不应清空 conversationId，保留续接旧对话的能力
     expect(mockSessionSetConversationId).not.toHaveBeenCalled();
+  });
+});
+
+// ============================================================
+// Thread session 集成测试
+//
+// 验证 executeClaudeTask 中 thread session 的关键行为：
+// - 首条消息创建 thread session
+// - 使用 thread session 的 workingDir 和 conversationId
+// - session ID 双写（thread_sessions + 全局 sessions）
+// - summary 使用正确的 workingDir
+// ============================================================
+
+/**
+ * 简化版 executeClaudeTask thread session 逻辑
+ * (提取关键路径用于可测试性)
+ */
+async function simulateThreadSessionFlow(
+  prompt: string,
+  chatId: string,
+  userId: string,
+  session: { workingDir: string; threadId?: string; conversationId?: string; conversationCwd?: string },
+  threadSession?: { workingDir: string; conversationId?: string; conversationCwd?: string },
+) {
+  const { claudeExecutor } = await import('../../claude/executor.js');
+  const { sessionManager } = await import('../../session/manager.js');
+
+  const threadId = session.threadId;
+
+  // 确保 thread_sessions 中有该 thread 的记录
+  if (threadId && !threadSession) {
+    sessionManager.upsertThreadSession(threadId, chatId, userId, session.workingDir);
+  }
+
+  // 工作目录：优先 thread session
+  const workingDir = threadSession?.workingDir ?? session.workingDir;
+
+  // Resume 判断：优先 thread session 的 conversationId
+  const activeConversationId = threadSession?.conversationId ?? session.conversationId;
+  const activeConversationCwd = threadSession?.conversationCwd ?? session.conversationCwd;
+  const canResume = activeConversationId
+    && (!activeConversationCwd || activeConversationCwd === workingDir);
+
+  const result = await claudeExecutor.execute(
+    `${chatId}:${userId}`, prompt, workingDir,
+    canResume ? activeConversationId : undefined,
+  );
+
+  // 保存 session ID（双写）
+  if (result.sessionId) {
+    if (threadId) {
+      sessionManager.setThreadConversationId(threadId, result.sessionId, workingDir);
+    }
+    sessionManager.setConversationId(chatId, userId, result.sessionId, workingDir);
+  }
+
+  // 保存摘要（使用正确的 workingDir）
+  if (result.output && result.output.length > 100) {
+    const date = new Date().toISOString().slice(0, 10);
+    const summary = `[${date}] [成功] dir: ${workingDir} | 用户: ${prompt} | 回复: ...`;
+    sessionManager.saveSummary(chatId, userId, workingDir, summary);
+  }
+
+  return { workingDir, canResume, result };
+}
+
+describe('executeClaudeTask thread session integration', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('should create thread session on first message in thread', async () => {
+    mockExecute.mockResolvedValueOnce({
+      success: true, output: 'done', sessionId: 'sess-1', durationMs: 100,
+    });
+
+    await simulateThreadSessionFlow(
+      'hello', 'chat1', 'user1',
+      { workingDir: '/projects/repo-a', threadId: 'thread-1' },
+      undefined, // no existing thread session
+    );
+
+    expect(mockUpsertThreadSession).toHaveBeenCalledWith(
+      'thread-1', 'chat1', 'user1', '/projects/repo-a',
+    );
+  });
+
+  it('should not re-create thread session if it already exists', async () => {
+    mockExecute.mockResolvedValueOnce({
+      success: true, output: 'done', sessionId: 'sess-1', durationMs: 100,
+    });
+
+    await simulateThreadSessionFlow(
+      'hello', 'chat1', 'user1',
+      { workingDir: '/projects/repo-a', threadId: 'thread-1' },
+      { workingDir: '/projects/repo-a', conversationId: 'old-conv' },
+    );
+
+    expect(mockUpsertThreadSession).not.toHaveBeenCalled();
+  });
+
+  it('should use thread session workingDir over global session', async () => {
+    mockExecute.mockResolvedValueOnce({
+      success: true, output: 'done', sessionId: 'sess-1', durationMs: 100,
+    });
+
+    const outcome = await simulateThreadSessionFlow(
+      'hello', 'chat1', 'user1',
+      { workingDir: '/global/dir', threadId: 'thread-1' },
+      { workingDir: '/thread/specific/dir' },
+    );
+
+    expect(outcome.workingDir).toBe('/thread/specific/dir');
+    // execute should be called with thread's workingDir
+    expect(mockExecute.mock.calls[0][2]).toBe('/thread/specific/dir');
+  });
+
+  it('should resume using thread session conversationId', async () => {
+    mockExecute.mockResolvedValueOnce({
+      success: true, output: 'done', sessionId: 'sess-new', durationMs: 100,
+    });
+
+    const outcome = await simulateThreadSessionFlow(
+      'hello', 'chat1', 'user1',
+      { workingDir: '/projects/repo-a', threadId: 'thread-1', conversationId: 'global-conv' },
+      { workingDir: '/projects/repo-a', conversationId: 'thread-conv', conversationCwd: '/projects/repo-a' },
+    );
+
+    expect(outcome.canResume).toBe(true);
+    // Should resume with thread's conversationId, not global
+    expect(mockExecute.mock.calls[0][3]).toBe('thread-conv');
+  });
+
+  it('should not resume when thread conversationCwd does not match workingDir', async () => {
+    mockExecute.mockResolvedValueOnce({
+      success: true, output: 'done', sessionId: 'sess-new', durationMs: 100,
+    });
+
+    const outcome = await simulateThreadSessionFlow(
+      'hello', 'chat1', 'user1',
+      { workingDir: '/projects/repo-a', threadId: 'thread-1' },
+      { workingDir: '/projects/repo-a', conversationId: 'old-conv', conversationCwd: '/projects/repo-DIFFERENT' },
+    );
+
+    expect(outcome.canResume).toBe(false);
+    expect(mockExecute.mock.calls[0][3]).toBeUndefined();
+  });
+
+  it('should double-write sessionId to both thread and global sessions', async () => {
+    mockExecute.mockResolvedValueOnce({
+      success: true, output: 'done', sessionId: 'sess-1', durationMs: 100,
+    });
+
+    await simulateThreadSessionFlow(
+      'hello', 'chat1', 'user1',
+      { workingDir: '/projects/repo-a', threadId: 'thread-1' },
+      { workingDir: '/projects/repo-a' },
+    );
+
+    expect(mockSetThreadConversationId).toHaveBeenCalledWith('thread-1', 'sess-1', '/projects/repo-a');
+    expect(mockSessionSetConversationId).toHaveBeenCalledWith('chat1', 'user1', 'sess-1', '/projects/repo-a');
+  });
+
+  it('should use resolved workingDir in summary, not global session workingDir', async () => {
+    const longOutput = 'x'.repeat(200); // > 100 chars to trigger summary
+    mockExecute.mockResolvedValueOnce({
+      success: true, output: longOutput, sessionId: 'sess-1', durationMs: 100,
+    });
+
+    await simulateThreadSessionFlow(
+      'fix bug', 'chat1', 'user1',
+      { workingDir: '/global/dir', threadId: 'thread-1' },
+      { workingDir: '/thread/specific/dir' },
+    );
+
+    // saveSummary should use the thread's workingDir, not the global one
+    expect(mockSaveSummary).toHaveBeenCalledWith(
+      'chat1', 'user1', '/thread/specific/dir',
+      expect.stringContaining('/thread/specific/dir'),
+    );
+    // Verify it does NOT contain the global dir
+    const summaryArg = mockSaveSummary.mock.calls[0][3];
+    expect(summaryArg).not.toContain('/global/dir');
   });
 });
