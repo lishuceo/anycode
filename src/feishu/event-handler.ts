@@ -198,20 +198,25 @@ async function handlePipelineRetry(pipelineId: string): Promise<Record<string, u
 }
 
 // ============================================================
-// 队列驱动：确保同一 chat 的 query 串行执行
+// 队列驱动：同一 thread 内串行执行，不同 thread 间可并行
+// queueKey = rootId 存在时用 `chatId:rootId`，否则用 `chatId`
 // ============================================================
 
-function processQueue(chatId: string): void {
-  const task = taskQueue.dequeue(chatId);
+function makeQueueKey(chatId: string, rootId?: string): string {
+  return rootId ? `${chatId}:${rootId}` : chatId;
+}
+
+function processQueue(queueKey: string): void {
+  const task = taskQueue.dequeue(queueKey);
   if (!task) return;
 
   executeClaudeTask(task.message, task.chatId, task.userId, task.messageId, task.rootId)
     .then(() => task.resolve('done'))
     .catch((err) => task.reject(err instanceof Error ? err : new Error(String(err))))
     .finally(() => {
-      taskQueue.complete(chatId);
+      taskQueue.complete(queueKey);
       // 处理队列中的下一个任务
-      processQueue(chatId);
+      processQueue(queueKey);
     });
 }
 
@@ -302,10 +307,11 @@ async function handleMessageEvent(data: MessageEventData): Promise<void> {
     return;
   }
 
-  // 通过 taskQueue 串行化执行，确保同一 chat 同一时间只有一个 query
+  // 通过 taskQueue 串行化执行：同一 thread 内串行，不同 thread 可并行
   // enqueue 返回的 Promise 的错误处理在 processQueue/executeClaudeTask 中完成
-  taskQueue.enqueue(chatId, userId, text, messageId, rootId).catch(() => {});
-  processQueue(chatId);
+  const queueKey = makeQueueKey(chatId, rootId);
+  taskQueue.enqueue(queueKey, chatId, userId, text, messageId, rootId).catch(() => {});
+  processQueue(queueKey);
 }
 
 /**
@@ -371,7 +377,7 @@ async function handleSlashCommand(
     const card = buildStatusCard(
       session.workingDir,
       session.status,
-      taskQueue.pendingCount(chatId),
+      taskQueue.pendingCountForChat(chatId),
     );
     if (threadRootMsgId) {
       await feishuClient.replyCardInThread(threadRootMsgId, card);
@@ -383,8 +389,7 @@ async function handleSlashCommand(
 
   // /reset - 重置会话
   if (trimmed === '/reset') {
-    const sessionKey = `${chatId}:${userId}`;
-    claudeExecutor.killSession(sessionKey);
+    claudeExecutor.killSessionsForChat(chatId, userId);
     // 先在旧话题内回复确认，再清除 session
     const reply = '🔄 会话已重置';
     if (threadRootMsgId) {
@@ -398,10 +403,8 @@ async function handleSlashCommand(
 
   // /stop - 中断执行
   if (trimmed === '/stop') {
-    const sessionKey = `${chatId}:${userId}`;
-    claudeExecutor.killSession(sessionKey);
-    claudeExecutor.killSession(`routing:${sessionKey}`);
-    taskQueue.cancelPending(chatId);
+    claudeExecutor.killSessionsForChat(chatId, userId);
+    taskQueue.cancelAllForChat(chatId);
     sessionManager.setStatus(chatId, userId, 'idle');
     const reply = '🛑 已中断当前会话的执行';
     if (threadRootMsgId) {
@@ -526,7 +529,8 @@ async function executeClaudeTask(
   messageId: string,
   rootId?: string,
 ): Promise<void> {
-  const sessionKey = `${chatId}:${userId}`;
+  // sessionKey 包含 rootId，per-thread 并行时各 query 有独立的 key
+  const sessionKey = rootId ? `${chatId}:${userId}:${rootId}` : `${chatId}:${userId}`;
 
   // 确保话题存在，返回话题锚点消息 ID
   const threadRootMsgId = await ensureThread(chatId, userId, messageId, rootId);
@@ -576,7 +580,7 @@ async function executeClaudeTask(
       ].join('\n');
 
       logger.info({ chatId, userId, threadId, retryCount }, 'Re-routing with clarification context');
-      const decision = await routeWorkspace(context, chatId, userId);
+      const decision = await routeWorkspace(context, chatId, userId, rootId);
 
       if (decision.decision === 'need_clarification') {
         // 再次需要澄清，更新 routingState（递增 retryCount）
@@ -606,7 +610,7 @@ async function executeClaudeTask(
   } else if (threadId && !threadSession?.routingCompleted) {
     // Thread 首条消息（路由尚未完成），需要路由
     logger.info({ chatId, userId, threadId }, 'First message in thread, running routing agent');
-    const decision = await routeWorkspace(prompt, chatId, userId);
+    const decision = await routeWorkspace(prompt, chatId, userId, rootId);
 
     if (decision.decision === 'need_clarification') {
       const question = decision.question || '请提供更多信息，我需要知道你想要操作哪个仓库或项目。';

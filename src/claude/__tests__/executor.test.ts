@@ -202,6 +202,55 @@ describe('ClaudeExecutor', () => {
     });
   });
 
+  describe('killSessionsForChat', () => {
+    it('should kill all session key patterns for a chat', async () => {
+      // 直接往 runningQueries 注入 mock entries 来测试 killSessionsForChat
+      const mockClose = vi.fn();
+      const mockQuery1 = { close: vi.fn() };
+      const mockQuery2 = { close: vi.fn() };
+      const mockQuery3 = { close: vi.fn() };
+      const mockQuery4 = { close: vi.fn() };
+      const mockQueryOther = { close: vi.fn() };
+
+      // 使用 (executor as any) 访问 private runningQueries
+      const rq = (executor as any).runningQueries as Map<string, { close: () => void }>;
+      rq.set('chat1:user1', mockQuery1);                    // 主聊天框 query
+      rq.set('chat1:user1:rootA', mockQuery2);              // thread A query
+      rq.set('routing:chat1:user1', mockQuery3);            // 主聊天框 routing
+      rq.set('routing:chat1:user1:rootB', mockQuery4);      // thread B routing
+      rq.set('chat2:user2', mockQueryOther);                 // 其他 chat
+
+      executor.killSessionsForChat('chat1', 'user1');
+
+      // 应该 kill 所有 chat1:user1 的 query
+      expect(mockQuery1.close).toHaveBeenCalled();
+      expect(mockQuery2.close).toHaveBeenCalled();
+      expect(mockQuery3.close).toHaveBeenCalled();
+      expect(mockQuery4.close).toHaveBeenCalled();
+
+      // 不应该 kill 其他 chat
+      expect(mockQueryOther.close).not.toHaveBeenCalled();
+
+      // runningQueries 中只剩 chat2
+      expect(rq.size).toBe(1);
+      expect(rq.has('chat2:user2')).toBe(true);
+    });
+
+    it('should not kill queries from other users in the same chat', async () => {
+      const rq = (executor as any).runningQueries as Map<string, { close: () => void }>;
+      const q1 = { close: vi.fn() };
+      const q2 = { close: vi.fn() };
+
+      rq.set('chat1:userA:root1', q1);
+      rq.set('chat1:userB:root1', q2);
+
+      executor.killSessionsForChat('chat1', 'userA');
+
+      expect(q1.close).toHaveBeenCalled();
+      expect(q2.close).not.toHaveBeenCalled();
+    });
+  });
+
   describe('workspace changed callback wrapping', () => {
     it('should not wrap when onWorkspaceChanged is undefined', async () => {
       await executor.execute(makeInput());

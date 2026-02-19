@@ -179,6 +179,7 @@ export async function routeWorkspace(
   prompt: string,
   chatId: string,
   userId: string,
+  rootId?: string,
 ): Promise<RoutingDecision> {
   const summaries = sessionManager.getRecentSummaries(chatId, userId, 5);
 
@@ -190,7 +191,7 @@ export async function routeWorkspace(
   let result;
   try {
     result = await claudeExecutor.execute({
-      sessionKey: `routing:${chatId}:${userId}`,
+      sessionKey: rootId ? `routing:${chatId}:${userId}:${rootId}` : `routing:${chatId}:${userId}`,
       prompt: buildRoutingPrompt(prompt, summaries),
       workingDir: config.claude.defaultWorkDir,
       systemPromptOverride: buildRoutingSystemPrompt(),
