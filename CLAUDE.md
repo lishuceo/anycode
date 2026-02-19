@@ -60,6 +60,7 @@ Feishu User → Feishu Platform → Bridge Server → Claude Agent SDK → Claud
 - **`canUseTool` must return `updatedInput`** — `{ behavior: 'allow' }` alone causes SDK internal Zod validation failure. MCP tool handlers silently won't execute. Must return `{ behavior: 'allow', updatedInput: inputObj }`.
 - **`bypassPermissions` fails under root** — Use `permissionMode: 'acceptEdits'` + `canUseTool` callback instead.
 - **`settingSources: ['project']`** loads `.claude/settings.local.json` from cwd, including `permissions.allow` whitelist. This whitelist is checked *before* `canUseTool`, so unlisted tools (including MCP) get blocked. Currently `canUseTool` with proper `updatedInput` overrides this.
+- **Skills require `allowedTools: ['Skill']`** — SDK 默认不启用 Skill 工具。仅有 `settingSources: ['project']` 不够，还需在 `allowedTools` 中显式包含 `'Skill'`，否则 `.claude/skills/` 中的 SKILL.md 不会被加载。
 - **Feishu rich text breaks URLs** — `github.com:user/repo` gets auto-linked by Feishu as `[github.com:](http://github.com/)user/repo`. The `workspace/manager.ts` `normalizeRepoUrl()` handles SSH shorthand normalization.
 
 ## Configuration
