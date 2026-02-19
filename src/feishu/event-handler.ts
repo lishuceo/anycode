@@ -610,8 +610,8 @@ async function executeClaudeTask(
       threadSession = sessionManager.getThreadSession(threadId);
     }
 
-  } else if (threadId && !threadSession?.routingCompleted) {
-    // Thread 首条消息（路由尚未完成），需要路由
+  } else if (threadId && !threadSession?.routingCompleted && !threadSession?.conversationId) {
+    // Thread 首条消息（路由尚未完成，且无已有会话），需要路由
     logger.info({ chatId, userId, threadId }, 'First message in thread, running routing agent');
     const decision = await routeWorkspace(prompt, chatId, userId, rootId);
 

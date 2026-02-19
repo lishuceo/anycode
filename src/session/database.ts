@@ -135,6 +135,8 @@ export class SessionDatabase {
       const cols = this.db.prepare("PRAGMA table_info(thread_sessions)").all() as Array<{ name: string }>;
       if (!cols.some((c) => c.name === 'routing_completed')) {
         this.db.exec('ALTER TABLE thread_sessions ADD COLUMN routing_completed INTEGER DEFAULT 0');
+        // 已有 conversationId 的老 thread 说明 workdir 已确定，标记为路由完成
+        this.db.exec('UPDATE thread_sessions SET routing_completed = 1 WHERE conversation_id IS NOT NULL');
       }
       this.db.exec('UPDATE schema_version SET version = 5');
     }
