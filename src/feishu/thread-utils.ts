@@ -30,9 +30,8 @@ export async function ensureThread(
   );
 
   if (threadId && botMsgId) {
-    // 话题创建成功后才清空旧 conversationId，避免 replyInThread 失败时
-    // 既没有新话题又丢失了续接旧对话的能力
-    sessionManager.setConversationId(chatId, userId, '');
+    // 新话题创建成功，保存话题信息
+    // 不清空全局 conversationId——各 thread 通过 thread_sessions 表独立管理自己的 conversationId
     sessionManager.setThread(chatId, userId, threadId, messageId);
     return messageId;
   }

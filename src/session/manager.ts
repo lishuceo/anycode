@@ -1,7 +1,7 @@
 import { config } from '../config.js';
 import { logger } from '../utils/logger.js';
 import { SessionDatabase } from './database.js';
-import type { Session } from './types.js';
+import type { Session, ThreadSession } from './types.js';
 
 /**
  * 会话管理器
@@ -104,6 +104,45 @@ export class SessionManager {
   }
 
   /**
+   * 获取 thread 级别的 session
+   */
+  getThreadSession(threadId: string): Readonly<ThreadSession> | undefined {
+    return this.db.getThreadSession(threadId);
+  }
+
+  /**
+   * 创建或更新 thread session（首条消息确定 workdir 时调用）
+   */
+  upsertThreadSession(threadId: string, chatId: string, userId: string, workingDir: string): void {
+    const existing = this.db.getThreadSession(threadId);
+    const now = new Date();
+    this.db.upsertThreadSession({
+      threadId,
+      chatId,
+      userId,
+      workingDir,
+      conversationId: existing?.conversationId,
+      conversationCwd: existing?.conversationCwd,
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
+    });
+  }
+
+  /**
+   * 保存 thread 对应的 Claude Code session ID
+   */
+  setThreadConversationId(threadId: string, conversationId: string, cwd: string): void {
+    this.db.updateThreadConversationId(threadId, conversationId, cwd);
+  }
+
+  /**
+   * 更新 thread 的工作目录（workspace 切换时，同时清空 conversationId）
+   */
+  setThreadWorkingDir(threadId: string, workingDir: string): void {
+    this.db.updateThreadWorkingDir(threadId, workingDir);
+  }
+
+  /**
    * 保存会话摘要（独立于 sessions 表，不受 cleanup 影响）
    */
   saveSummary(chatId: string, userId: string, workingDir: string, summary: string): void {
@@ -128,6 +167,11 @@ export class SessionManager {
     const oldSummaries = this.db.cleanOldSummaries();
     if (oldSummaries > 0) {
       logger.info({ oldSummaries }, 'Cleaned up old session summaries');
+    }
+    const threadMaxIdleMs = 30 * 24 * 60 * 60 * 1000; // 30 days
+    const cleanedThreads = this.db.deleteExpiredThreadSessions(threadMaxIdleMs);
+    if (cleanedThreads > 0) {
+      logger.info({ cleanedThreads }, 'Cleaned up idle thread sessions');
     }
     return cleaned;
   }
