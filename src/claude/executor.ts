@@ -193,6 +193,10 @@ export class ClaudeExecutor {
         // 权限：acceptEdits 自动接受文件编辑，canUseTool 自动批准其余工具调用
         // 注意：不使用 bypassPermissions，因为 root 用户下会被拒绝
         permissionMode: 'acceptEdits',
+
+        // 显式启用 Skill 工具 — SDK 默认不启用，必须通过 allowedTools 激活
+        // 这样 .claude/skills/ 中的 SKILL.md 才能被加载和使用
+        allowedTools: ['Skill'],
         canUseTool: async (toolName: string, inputObj: Record<string, unknown>) => {
           logger.info({ toolName, inputKeys: Object.keys(inputObj) }, 'canUseTool called — auto allowing');
           // updatedInput 必须显式传回，否则 SDK 内部 Zod 校验会因 undefined 报错
@@ -257,7 +261,13 @@ export class ClaudeExecutor {
             if (message.subtype === 'init') {
               sessionId = message.session_id;
               logger.info(
-                { sessionId, model: message.model, tools: message.tools.length },
+                {
+                  sessionId,
+                  model: message.model,
+                  tools: message.tools.length,
+                  skills: message.skills,
+                  slashCommands: message.slash_commands,
+                },
                 'Claude session initialized',
               );
             }
