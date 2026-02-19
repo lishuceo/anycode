@@ -636,8 +636,10 @@ async function executeClaudeTask(
     }
 
     // Resume 失败（非 workspace 变更场景）：报错给用户，保留 session ID 不动
-    // 用户可发 /reset 主动放弃旧会话
-    if (!result.success && canResume) {
+    // 用 !result.output 区分 resume 失败和正常 query 失败：
+    //   - resume 失败：子进程秒退，无 output
+    //   - 正常失败（超时、预算等）：有 output，应走 sendResultCard 展示部分结果
+    if (!result.success && canResume && !result.output) {
       logger.error(
         { sessionKey, error: result.error, sessionId: session.conversationId, durationMs: result.durationMs },
         'Resume failed — session ID preserved for user to decide',
