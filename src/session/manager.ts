@@ -88,9 +88,10 @@ export class SessionManager {
 
   /**
    * 更新 Claude Code 会话 ID (用于续接对话)
+   * @param cwd 创建该 session 时的工作目录（resume 需要 cwd 匹配）
    */
-  setConversationId(chatId: string, userId: string, conversationId: string): void {
-    this.db.updateConversationId(this.makeKey(chatId, userId), conversationId);
+  setConversationId(chatId: string, userId: string, conversationId: string, cwd?: string): void {
+    this.db.updateConversationId(this.makeKey(chatId, userId), conversationId, cwd);
   }
 
   /**
