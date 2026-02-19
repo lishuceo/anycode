@@ -27,7 +27,7 @@ export interface ExecuteInput extends ExecuteOptions {
   historySummaries?: string;
   /** 覆盖 system prompt（用于 pipeline 各角色独立 prompt） */
   systemPromptOverride?: string;
-  /** 覆盖默认超时秒数 (默认使用 CLAUDE_TIMEOUT 配置) */
+  /** 覆盖单步空闲超时秒数 (默认使用 CLAUDE_TIMEOUT 配置)。每收到一条 SDK 消息就重置，不限制总时长 */
   timeoutSeconds?: number;
 }
 
@@ -130,13 +130,22 @@ export class ClaudeExecutor {
 
     const startTime = Date.now();
     const abortController = new AbortController();
-    const timeoutMs = (input.timeoutSeconds ?? config.claude.timeoutSeconds) * 1000;
+    const idleTimeoutMs = (input.timeoutSeconds ?? config.claude.timeoutSeconds) * 1000;
     let timedOut = false;
-    const timer = setTimeout(() => {
-      timedOut = true;
-      abortController.abort();
-      logger.warn({ sessionKey, timeoutMs }, 'Claude query timed out, aborting');
-    }, timeoutMs);
+
+    // 滑动窗口 idle 超时：每收到一条 SDK 消息就重置计时器
+    // 只在某一步长时间无活动时才 abort，不限制总执行时长
+    let idleTimer: ReturnType<typeof setTimeout> = undefined!;
+    const resetIdleTimer = () => {
+      clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => {
+        timedOut = true;
+        abortController.abort();
+        logger.warn({ sessionKey, idleTimeoutMs, elapsedMs: Date.now() - startTime },
+          'Claude query idle timeout — no SDK message received, aborting');
+      }, idleTimeoutMs);
+    };
+    resetIdleTimer();
 
     // 确保工作目录存在，否则 spawn 会报 ENOENT
     if (!existsSync(workingDir)) {
@@ -249,6 +258,9 @@ export class ClaudeExecutor {
     try {
       // 遍历 SDK 流式消息
       for await (const message of q) {
+        // 每收到消息重置 idle 计时器
+        resetIdleTimer();
+
         // 通知进度回调
         onProgress?.(message);
 
@@ -312,12 +324,12 @@ export class ClaudeExecutor {
         }
       }
     } catch (err) {
-      clearTimeout(timer);
+      clearTimeout(idleTimer);
       this.runningQueries.delete(sessionKey);
 
       const durationMs = Date.now() - startTime;
       const errorMsg = timedOut
-        ? `Query timed out after ${timeoutMs / 1000}s`
+        ? `Query idle timeout after ${idleTimeoutMs / 1000}s with no activity (total elapsed: ${Math.round(durationMs / 1000)}s)`
         : (err instanceof Error ? err.message : String(err));
       logger.error({ sessionKey, err: errorMsg, timedOut }, 'Claude Agent SDK query error');
 
@@ -330,7 +342,7 @@ export class ClaudeExecutor {
       };
     }
 
-    clearTimeout(timer);
+    clearTimeout(idleTimer);
 
     // 等待最后一个回调完成，防止与最终卡片更新竞态
     if (lastTurnPromise) await lastTurnPromise.catch(() => {});

@@ -549,7 +549,7 @@ async function executeClaudeTask(
   };
 
   try {
-    // 第一次 query：可能触发 workspace setup
+    // 第一次 query：可能触发 workspace setup，也可能 resume 已有会话
     const result = await claudeExecutor.execute({
       sessionKey,
       prompt,
@@ -560,6 +560,32 @@ async function executeClaudeTask(
       onTurn,
       historySummaries,
     });
+
+    // Resume 失败：报错给用户，保留 session ID 不动（会话记录是用户数据，不擅自清除）
+    // 用户可发 /reset 主动放弃旧会话
+    if (!result.success && session.conversationId) {
+      logger.error(
+        { sessionKey, error: result.error, sessionId: session.conversationId, durationMs: result.durationMs },
+        'Resume failed — session ID preserved for user to decide',
+      );
+
+      const errorDetail = [
+        '⚠️ 会话恢复失败',
+        '',
+        `**Session ID**: \`${session.conversationId}\``,
+        `**错误**: ${result.error || '未知错误'}`,
+        `**耗时**: ${formatDuration(result.durationMs)}`,
+        '',
+        '再次发送消息会继续尝试恢复。如需放弃旧会话重新开始，请发送 `/reset`。',
+      ].join('\n');
+
+      if (threadRootMsgId) {
+        await feishuClient.replyTextInThread(threadRootMsgId, errorDetail);
+      } else {
+        await feishuClient.replyText(messageId, errorDetail);
+      }
+      return;
+    }
 
     // 检测是否需要 restart（workspace 变更后重新执行以加载 CLAUDE.md）
     if (result.needsRestart && result.newWorkingDir) {
@@ -622,7 +648,9 @@ async function executeClaudeTask(
       return;
     }
 
-    // 无 restart，正常流程
+    // 无 restart，正常流程：保存 session ID 用于下次 resume
+    // 即使失败也保存——下次 resume 可能成功（如超时但 session 数据完整）
+    // 如果 resume 确实不可用，上面的 retry 逻辑会自动降级为新 session
     if (result.sessionId) {
       sessionManager.setConversationId(chatId, userId, result.sessionId);
     }
