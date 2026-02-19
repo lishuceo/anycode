@@ -5,7 +5,7 @@ import { sessionManager } from '../session/manager.js';
 import { taskQueue } from '../session/queue.js';
 import { claudeExecutor } from '../claude/executor.js';
 import type { TurnInfo, ToolCallInfo } from '../claude/types.js';
-import { buildResultCard, buildStatusCard, buildCancelledCard, buildPipelineCard, buildPipelineConfirmCard, buildToolProgressCard, buildSimpleResultCard } from './message-builder.js';
+import { buildResultCard, buildStatusCard, buildCancelledCard, buildPipelineCard, buildPipelineConfirmCard, buildProgressCard, buildToolProgressCard, buildSimpleResultCard } from './message-builder.js';
 import { feishuClient } from './client.js';
 import { config } from '../config.js';
 import { setupWorkspace } from '../workspace/manager.js';
@@ -542,9 +542,14 @@ async function executeClaudeTask(
   // 工作目录：优先使用 thread session 绑定的 workdir，否则用全局 session 的
   const workingDir = threadSession?.workingDir ?? session.workingDir;
 
-  // 发送轻量处理提示（即时反馈）
+  // 发送初始进度卡片（即时反馈），后续原地更新为 tool call 进度卡片
+  let progressCardMsgId: string | undefined;
+  let progressCardFailed = false;
   if (threadRootMsgId) {
-    await feishuClient.replyTextInThread(threadRootMsgId, '🤖 处理中...');
+    progressCardMsgId = await feishuClient.replyCardInThread(
+      threadRootMsgId, buildProgressCard(prompt),
+    ) ?? undefined;
+    if (!progressCardMsgId) progressCardFailed = true;
   } else {
     await feishuClient.replyText(messageId, '🤖 处理中...');
   }
@@ -565,29 +570,22 @@ async function executeClaudeTask(
 
   // 构造逐条 turn 回调
   // 策略：缓冲最后一个 turn，收到新 turn 时将前一个 turn 的 tool calls 刷入累积器，
-  // 创建或原地更新一张进度卡片。结束时最后一个 turn 合并进结果卡片。
-  // 单轮查询：只有 1 个 turn，pendingTurn 从未被 flush，不创建进度卡片。
+  // 原地更新进度卡片。结束时最后一个 turn 合并进结果卡片。
   let turnCount = 0;
   let pendingTurn: TurnInfo | undefined;
   const accumulatedToolCalls: ToolCallInfo[] = [];
-  let progressCardMsgId: string | undefined;
-  let progressCardFailed = false;
 
   const onTurn = async (turn: TurnInfo) => {
     turnCount = turn.turnIndex;
-    // 将前一个 turn 的 tool calls 刷入累积器
+    // 将前一个 turn 的 tool calls 刷入累积器，原地更新进度卡片
     if (pendingTurn) {
       accumulatedToolCalls.push(...pendingTurn.toolCalls);
-      // 创建或更新进度卡片（失败不中断主流程）
-      if (threadRootMsgId && !progressCardFailed) {
+      if (progressCardMsgId && !progressCardFailed) {
         try {
-          const card = buildToolProgressCard(accumulatedToolCalls, turnCount);
-          if (!progressCardMsgId) {
-            progressCardMsgId = await feishuClient.replyCardInThread(threadRootMsgId, card) ?? undefined;
-            if (!progressCardMsgId) progressCardFailed = true;
-          } else {
-            await feishuClient.updateCard(progressCardMsgId, card);
-          }
+          await feishuClient.updateCard(
+            progressCardMsgId,
+            buildToolProgressCard(accumulatedToolCalls, turnCount),
+          );
         } catch (err) {
           logger.warn({ err }, 'Failed to update progress card');
           progressCardFailed = true;
@@ -695,11 +693,14 @@ async function executeClaudeTask(
       const totalDurationMs = result.durationMs + restartResult.durationMs;
       const totalCostUsd = (result.costUsd ?? 0) + (restartResult.costUsd ?? 0);
 
-      // 进度卡片切换为完成态
+      // 进度卡片切换为完成态（含最后一轮的 tool calls）
       if (progressCardMsgId) {
+        const allToolCalls = pendingTurn
+          ? [...accumulatedToolCalls, ...pendingTurn.toolCalls]
+          : accumulatedToolCalls;
         await feishuClient.updateCard(
           progressCardMsgId,
-          buildToolProgressCard(accumulatedToolCalls, turnCount, undefined, true),
+          buildToolProgressCard(allToolCalls, turnCount, undefined, true),
         );
       }
 
@@ -776,11 +777,14 @@ async function executeClaudeTask(
     }
   } catch (err) {
     logger.error({ err }, 'Error executing Claude Agent SDK query');
-    // 进度卡片切换为完成态（best-effort）
+    // 进度卡片切换为完成态（best-effort，含最后一轮的 tool calls）
     if (progressCardMsgId) {
+      const allToolCalls = pendingTurn
+        ? [...accumulatedToolCalls, ...pendingTurn.toolCalls]
+        : accumulatedToolCalls;
       await feishuClient.updateCard(
         progressCardMsgId,
-        buildToolProgressCard(accumulatedToolCalls, turnCount, undefined, true),
+        buildToolProgressCard(allToolCalls, turnCount, undefined, true),
       ).catch(() => {});
     }
     const errorReply = `❌ 执行出错: ${(err as Error).message}`;
