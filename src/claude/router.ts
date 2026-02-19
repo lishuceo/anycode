@@ -120,6 +120,11 @@ function parseRoutingDecision(output: string): RoutingDecision | null {
       return null;
     }
 
+    // 关键字段类型校验：AI 可能返回非字符串值
+    if (parsed.workdir !== undefined && typeof parsed.workdir !== 'string') return null;
+    if (parsed.repo_url !== undefined && typeof parsed.repo_url !== 'string') return null;
+    if (parsed.question !== undefined && typeof parsed.question !== 'string') return null;
+
     return {
       decision: decision as RoutingDecision['decision'],
       workdir: parsed.workdir as string | undefined,
@@ -236,6 +241,12 @@ export async function routeWorkspace(
         mode: decision.mode ?? 'writable',
         sourceBranch: decision.branch,
       });
+      // 验证 clone 结果路径在允许范围内（防止 symlink 等绕过）
+      if (!isPathAllowed(workspace.workspacePath)) {
+        logger.warn({ chatId, userId, workspacePath: workspace.workspacePath }, 'clone_remote result path outside allowed directories, using fallback');
+        const fallbackDir = getRecentWorkdir(chatId, userId);
+        return { decision: 'use_default', workdir: fallbackDir };
+      }
       return { ...decision, workdir: workspace.workspacePath };
     } catch (err) {
       logger.error({ err, chatId, userId, repoUrl: decision.repo_url }, 'Failed to setup workspace from routing decision');

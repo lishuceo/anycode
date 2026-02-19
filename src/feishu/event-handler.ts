@@ -546,40 +546,62 @@ async function executeClaudeTask(
   // Routing Agent：决定工作目录
   // ============================================================
   let workingDir: string;
+  const needsRouting = (threadId && threadSession?.routingState?.status === 'pending_clarification')
+    || (threadId && !threadSession?.routingCompleted);
+
+  // 路由可能耗时较长，先给用户发送即时反馈
+  if (needsRouting && threadRootMsgId) {
+    await feishuClient.replyTextInThread(threadRootMsgId, '🔍 正在分析工作目录...');
+  }
 
   if (threadId && threadSession?.routingState?.status === 'pending_clarification') {
-    // 用户回复了路由问题，拼接上下文重新路由
-    const context = [
-      `[原始请求] ${threadSession.routingState.originalPrompt}`,
-      `[路由问题] ${threadSession.routingState.question}`,
-      `[用户回复] ${prompt}`,
-    ].join('\n');
+    const retryCount = threadSession.routingState.retryCount ?? 0;
+    const MAX_ROUTING_RETRIES = 3;
 
-    logger.info({ chatId, userId, threadId }, 'Re-routing with clarification context');
-    const decision = await routeWorkspace(context, chatId, userId);
+    // 超过最大追问次数，放弃路由，使用默认目录
+    if (retryCount >= MAX_ROUTING_RETRIES) {
+      logger.warn({ chatId, userId, threadId, retryCount }, 'Routing clarification limit reached, using default workdir');
+      workingDir = config.claude.defaultWorkDir;
+      sessionManager.clearThreadRoutingState(threadId);
+      sessionManager.setThreadWorkingDir(threadId, workingDir);
+      sessionManager.markThreadRoutingCompleted(threadId);
+      threadSession = sessionManager.getThreadSession(threadId);
+      // 继续执行主查询，不 return
+    } else {
+      // 用户回复了路由问题，拼接上下文重新路由
+      const context = [
+        `[原始请求] ${threadSession.routingState.originalPrompt}`,
+        `[路由问题] ${threadSession.routingState.question}`,
+        `[用户回复] ${prompt}`,
+      ].join('\n');
 
-    if (decision.decision === 'need_clarification') {
-      // 再次需要澄清，更新 routingState
-      const question = decision.question || '请提供更多信息，我需要知道你想要操作哪个仓库或项目。';
-      sessionManager.setThreadRoutingState(threadId, {
-        status: 'pending_clarification',
-        originalPrompt: threadSession.routingState.originalPrompt,
-        question,
-      });
-      if (threadRootMsgId) {
-        await feishuClient.replyTextInThread(threadRootMsgId, question);
-      } else {
-        await feishuClient.replyText(messageId, question);
+      logger.info({ chatId, userId, threadId, retryCount }, 'Re-routing with clarification context');
+      const decision = await routeWorkspace(context, chatId, userId);
+
+      if (decision.decision === 'need_clarification') {
+        // 再次需要澄清，更新 routingState（递增 retryCount）
+        const question = decision.question || '请提供更多信息，我需要知道你想要操作哪个仓库或项目。';
+        sessionManager.setThreadRoutingState(threadId, {
+          status: 'pending_clarification',
+          originalPrompt: threadSession.routingState.originalPrompt,
+          question,
+          retryCount: retryCount + 1,
+        });
+        if (threadRootMsgId) {
+          await feishuClient.replyTextInThread(threadRootMsgId, question);
+        } else {
+          await feishuClient.replyText(messageId, question);
+        }
+        return;
       }
-      return;
-    }
 
-    workingDir = decision.workdir || config.claude.defaultWorkDir;
-    sessionManager.clearThreadRoutingState(threadId);
-    sessionManager.setThreadWorkingDir(threadId, workingDir);
-    sessionManager.markThreadRoutingCompleted(threadId);
-    // 重新读取 threadSession 以获得更新后的数据
-    threadSession = sessionManager.getThreadSession(threadId);
+      workingDir = decision.workdir || config.claude.defaultWorkDir;
+      sessionManager.clearThreadRoutingState(threadId);
+      sessionManager.setThreadWorkingDir(threadId, workingDir);
+      sessionManager.markThreadRoutingCompleted(threadId);
+      // 重新读取 threadSession 以获得更新后的数据
+      threadSession = sessionManager.getThreadSession(threadId);
+    }
 
   } else if (threadId && !threadSession?.routingCompleted) {
     // Thread 首条消息（路由尚未完成），需要路由
@@ -592,6 +614,7 @@ async function executeClaudeTask(
         status: 'pending_clarification',
         originalPrompt: prompt,
         question,
+        retryCount: 0,
       });
       if (threadRootMsgId) {
         await feishuClient.replyTextInThread(threadRootMsgId, question);

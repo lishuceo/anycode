@@ -32,6 +32,8 @@ export interface RoutingState {
   originalPrompt: string;
   /** 路由 agent 的提问 */
   question: string;
+  /** 已追问次数（防止无限循环） */
+  retryCount: number;
 }
 
 /** Thread 级别的 Claude Code 会话（threadId → conversationId 映射） */
