@@ -57,11 +57,14 @@ function main(): void {
     clearInterval(cleanupInterval);
     claudeExecutor.killAll();
     pipelineStore.markRunningAsInterrupted();
-    pipelineStore.close();
-    sessionManager.close();
 
-    // 给子进程时间响应 SIGTERM 后再退出（PM2 kill_timeout 内）
-    setTimeout(() => process.exit(0), 3000);
+    // 延迟关闭 DB：killAll() 后 executeClaudeTask 的 catch/finally 仍需写 DB
+    // 先等 query handler 完成清理，再关闭连接
+    setTimeout(() => {
+      pipelineStore.close();
+      sessionManager.close();
+      process.exit(0);
+    }, 3000);
   }
 
   process.on('SIGINT', () => shutdown('SIGINT'));
