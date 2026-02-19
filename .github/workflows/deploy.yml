@@ -13,7 +13,7 @@ jobs:
     steps:
       - name: Pull latest code
         run: |
-          cd /root/dev/tapcode/anywhere-code
+          cd /root/dev/anywhere-code
           git fetch origin main
           git reset --hard origin/main
 
@@ -21,19 +21,19 @@ jobs:
         run: |
           export NVM_DIR="$HOME/.nvm"
           . "$NVM_DIR/nvm.sh"
-          cd /root/dev/tapcode/anywhere-code
+          cd /root/dev/anywhere-code
           npm ci
 
       - name: Build
         run: |
           export NVM_DIR="$HOME/.nvm"
           . "$NVM_DIR/nvm.sh"
-          cd /root/dev/tapcode/anywhere-code
+          cd /root/dev/anywhere-code
           npm run build
 
       - name: Restart service
         run: |
           export NVM_DIR="$HOME/.nvm"
           . "$NVM_DIR/nvm.sh"
-          cd /root/dev/tapcode/anywhere-code
+          cd /root/dev/anywhere-code
           npx pm2 restart ecosystem.config.cjs || npx pm2 start ecosystem.config.cjs
