@@ -198,20 +198,25 @@ async function handlePipelineRetry(pipelineId: string): Promise<Record<string, u
 }
 
 // ============================================================
-// 队列驱动：确保同一 chat 的 query 串行执行
+// 队列驱动：同一 thread 内串行执行，不同 thread 间可并行
+// queueKey = rootId 存在时用 `chatId:rootId`，否则用 `chatId`
 // ============================================================
 
-function processQueue(chatId: string): void {
-  const task = taskQueue.dequeue(chatId);
+function makeQueueKey(chatId: string, rootId?: string): string {
+  return rootId ? `${chatId}:${rootId}` : chatId;
+}
+
+function processQueue(queueKey: string): void {
+  const task = taskQueue.dequeue(queueKey);
   if (!task) return;
 
   executeClaudeTask(task.message, task.chatId, task.userId, task.messageId, task.rootId)
     .then(() => task.resolve('done'))
     .catch((err) => task.reject(err instanceof Error ? err : new Error(String(err))))
     .finally(() => {
-      taskQueue.complete(chatId);
+      taskQueue.complete(queueKey);
       // 处理队列中的下一个任务
-      processQueue(chatId);
+      processQueue(queueKey);
     });
 }
 
@@ -302,10 +307,11 @@ async function handleMessageEvent(data: MessageEventData): Promise<void> {
     return;
   }
 
-  // 通过 taskQueue 串行化执行，确保同一 chat 同一时间只有一个 query
+  // 通过 taskQueue 串行化执行：同一 thread 内串行，不同 thread 可并行
   // enqueue 返回的 Promise 的错误处理在 processQueue/executeClaudeTask 中完成
-  taskQueue.enqueue(chatId, userId, text, messageId, rootId).catch(() => {});
-  processQueue(chatId);
+  const queueKey = makeQueueKey(chatId, rootId);
+  taskQueue.enqueue(queueKey, chatId, userId, text, messageId, rootId).catch(() => {});
+  processQueue(queueKey);
 }
 
 /**
@@ -371,7 +377,7 @@ async function handleSlashCommand(
     const card = buildStatusCard(
       session.workingDir,
       session.status,
-      taskQueue.pendingCount(chatId),
+      taskQueue.pendingCountForChat(chatId),
     );
     if (threadRootMsgId) {
       await feishuClient.replyCardInThread(threadRootMsgId, card);
@@ -401,7 +407,7 @@ async function handleSlashCommand(
     const sessionKey = `${chatId}:${userId}`;
     claudeExecutor.killSession(sessionKey);
     claudeExecutor.killSession(`routing:${sessionKey}`);
-    taskQueue.cancelPending(chatId);
+    taskQueue.cancelAllForChat(chatId);
     sessionManager.setStatus(chatId, userId, 'idle');
     const reply = '🛑 已中断当前会话的执行';
     if (threadRootMsgId) {

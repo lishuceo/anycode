@@ -3,7 +3,10 @@ import type { QueueTask } from './types.js';
 
 /**
  * 任务队列
- * 每个 chatId 同一时间只允许一个任务执行，其余排队等待
+ *
+ * 以 queueKey 为粒度串行执行：同一 queueKey 同一时间只允许一个任务。
+ * 调用方通常使用 `chatId:rootId` 作为 key，实现 per-thread 串行 + 跨 thread 并行。
+ * 主聊天框消息（无 rootId）使用 `chatId` 作为 key。
  */
 export class TaskQueue {
   private queues = new Map<string, QueueTask[]>();
@@ -11,9 +14,10 @@ export class TaskQueue {
 
   /**
    * 将任务加入队列
-   * @returns Promise<string> 任务执行结果
+   * @param queueKey 队列标识（通常为 chatId:rootId 或 chatId）
    */
   enqueue(
+    queueKey: string,
     chatId: string,
     userId: string,
     message: string,
@@ -22,7 +26,7 @@ export class TaskQueue {
   ): Promise<string> {
     return new Promise((resolve, reject) => {
       const task: QueueTask = {
-        id: `${chatId}:${Date.now()}`,
+        id: `${queueKey}:${Date.now()}`,
         chatId,
         userId,
         message,
@@ -33,55 +37,55 @@ export class TaskQueue {
         createdAt: new Date(),
       };
 
-      if (!this.queues.has(chatId)) {
-        this.queues.set(chatId, []);
+      if (!this.queues.has(queueKey)) {
+        this.queues.set(queueKey, []);
       }
-      this.queues.get(chatId)!.push(task);
-      logger.debug({ taskId: task.id, queueSize: this.queues.get(chatId)!.length }, 'Task enqueued');
+      this.queues.get(queueKey)!.push(task);
+      logger.debug({ taskId: task.id, queueKey, queueSize: this.queues.get(queueKey)!.length }, 'Task enqueued');
     });
   }
 
   /**
    * 获取下一个待执行的任务（如果当前没有正在执行的任务）
    */
-  dequeue(chatId: string): QueueTask | undefined {
-    if (this.running.has(chatId)) return undefined;
+  dequeue(queueKey: string): QueueTask | undefined {
+    if (this.running.has(queueKey)) return undefined;
 
-    const queue = this.queues.get(chatId);
+    const queue = this.queues.get(queueKey);
     if (!queue || queue.length === 0) return undefined;
 
     const task = queue.shift()!;
-    this.running.set(chatId, task);
-    logger.debug({ taskId: task.id }, 'Task dequeued');
+    this.running.set(queueKey, task);
+    logger.debug({ taskId: task.id, queueKey }, 'Task dequeued');
     return task;
   }
 
   /**
    * 标记任务完成
    */
-  complete(chatId: string): void {
-    this.running.delete(chatId);
+  complete(queueKey: string): void {
+    this.running.delete(queueKey);
   }
 
   /**
-   * 检查某个 chat 是否有正在执行的任务
+   * 检查某个队列是否有正在执行的任务
    */
-  isBusy(chatId: string): boolean {
-    return this.running.has(chatId);
+  isBusy(queueKey: string): boolean {
+    return this.running.has(queueKey);
   }
 
   /**
-   * 获取等待中的任务数量
+   * 获取某个队列等待中的任务数量
    */
-  pendingCount(chatId: string): number {
-    return this.queues.get(chatId)?.length || 0;
+  pendingCount(queueKey: string): number {
+    return this.queues.get(queueKey)?.length || 0;
   }
 
   /**
-   * 取消某个 chat 的所有等待中的任务
+   * 取消某个队列的所有等待中的任务
    */
-  cancelPending(chatId: string): number {
-    const queue = this.queues.get(chatId);
+  cancelPending(queueKey: string): number {
+    const queue = this.queues.get(queueKey);
     if (!queue) return 0;
 
     const count = queue.length;
@@ -90,6 +94,36 @@ export class TaskQueue {
     }
     queue.length = 0;
     return count;
+  }
+
+  /**
+   * 获取该 chat 下所有队列的总等待数（/status 用）
+   */
+  pendingCountForChat(chatId: string): number {
+    let total = 0;
+    for (const [key, queue] of this.queues) {
+      if (key === chatId || key.startsWith(chatId + ':')) {
+        total += queue.length;
+      }
+    }
+    return total;
+  }
+
+  /**
+   * 取消该 chat 下所有队列的等待任务（/stop 用）
+   */
+  cancelAllForChat(chatId: string): number {
+    let total = 0;
+    for (const [key, queue] of this.queues) {
+      if (key === chatId || key.startsWith(chatId + ':')) {
+        total += queue.length;
+        for (const task of queue) {
+          task.reject(new Error('Task cancelled'));
+        }
+        queue.length = 0;
+      }
+    }
+    return total;
   }
 }
 
