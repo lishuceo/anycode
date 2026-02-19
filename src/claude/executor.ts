@@ -46,43 +46,19 @@ function buildWorkspaceSystemPrompt(): string {
 - **仓库缓存目录**: \`${cacheDir}\` — setup_workspace 自动缓存的 bare clone
 - **可写工作区目录**: \`${workspacesDir}\` — setup_workspace 创建的隔离工作区
 
-## 查找仓库的顺序
-
-当用户提到某个仓库或项目名时，**必须按以下顺序查找，找到即停**：
-
-1. **当前工作目录** — 检查当前 cwd 是否就是目标仓库
-2. **项目目录** — \`ls ${projectsDir}\`，看有没有匹配的目录名
-3. **仓库缓存目录** — \`ls ${cacheDir}\` 或 \`find ${cacheDir} -name '*.git' -type d\`，看有没有缓存过
-4. **可写工作区目录** — \`ls ${workspacesDir}\`，看有没有之前创建的工作区
-
-只有以上全部找不到时，才需要：
-- 如果用户提供了 URL → 使用 setup_workspace 工具 clone
-- 如果用户没提供 URL → 询问用户仓库地址
-
-**重要：不要跳过查找步骤直接问用户要路径。大多数情况下仓库已经在本地。**
-
 ## 工作区管理
 
-你有一个 setup_workspace 工具可用，用于为代码任务创建隔离工作区。
+你当前的工作目录已经由系统预先设定好。**大多数情况下直接在当前目录工作即可**。
 
-**何时使用 setup_workspace:**
-- 本地找不到目标仓库，需要从远程 clone 时
-- 需要在隔离环境中修改代码（不影响原始仓库）时
+你有一个 setup_workspace 工具可用，但仅在以下情况使用：
+- 用户**明确要求**切换到另一个仓库
+- 用户提供了新的仓库 URL 要求 clone
 
-**模式选择 (mode 参数):**
-- mode="readonly": 只需要阅读、分析、理解代码时使用。不会创建 feature 分支。
-- mode="writable": 需要修改代码、提交变更时使用。会创建隔离工作区和 feature 分支。
+**不要主动使用 setup_workspace**，除非用户明确要求。当前工作目录通常就是正确的工作区。
 
-**如何使用:**
-- **优先使用 repo_url**: 当用户提供了仓库 URL（或你能从上下文推断出 URL），始终用 repo_url 参数。这会自动走缓存 + 隔离工作区流程
-- local_path 仅用于项目目录（\`${projectsDir}\`）下已有的仓库，且路径必须在该目录范围内
-- 根据意图选择 mode (readonly 或 writable)
-- 可选指定 source_branch (源分支) 和 feature_branch (自定义分支名, 仅 writable)
-
-**无需使用的场景:**
-- 当前工作目录已经是目标仓库
-- 用户只是查看/分析代码，且仓库已在项目目录中（直接 cd 或用绝对路径读取即可）
-- 注意：如果用户要**修改**项目目录中已有的仓库代码，应使用 repo_url 创建隔离工作区，不要直接在原始仓库上改
+模式选择 (mode 参数)：
+- mode="readonly": 只读分析代码
+- mode="writable": 修改代码、提交变更
 
 **重要：调用 setup_workspace 后，系统将自动重启以加载项目配置（CLAUDE.md 等）。
 请在调用后仅输出简短确认（如"工作区已就绪，正在重新加载项目配置..."），不要继续执行后续任务。**
@@ -126,6 +102,7 @@ export class ClaudeExecutor {
       sessionKey, prompt, workingDir, resumeSessionId,
       onProgress, onWorkspaceChanged, onStreamUpdate, onTurn, historySummaries,
       systemPromptOverride, disableWorkspaceTool, maxTurns, maxBudgetUsd,
+      model: modelOverride, settingSources: settingSourcesOverride,
     } = input;
 
     const startTime = Date.now();
@@ -217,15 +194,15 @@ export class ClaudeExecutor {
         },
 
         // 模型 + thinking + effort
-        model: config.claude.model,
+        model: modelOverride ?? config.claude.model,
         thinking: config.claude.thinking === 'adaptive'
           ? { type: 'adaptive' as const }
           : { type: 'disabled' as const },
         effort: config.claude.effort,
 
-        // 预算和限制
-        maxTurns: maxTurns ?? 50,
-        maxBudgetUsd: maxBudgetUsd ?? 5,
+        // 预算和限制 — 默认值从 config 读取，调用方可覆盖
+        maxTurns: maxTurns ?? config.claude.maxTurns,
+        maxBudgetUsd: maxBudgetUsd ?? config.claude.maxBudgetUsd,
 
         // 会话续接
         ...(resumeSessionId ? { resume: resumeSessionId } : {}),
@@ -237,8 +214,8 @@ export class ClaudeExecutor {
           append: promptAppend,
         },
 
-        // 加载项目设置 (CLAUDE.md 等)
-        settingSources: ['project'],
+        // 加载项目设置 (CLAUDE.md 等)；路由 agent 传 [] 避免加载
+        settingSources: settingSourcesOverride ?? ['project'],
 
         // MCP 服务器：工作区管理工具 (restart 时为空对象，不注入 setup_workspace)
         mcpServers,

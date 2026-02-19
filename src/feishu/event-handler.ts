@@ -4,6 +4,7 @@ import { isUserAllowed, containsDangerousCommand } from '../utils/security.js';
 import { sessionManager } from '../session/manager.js';
 import { taskQueue } from '../session/queue.js';
 import { claudeExecutor } from '../claude/executor.js';
+import { routeWorkspace } from '../claude/router.js';
 import type { TurnInfo, ToolCallInfo } from '../claude/types.js';
 import { buildResultCard, buildStatusCard, buildCancelledCard, buildPipelineCard, buildPipelineConfirmCard, buildProgressCard, buildToolProgressCard, buildSimpleResultCard } from './message-builder.js';
 import { feishuClient } from './client.js';
@@ -399,6 +400,7 @@ async function handleSlashCommand(
   if (trimmed === '/stop') {
     const sessionKey = `${chatId}:${userId}`;
     claudeExecutor.killSession(sessionKey);
+    claudeExecutor.killSession(`routing:${sessionKey}`);
     taskQueue.cancelPending(chatId);
     sessionManager.setStatus(chatId, userId, 'idle');
     const reply = '🛑 已中断当前会话的执行';
@@ -532,15 +534,108 @@ async function executeClaudeTask(
 
   // 获取 thread 级别的 session（优先于全局 session 的 conversationId）
   const threadId = session.threadId;
-  const threadSession = threadId ? sessionManager.getThreadSession(threadId) : undefined;
+  let threadSession = threadId ? sessionManager.getThreadSession(threadId) : undefined;
 
   // 确保 thread_sessions 中有该 thread 的记录（首条消息时创建）
   if (threadId && !threadSession) {
     sessionManager.upsertThreadSession(threadId, chatId, userId, session.workingDir);
+    threadSession = sessionManager.getThreadSession(threadId);
   }
 
-  // 工作目录：优先使用 thread session 绑定的 workdir，否则用全局 session 的
-  const workingDir = threadSession?.workingDir ?? session.workingDir;
+  // ============================================================
+  // Routing Agent：决定工作目录
+  // ============================================================
+  let workingDir: string;
+  const needsRouting = (threadId && threadSession?.routingState?.status === 'pending_clarification')
+    || (threadId && !threadSession?.routingCompleted);
+
+  // 路由可能耗时较长，先给用户发送即时反馈
+  if (needsRouting && threadRootMsgId) {
+    await feishuClient.replyTextInThread(threadRootMsgId, '🔍 正在分析工作目录...');
+  }
+
+  if (threadId && threadSession?.routingState?.status === 'pending_clarification') {
+    const retryCount = threadSession.routingState.retryCount ?? 0;
+    const MAX_ROUTING_RETRIES = 3;
+
+    // 超过最大追问次数，放弃路由，使用默认目录
+    if (retryCount >= MAX_ROUTING_RETRIES) {
+      logger.warn({ chatId, userId, threadId, retryCount }, 'Routing clarification limit reached, using default workdir');
+      workingDir = config.claude.defaultWorkDir;
+      sessionManager.clearThreadRoutingState(threadId);
+      sessionManager.setThreadWorkingDir(threadId, workingDir);
+      sessionManager.markThreadRoutingCompleted(threadId);
+      threadSession = sessionManager.getThreadSession(threadId);
+      // 继续执行主查询，不 return
+    } else {
+      // 用户回复了路由问题，拼接上下文重新路由
+      const context = [
+        `[原始请求] ${threadSession.routingState.originalPrompt}`,
+        `[路由问题] ${threadSession.routingState.question}`,
+        `[用户回复] ${prompt}`,
+      ].join('\n');
+
+      logger.info({ chatId, userId, threadId, retryCount }, 'Re-routing with clarification context');
+      const decision = await routeWorkspace(context, chatId, userId);
+
+      if (decision.decision === 'need_clarification') {
+        // 再次需要澄清，更新 routingState（递增 retryCount）
+        const question = decision.question || '请提供更多信息，我需要知道你想要操作哪个仓库或项目。';
+        sessionManager.setThreadRoutingState(threadId, {
+          status: 'pending_clarification',
+          originalPrompt: threadSession.routingState.originalPrompt,
+          question,
+          retryCount: retryCount + 1,
+        });
+        if (threadRootMsgId) {
+          await feishuClient.replyTextInThread(threadRootMsgId, question);
+        } else {
+          await feishuClient.replyText(messageId, question);
+        }
+        return;
+      }
+
+      workingDir = decision.workdir || config.claude.defaultWorkDir;
+      sessionManager.clearThreadRoutingState(threadId);
+      sessionManager.setThreadWorkingDir(threadId, workingDir);
+      sessionManager.markThreadRoutingCompleted(threadId);
+      // 重新读取 threadSession 以获得更新后的数据
+      threadSession = sessionManager.getThreadSession(threadId);
+    }
+
+  } else if (threadId && !threadSession?.routingCompleted) {
+    // Thread 首条消息（路由尚未完成），需要路由
+    logger.info({ chatId, userId, threadId }, 'First message in thread, running routing agent');
+    const decision = await routeWorkspace(prompt, chatId, userId);
+
+    if (decision.decision === 'need_clarification') {
+      const question = decision.question || '请提供更多信息，我需要知道你想要操作哪个仓库或项目。';
+      sessionManager.setThreadRoutingState(threadId, {
+        status: 'pending_clarification',
+        originalPrompt: prompt,
+        question,
+        retryCount: 0,
+      });
+      if (threadRootMsgId) {
+        await feishuClient.replyTextInThread(threadRootMsgId, question);
+      } else {
+        await feishuClient.replyText(messageId, question);
+      }
+      return;
+    }
+
+    workingDir = decision.workdir || config.claude.defaultWorkDir;
+    sessionManager.setThreadWorkingDir(threadId, workingDir);
+    sessionManager.markThreadRoutingCompleted(threadId);
+    // 同步更新全局 session 的 workingDir
+    sessionManager.setWorkingDir(chatId, userId, workingDir);
+    // 重新读取 threadSession
+    threadSession = sessionManager.getThreadSession(threadId);
+
+  } else {
+    // Thread 后续消息，使用已绑定的 workdir
+    workingDir = threadSession?.workingDir ?? session.workingDir;
+  }
 
   // 发送初始进度卡片（即时反馈），后续原地更新为 tool call 进度卡片
   let progressCardMsgId: string | undefined;

@@ -1,7 +1,7 @@
 import { config } from '../config.js';
 import { logger } from '../utils/logger.js';
 import { SessionDatabase } from './database.js';
-import type { Session, ThreadSession } from './types.js';
+import type { Session, ThreadSession, RoutingState } from './types.js';
 
 /**
  * 会话管理器
@@ -140,6 +140,27 @@ export class SessionManager {
    */
   setThreadWorkingDir(threadId: string, workingDir: string): void {
     this.db.updateThreadWorkingDir(threadId, workingDir);
+  }
+
+  /**
+   * 设置 thread 的路由状态（need_clarification 时保存上下文）
+   */
+  setThreadRoutingState(threadId: string, state: RoutingState): void {
+    this.db.updateThreadRoutingState(threadId, state);
+  }
+
+  /**
+   * 清空 thread 的路由状态（路由完成后）
+   */
+  clearThreadRoutingState(threadId: string): void {
+    this.db.clearThreadRoutingState(threadId);
+  }
+
+  /**
+   * 标记 thread 的路由已完成
+   */
+  markThreadRoutingCompleted(threadId: string): void {
+    this.db.markThreadRoutingCompleted(threadId);
   }
 
   /**

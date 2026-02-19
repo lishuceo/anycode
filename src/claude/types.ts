@@ -48,6 +48,10 @@ export interface ExecuteOptions {
   maxBudgetUsd?: number;
   /** 不注入 setup_workspace MCP tool (restart 时使用) */
   disableWorkspaceTool?: boolean;
+  /** 覆盖模型 (路由 agent 使用 Sonnet) */
+  model?: string;
+  /** 覆盖 settingSources (路由 agent 使用 [] 避免加载项目 CLAUDE.md) */
+  settingSources?: Array<'user' | 'project' | 'local'>;
 }
 
 /** 工具调用信息 */

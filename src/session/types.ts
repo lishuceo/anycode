@@ -25,6 +25,17 @@ export interface Session {
   lastActiveAt: Date;
 }
 
+/** 路由状态（need_clarification 时存储上下文） */
+export interface RoutingState {
+  status: 'pending_clarification';
+  /** 用户原始请求 */
+  originalPrompt: string;
+  /** 路由 agent 的提问 */
+  question: string;
+  /** 已追问次数（防止无限循环） */
+  retryCount: number;
+}
+
 /** Thread 级别的 Claude Code 会话（threadId → conversationId 映射） */
 export interface ThreadSession {
   /** 飞书 thread ID */
@@ -39,6 +50,10 @@ export interface ThreadSession {
   conversationId?: string;
   /** 创建 conversationId 时的 cwd（用于 cwd 匹配校验） */
   conversationCwd?: string;
+  /** 路由是否已完成（首条消息路由后设为 true） */
+  routingCompleted?: boolean;
+  /** 路由状态（need_clarification 时非空） */
+  routingState?: RoutingState;
   /** 创建时间 */
   createdAt: Date;
   /** 最后更新时间 */
