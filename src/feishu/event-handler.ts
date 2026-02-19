@@ -4,8 +4,8 @@ import { isUserAllowed, containsDangerousCommand } from '../utils/security.js';
 import { sessionManager } from '../session/manager.js';
 import { taskQueue } from '../session/queue.js';
 import { claudeExecutor } from '../claude/executor.js';
-import type { TurnInfo } from '../claude/types.js';
-import { buildResultCard, buildStatusCard, buildCancelledCard, buildPipelineCard, buildPipelineConfirmCard, buildTurnCard, buildSimpleResultCard } from './message-builder.js';
+import type { TurnInfo, ToolCallInfo } from '../claude/types.js';
+import { buildResultCard, buildStatusCard, buildCancelledCard, buildPipelineCard, buildPipelineConfirmCard, buildToolProgressCard, buildSimpleResultCard } from './message-builder.js';
 import { feishuClient } from './client.js';
 import { config } from '../config.js';
 import { setupWorkspace } from '../workspace/manager.js';
@@ -550,15 +550,35 @@ async function executeClaudeTask(
   }
 
   // 构造逐条 turn 回调
-  // 策略：缓冲最后一个 turn，收到新 turn 时才发送前一个。
-  // 结束时把最后一个 turn 的内容合并进底部结果卡片，避免单轮查询出两张卡片。
+  // 策略：缓冲最后一个 turn，收到新 turn 时将前一个 turn 的 tool calls 刷入累积器，
+  // 创建或原地更新一张进度卡片。结束时最后一个 turn 合并进结果卡片。
+  // 单轮查询：只有 1 个 turn，pendingTurn 从未被 flush，不创建进度卡片。
   let turnCount = 0;
   let pendingTurn: TurnInfo | undefined;
+  const accumulatedToolCalls: ToolCallInfo[] = [];
+  let progressCardMsgId: string | undefined;
+  let progressCardFailed = false;
+
   const onTurn = async (turn: TurnInfo) => {
     turnCount = turn.turnIndex;
-    // 发送前一个缓冲的 turn（当前 turn 的到来证明前一个不是最后一轮）
-    if (pendingTurn && threadRootMsgId) {
-      await feishuClient.replyCardInThread(threadRootMsgId, buildTurnCard(pendingTurn));
+    // 将前一个 turn 的 tool calls 刷入累积器
+    if (pendingTurn) {
+      accumulatedToolCalls.push(...pendingTurn.toolCalls);
+      // 创建或更新进度卡片（失败不中断主流程）
+      if (threadRootMsgId && !progressCardFailed) {
+        try {
+          const card = buildToolProgressCard(accumulatedToolCalls, turnCount);
+          if (!progressCardMsgId) {
+            progressCardMsgId = await feishuClient.replyCardInThread(threadRootMsgId, card) ?? undefined;
+            if (!progressCardMsgId) progressCardFailed = true;
+          } else {
+            await feishuClient.updateCard(progressCardMsgId, card);
+          }
+        } catch (err) {
+          logger.warn({ err }, 'Failed to update progress card');
+          progressCardFailed = true;
+        }
+      }
     }
     // 缓冲当前 turn
     pendingTurn = turn;
@@ -654,6 +674,14 @@ async function executeClaudeTask(
       const totalDurationMs = result.durationMs + restartResult.durationMs;
       const totalCostUsd = (result.costUsd ?? 0) + (restartResult.costUsd ?? 0);
 
+      // 进度卡片切换为完成态
+      if (progressCardMsgId) {
+        await feishuClient.updateCard(
+          progressCardMsgId,
+          buildToolProgressCard(accumulatedToolCalls, turnCount, undefined, true),
+        );
+      }
+
       await sendResultCard(
         prompt, restartResult, totalDurationMs, totalCostUsd,
         threadRootMsgId, chatId, threadRootMsgId ? pendingTurn : undefined, turnCount,
@@ -696,6 +724,14 @@ async function executeClaudeTask(
       sessionManager.setConversationId(chatId, userId, result.sessionId, session.workingDir);
     }
 
+    // 进度卡片切换为完成态
+    if (progressCardMsgId) {
+      await feishuClient.updateCard(
+        progressCardMsgId,
+        buildToolProgressCard(accumulatedToolCalls, turnCount, undefined, true),
+      );
+    }
+
     await sendResultCard(
       prompt, result, result.durationMs, result.costUsd,
       threadRootMsgId, chatId, threadRootMsgId ? pendingTurn : undefined, turnCount,
@@ -716,6 +752,13 @@ async function executeClaudeTask(
     }
   } catch (err) {
     logger.error({ err }, 'Error executing Claude Agent SDK query');
+    // 进度卡片切换为完成态（best-effort）
+    if (progressCardMsgId) {
+      await feishuClient.updateCard(
+        progressCardMsgId,
+        buildToolProgressCard(accumulatedToolCalls, turnCount, undefined, true),
+      ).catch(() => {});
+    }
     const errorReply = `❌ 执行出错: ${(err as Error).message}`;
     if (threadRootMsgId) {
       await feishuClient.replyTextInThread(threadRootMsgId, errorReply);

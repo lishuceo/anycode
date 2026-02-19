@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { buildProgressCard, buildResultCard, buildStreamingCard, buildPipelineCard, buildStatusCard, buildTurnCard, buildOverviewCard, buildSimpleResultCard } from '../message-builder.js';
-import type { TurnInfo } from '../../claude/types.js';
+import { buildProgressCard, buildResultCard, buildStreamingCard, buildPipelineCard, buildStatusCard, buildTurnCard, buildToolProgressCard, buildOverviewCard, buildSimpleResultCard } from '../message-builder.js';
+import type { TurnInfo, ToolCallInfo } from '../../claude/types.js';
 
 describe('buildProgressCard', () => {
   it('should build a card with the given prompt', () => {
@@ -355,5 +355,57 @@ describe('buildSimpleResultCard', () => {
     const allText = card.elements.map((e: any) => e.text?.content ?? '').join(' ');
     expect(allText).toContain('partial work');
     expect(allText).toContain('something broke');
+  });
+});
+
+describe('buildToolProgressCard', () => {
+  it('should show tool calls with blue header when in progress', () => {
+    const tools: ToolCallInfo[] = [
+      { name: 'Read', input: { file_path: '/src/index.ts' } },
+      { name: 'Bash', input: { command: 'npm test' } },
+    ];
+    const card = buildToolProgressCard(tools, 2) as any;
+    expect(card.header.template).toBe('blue');
+    expect(card.header.title.content).toContain('执行中');
+    const body = card.elements[0].text.content as string;
+    expect(body).toContain('📖');
+    expect(body).toContain('/src/index.ts');
+    expect(body).toContain('💻');
+    expect(body).toContain('npm test');
+    const note = card.elements[2].elements[0].content as string;
+    expect(note).toContain('⏳ 执行中');
+    expect(note).toContain('2 轮');
+  });
+
+  it('should show indigo header when completed', () => {
+    const tools: ToolCallInfo[] = [
+      { name: 'Grep', input: { pattern: 'TODO' } },
+    ];
+    const card = buildToolProgressCard(tools, 3, undefined, true) as any;
+    expect(card.header.template).toBe('indigo');
+    expect(card.header.title.content).toContain('活动记录');
+    const note = card.elements[2].elements[0].content as string;
+    expect(note).not.toContain('⏳');
+    expect(note).toContain('3 轮');
+  });
+
+  it('should truncate old entries when exceeding maxDisplayed', () => {
+    const tools: ToolCallInfo[] = Array.from({ length: 10 }, (_, i) => ({
+      name: 'Read',
+      input: { file_path: `/src/file${i}.ts` },
+    }));
+    const card = buildToolProgressCard(tools, 5, 3) as any;
+    const body = card.elements[0].text.content as string;
+    expect(body).toContain('前 7 条已省略');
+    expect(body).toContain('file7.ts');
+    expect(body).toContain('file8.ts');
+    expect(body).toContain('file9.ts');
+    expect(body).not.toContain('file0.ts');
+  });
+
+  it('should show placeholder when no tool calls', () => {
+    const card = buildToolProgressCard([], 1) as any;
+    const body = card.elements[0].text.content as string;
+    expect(body).toContain('_(无工具调用)_');
   });
 });
