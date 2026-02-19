@@ -549,21 +549,25 @@ async function executeClaudeTask(
   };
 
   try {
-    // 只有 cwd 匹配时才尝试 resume（Claude Code 的 session 数据按 cwd 存储，不匹配会 exit code 1）
-    // cwd 不匹配说明工作区已切换，旧 session 数据不删除（切回去时仍可恢复）
-    const canResume = session.conversationId
-      && session.conversationCwd === session.workingDir;
-    if (session.conversationId && !canResume) {
+    // Resume 策略：Claude Code 根据 cwd 定位 session 文件。
+    // cwd 不匹配时用 conversationCwd 作为 cwd 来 resume，保留对话历史。
+    // 对话历史（55 turn 的上下文）远比加载正确的 CLAUDE.md 更有价值。
+    const canResume = !!session.conversationId;
+    const resumeCwd = canResume && session.conversationCwd
+      ? session.conversationCwd  // 用 session 创建时的 cwd，确保能找到 session 文件
+      : session.workingDir;
+
+    if (canResume && session.conversationCwd && session.conversationCwd !== session.workingDir) {
       logger.info(
         { sessionKey, sessionId: session.conversationId, sessionCwd: session.conversationCwd, currentCwd: session.workingDir },
-        'Skipping resume: cwd mismatch (workspace switched), starting fresh session',
+        'Resuming with original cwd to preserve conversation history (cwd mismatch)',
       );
     }
 
     const result = await claudeExecutor.execute({
       sessionKey,
       prompt,
-      workingDir: session.workingDir,
+      workingDir: resumeCwd,
       resumeSessionId: canResume ? session.conversationId : undefined,
       onProgress,
       onWorkspaceChanged,
