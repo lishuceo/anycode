@@ -1,7 +1,7 @@
 import { config } from '../config.js';
 import { logger } from '../utils/logger.js';
 import { SessionDatabase } from './database.js';
-import type { Session } from './types.js';
+import type { Session, ThreadSession } from './types.js';
 
 /**
  * 会话管理器
@@ -101,6 +101,45 @@ export class SessionManager {
     const key = this.makeKey(chatId, userId);
     this.db.delete(key);
     logger.info({ chatId, userId }, 'Session reset');
+  }
+
+  /**
+   * 获取 thread 级别的 session
+   */
+  getThreadSession(threadId: string): Readonly<ThreadSession> | undefined {
+    return this.db.getThreadSession(threadId);
+  }
+
+  /**
+   * 创建或更新 thread session（首条消息确定 workdir 时调用）
+   */
+  upsertThreadSession(threadId: string, chatId: string, userId: string, workingDir: string): void {
+    const existing = this.db.getThreadSession(threadId);
+    const now = new Date();
+    this.db.upsertThreadSession({
+      threadId,
+      chatId,
+      userId,
+      workingDir,
+      conversationId: existing?.conversationId,
+      conversationCwd: existing?.conversationCwd,
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
+    });
+  }
+
+  /**
+   * 保存 thread 对应的 Claude Code session ID
+   */
+  setThreadConversationId(threadId: string, conversationId: string, cwd: string): void {
+    this.db.updateThreadConversationId(threadId, conversationId, cwd);
+  }
+
+  /**
+   * 更新 thread 的工作目录（workspace 切换时，同时清空 conversationId）
+   */
+  setThreadWorkingDir(threadId: string, workingDir: string): void {
+    this.db.updateThreadWorkingDir(threadId, workingDir);
   }
 
   /**

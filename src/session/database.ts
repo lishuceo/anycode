@@ -2,7 +2,18 @@ import Database from 'better-sqlite3';
 import { mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { logger } from '../utils/logger.js';
-import type { Session, SessionStatus } from './types.js';
+import type { Session, SessionStatus, ThreadSession } from './types.js';
+
+interface ThreadSessionRow {
+  thread_id: string;
+  chat_id: string;
+  user_id: string;
+  working_dir: string;
+  conversation_id: string | null;
+  conversation_cwd: string | null;
+  created_at: string;
+  updated_at: string;
+}
 
 interface SessionRow {
   key: string;
@@ -39,6 +50,10 @@ export class SessionDatabase {
   private stmtInsertSummary: Database.Statement;
   private stmtGetRecentSummaries: Database.Statement;
   private stmtCleanOldSummaries: Database.Statement;
+  private stmtUpsertThreadSession: Database.Statement;
+  private stmtGetThreadSession: Database.Statement;
+  private stmtUpdateThreadConversationId: Database.Statement;
+  private stmtUpdateThreadWorkingDir: Database.Statement;
 
   constructor(dbPath: string) {
     dbPath = resolve(dbPath);
@@ -68,14 +83,36 @@ export class SessionDatabase {
       )
     `);
 
-    // Migration v1 → v2: add conversation_cwd column
     const version = (this.db.prepare('SELECT version FROM schema_version').get() as { version: number })?.version ?? 1;
+
+    // Migration v1 → v2: add conversation_cwd column
     if (version < 2) {
       const cols = this.db.prepare("PRAGMA table_info(sessions)").all() as Array<{ name: string }>;
       if (!cols.some((c) => c.name === 'conversation_cwd')) {
         this.db.exec('ALTER TABLE sessions ADD COLUMN conversation_cwd TEXT');
       }
       this.db.exec('UPDATE schema_version SET version = 2');
+    }
+
+    // Migration v2 → v3: add thread_sessions table
+    if (version < 3) {
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS thread_sessions (
+          thread_id        TEXT PRIMARY KEY,
+          chat_id          TEXT NOT NULL,
+          user_id          TEXT NOT NULL,
+          working_dir      TEXT NOT NULL,
+          conversation_id  TEXT,
+          conversation_cwd TEXT,
+          created_at       TEXT NOT NULL,
+          updated_at       TEXT NOT NULL
+        )
+      `);
+      this.db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_thread_sessions_chat
+          ON thread_sessions(chat_id, user_id)
+      `);
+      this.db.exec('UPDATE schema_version SET version = 3');
     }
 
     this.stmtUpsert = this.db.prepare(`
@@ -154,6 +191,28 @@ export class SessionDatabase {
 
     this.stmtCleanOldSummaries = this.db.prepare(
       'DELETE FROM session_summaries WHERE created_at < ?',
+    );
+
+    this.stmtUpsertThreadSession = this.db.prepare(`
+      INSERT INTO thread_sessions (thread_id, chat_id, user_id, working_dir, conversation_id, conversation_cwd, created_at, updated_at)
+      VALUES (@thread_id, @chat_id, @user_id, @working_dir, @conversation_id, @conversation_cwd, @created_at, @updated_at)
+      ON CONFLICT(thread_id) DO UPDATE SET
+        working_dir      = @working_dir,
+        conversation_id  = @conversation_id,
+        conversation_cwd = @conversation_cwd,
+        updated_at       = @updated_at
+    `);
+
+    this.stmtGetThreadSession = this.db.prepare(
+      'SELECT * FROM thread_sessions WHERE thread_id = ?',
+    );
+
+    this.stmtUpdateThreadConversationId = this.db.prepare(
+      'UPDATE thread_sessions SET conversation_id = ?, conversation_cwd = ?, updated_at = ? WHERE thread_id = ?',
+    );
+
+    this.stmtUpdateThreadWorkingDir = this.db.prepare(
+      'UPDATE thread_sessions SET working_dir = ?, conversation_id = NULL, conversation_cwd = NULL, updated_at = ? WHERE thread_id = ?',
     );
 
     logger.info({ dbPath }, 'Session database initialized');
@@ -244,9 +303,49 @@ export class SessionDatabase {
     return result.changes;
   }
 
+  upsertThreadSession(session: ThreadSession): void {
+    this.stmtUpsertThreadSession.run({
+      thread_id: session.threadId,
+      chat_id: session.chatId,
+      user_id: session.userId,
+      working_dir: session.workingDir,
+      conversation_id: session.conversationId ?? null,
+      conversation_cwd: session.conversationCwd ?? null,
+      created_at: session.createdAt.toISOString(),
+      updated_at: session.updatedAt.toISOString(),
+    });
+  }
+
+  getThreadSession(threadId: string): ThreadSession | undefined {
+    const row = this.stmtGetThreadSession.get(threadId) as ThreadSessionRow | undefined;
+    if (!row) return undefined;
+    return this.rowToThreadSession(row);
+  }
+
+  updateThreadConversationId(threadId: string, conversationId: string, cwd?: string): void {
+    this.stmtUpdateThreadConversationId.run(conversationId, cwd ?? null, new Date().toISOString(), threadId);
+  }
+
+  updateThreadWorkingDir(threadId: string, workingDir: string): void {
+    this.stmtUpdateThreadWorkingDir.run(workingDir, new Date().toISOString(), threadId);
+  }
+
   close(): void {
     this.db.close();
     logger.info('Session database closed');
+  }
+
+  private rowToThreadSession(row: ThreadSessionRow): ThreadSession {
+    return {
+      threadId: row.thread_id,
+      chatId: row.chat_id,
+      userId: row.user_id,
+      workingDir: row.working_dir,
+      conversationId: row.conversation_id ?? undefined,
+      conversationCwd: row.conversation_cwd ?? undefined,
+      createdAt: new Date(row.created_at),
+      updatedAt: new Date(row.updated_at),
+    };
   }
 
   private rowToSession(row: SessionRow): Session {

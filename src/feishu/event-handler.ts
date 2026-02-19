@@ -513,6 +513,9 @@ async function handleSlashCommand(
  * 执行 Claude Agent SDK 任务
  * 支持 workspace 变更后自动 restart：第一次 query 触发 setup_workspace 后，
  * 自动以新 cwd 发起第二次 query，确保 CLAUDE.md 正确加载。
+ *
+ * Resume 策略：优先使用 thread_sessions 表（threadId → conversationId 映射），
+ * 每个 thread 独立管理自己的 conversationId，互不干扰。
  */
 async function executeClaudeTask(
   prompt: string,
@@ -524,9 +527,20 @@ async function executeClaudeTask(
   const sessionKey = `${chatId}:${userId}`;
 
   // 确保话题存在，返回话题锚点消息 ID
-  // ensureThread 在新话题场景下会清空 conversationId，需要之后重新读取 session
   const threadRootMsgId = await ensureThread(chatId, userId, messageId, rootId);
   const session = sessionManager.getOrCreate(chatId, userId);
+
+  // 获取 thread 级别的 session（优先于全局 session 的 conversationId）
+  const threadId = session.threadId;
+  const threadSession = threadId ? sessionManager.getThreadSession(threadId) : undefined;
+
+  // 确保 thread_sessions 中有该 thread 的记录（首条消息时创建）
+  if (threadId && !threadSession) {
+    sessionManager.upsertThreadSession(threadId, chatId, userId, session.workingDir);
+  }
+
+  // 工作目录：优先使用 thread session 绑定的 workdir，否则用全局 session 的
+  const workingDir = threadSession?.workingDir ?? session.workingDir;
 
   // 发送轻量处理提示（即时反馈）
   if (threadRootMsgId) {
@@ -595,15 +609,15 @@ async function executeClaudeTask(
   };
 
   try {
-    // Resume 策略：Claude Code 根据 cwd 定位 session 文件。
-    // 只有 cwd 匹配时才 resume，否则说明用户主动切了工作区，应开始新 session。
-    // cwd 不匹配的 session 历史不会丢失——workspace 变更时已通过 abort+restart
-    // 在新 cwd 下创建了正确的 session。
-    const canResume = session.conversationId
-      && (!session.conversationCwd || session.conversationCwd === session.workingDir);
-    if (session.conversationId && !canResume) {
+    // Resume 策略：优先用 thread session 的 conversationId。
+    // Claude Code 根据 cwd 定位 session 文件，cwd 必须匹配才能 resume。
+    const activeConversationId = threadSession?.conversationId ?? session.conversationId;
+    const activeConversationCwd = threadSession?.conversationCwd ?? session.conversationCwd;
+    const canResume = activeConversationId
+      && (!activeConversationCwd || activeConversationCwd === workingDir);
+    if (activeConversationId && !canResume) {
       logger.info(
-        { sessionKey, sessionId: session.conversationId, sessionCwd: session.conversationCwd, currentCwd: session.workingDir },
+        { sessionKey, threadId, sessionId: activeConversationId, sessionCwd: activeConversationCwd, currentCwd: workingDir },
         'Skipping resume: cwd mismatch (workspace switched), starting fresh session',
       );
     }
@@ -611,8 +625,8 @@ async function executeClaudeTask(
     const result = await claudeExecutor.execute({
       sessionKey,
       prompt,
-      workingDir: session.workingDir,
-      resumeSessionId: canResume ? session.conversationId : undefined,
+      workingDir,
+      resumeSessionId: canResume ? activeConversationId : undefined,
       onProgress,
       onWorkspaceChanged,
       onTurn,
@@ -646,7 +660,11 @@ async function executeClaudeTask(
         return;
       }
 
-      // 清空残留的 conversationId，避免指向只做了 workspace setup 的短 session
+      // workspace 已变更：更新 thread session 的 workingDir，同时清空旧 conversationId
+      // （S1 只做了 workspace setup，其 session 不应被 resume）
+      if (threadId) {
+        sessionManager.setThreadWorkingDir(threadId, result.newWorkingDir);
+      }
       sessionManager.setConversationId(chatId, userId, '');
 
       // 第二次 query：以新 cwd 执行，CLAUDE.md 正确加载
@@ -663,10 +681,13 @@ async function executeClaudeTask(
         disableWorkspaceTool: true,
       });
 
-      // 保存 restart query 的 session_id 用于下次续接
+      // 保存 restart query 的 session_id 到 thread session
       // 如果 restart query 失败未返回 sessionId，用第一次 query 的作为 fallback
       const finalSessionId = restartResult.sessionId || result.sessionId;
       if (finalSessionId) {
+        if (threadId) {
+          sessionManager.setThreadConversationId(threadId, finalSessionId, result.newWorkingDir);
+        }
         sessionManager.setConversationId(chatId, userId, finalSessionId, result.newWorkingDir);
       }
 
@@ -695,15 +716,15 @@ async function executeClaudeTask(
     //   - 正常失败（超时、预算等）：有 output，应走 sendResultCard 展示部分结果
     if (!result.success && canResume && !result.output) {
       logger.error(
-        { sessionKey, error: result.error, sessionId: session.conversationId, durationMs: result.durationMs },
+        { sessionKey, threadId, error: result.error, sessionId: activeConversationId, durationMs: result.durationMs },
         'Resume failed — session ID preserved for user to decide',
       );
 
       const errorDetail = [
         '⚠️ 会话恢复失败',
         '',
-        `**Session ID**: \`${session.conversationId}\``,
-        `**工作目录**: \`${session.workingDir}\``,
+        `**Session ID**: \`${activeConversationId}\``,
+        `**工作目录**: \`${workingDir}\``,
         `**错误**: ${result.error || '未知错误'}`,
         `**耗时**: ${formatDuration(result.durationMs)}`,
         '',
@@ -718,10 +739,13 @@ async function executeClaudeTask(
       return;
     }
 
-    // 无 restart，正常流程：保存 session ID + 对应 cwd 用于下次 resume
+    // 无 restart，正常流程：保存 session ID 用于下次 resume
     // 即使失败也保存——下次 resume 可能成功（如超时但 session 数据完整）
     if (result.sessionId) {
-      sessionManager.setConversationId(chatId, userId, result.sessionId, session.workingDir);
+      if (threadId) {
+        sessionManager.setThreadConversationId(threadId, result.sessionId, workingDir);
+      }
+      sessionManager.setConversationId(chatId, userId, result.sessionId, workingDir);
     }
 
     // 进度卡片切换为完成态

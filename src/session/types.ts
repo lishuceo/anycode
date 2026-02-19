@@ -25,6 +25,26 @@ export interface Session {
   lastActiveAt: Date;
 }
 
+/** Thread 级别的 Claude Code 会话（threadId → conversationId 映射） */
+export interface ThreadSession {
+  /** 飞书 thread ID */
+  threadId: string;
+  /** 飞书 chat ID */
+  chatId: string;
+  /** 飞书 user ID */
+  userId: string;
+  /** 该 thread 绑定的工作目录（由首条消息确定后永久绑定） */
+  workingDir: string;
+  /** Claude Code session_id（resume 用） */
+  conversationId?: string;
+  /** 创建 conversationId 时的 cwd（用于 cwd 匹配校验） */
+  conversationCwd?: string;
+  /** 创建时间 */
+  createdAt: Date;
+  /** 最后更新时间 */
+  updatedAt: Date;
+}
+
 /** 队列中的任务 */
 export interface QueueTask {
   id: string;
