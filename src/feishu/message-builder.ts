@@ -422,6 +422,59 @@ export function buildInterruptedCard(
   };
 }
 
+/** 构建累积 tool call 进度卡片（原地更新） */
+export function buildToolProgressCard(
+  toolCalls: ToolCallInfo[],
+  turnCount: number,
+  maxDisplayed: number = 40,
+  completed: boolean = false,
+): Record<string, unknown> {
+  const truncated = toolCalls.length > maxDisplayed;
+  const displayed = truncated ? toolCalls.slice(-maxDisplayed) : toolCalls;
+
+  const lines: string[] = [];
+  if (truncated) {
+    lines.push(`_(前 ${toolCalls.length - maxDisplayed} 条已省略)_`);
+  }
+  lines.push(...displayed.map(formatToolCall));
+
+  const headerTitle = completed
+    ? '🤖 Claude Code - 活动记录'
+    : '🤖 Claude Code - 执行中';
+  const headerTemplate = completed ? 'indigo' : 'blue';
+
+  const footerParts: string[] = [];
+  if (!completed) footerParts.push('⏳ 执行中');
+  footerParts.push(`🔄 ${turnCount} 轮`);
+
+  return {
+    config: { wide_screen_mode: true },
+    header: {
+      title: { tag: 'plain_text', content: headerTitle },
+      template: headerTemplate,
+    },
+    elements: [
+      {
+        tag: 'div',
+        text: {
+          tag: 'lark_md',
+          content: lines.join('\n') || '_(无工具调用)_',
+        },
+      },
+      { tag: 'hr' },
+      {
+        tag: 'note',
+        elements: [
+          {
+            tag: 'plain_text',
+            content: footerParts.join(' | '),
+          },
+        ],
+      },
+    ],
+  };
+}
+
 /** 构建单轮 turn 消息卡片（逐条展示） */
 export function buildTurnCard(turn: TurnInfo): Record<string, unknown> {
   const parts: string[] = [];
