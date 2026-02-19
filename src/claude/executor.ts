@@ -411,7 +411,7 @@ export class ClaudeExecutor {
   killSessionsForChat(chatId: string, userId: string): void {
     const prefix = `${chatId}:${userId}`;
     for (const [key, q] of this.runningQueries) {
-      if (key === prefix || key.startsWith(prefix + ':') || key === `routing:${prefix}`) {
+      if (key === prefix || key.startsWith(prefix + ':') || key === `routing:${prefix}` || key.startsWith(`routing:${prefix}:`)) {
         q.close();
         this.runningQueries.delete(key);
         logger.info({ sessionKey: key }, 'Killed Claude Agent SDK query');
