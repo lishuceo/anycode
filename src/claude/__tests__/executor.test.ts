@@ -12,7 +12,7 @@ vi.mock('node:fs', () => ({
 
 vi.mock('../../config.js', () => ({
   config: {
-    claude: { defaultWorkDir: '/tmp/work', timeoutSeconds: 300, model: 'claude-opus-4-6', thinking: 'adaptive', effort: 'max' },
+    claude: { defaultWorkDir: '/tmp/work', timeoutSeconds: 300, model: 'claude-opus-4-6', thinking: 'adaptive', effort: 'max', maxTurns: 500, maxBudgetUsd: 50 },
     repoCache: { dir: '/repos/cache' },
     workspace: { baseDir: '/tmp/workspaces' },
   },
@@ -186,8 +186,8 @@ describe('ClaudeExecutor', () => {
       await executor.execute(makeInput());
 
       const opts = mockQuery.mock.calls[0][0].options;
-      expect(opts.maxTurns).toBe(50);
-      expect(opts.maxBudgetUsd).toBe(5);
+      expect(opts.maxTurns).toBe(500);
+      expect(opts.maxBudgetUsd).toBe(50);
     });
 
     it('should override maxTurns and maxBudgetUsd from options', async () => {

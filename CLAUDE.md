@@ -37,7 +37,7 @@ Feishu User → Feishu Platform → Bridge Server → Claude Agent SDK → Claud
 - **`src/feishu/client.ts`** — Feishu API wrapper using `@larksuiteoapi/node-sdk` for sending/updating messages and cards.
 - **`src/feishu/event-handler.ts`** — EventDispatcher handlers for incoming messages and card actions. Orchestrates the full flow: parse message → check allowlist → get/create session → enqueue task → execute → send result.
 - **`src/feishu/message-builder.ts`** — Constructs interactive Feishu card messages for progress and results.
-- **`src/claude/executor.ts`** — Wraps `@anthropic-ai/claude-agent-sdk` `query()`. Streams SDKMessage async generator, extracts output text, tracks cost/duration. Supports session resumption via `resumeSessionId`. Uses `permissionMode: 'acceptEdits'` + `canUseTool` auto-allow (not `bypassPermissions` which fails under root). Budget: $5/query, max 50 turns. Injects MCP workspace tool via `createSdkMcpServer`.
+- **`src/claude/executor.ts`** — Wraps `@anthropic-ai/claude-agent-sdk` `query()`. Streams SDKMessage async generator, extracts output text, tracks cost/duration. Supports session resumption via `resumeSessionId`. Uses `permissionMode: 'acceptEdits'` + `canUseTool` auto-allow (not `bypassPermissions` which fails under root). Budget: configurable via `CLAUDE_MAX_BUDGET_USD` (default $50) and `CLAUDE_MAX_TURNS` (default 500). Injects MCP workspace tool via `createSdkMcpServer`.
 - **`src/workspace/tool.ts`** — MCP tool `setup_workspace` for creating isolated workspaces. Each query gets its own MCP server instance via closure to avoid concurrency issues.
 - **`src/workspace/manager.ts`** — Git clone + workspace isolation. Supports remote URL (via bare cache) and local path modes. URL normalization handles SSH shorthand.
 - **`src/workspace/cache.ts`** — Bare clone cache layer for fast repeated clones.
@@ -68,7 +68,7 @@ Feishu User → Feishu Platform → Bridge Server → Claude Agent SDK → Claud
 Environment variables loaded via dotenv (see `.env.example`):
 
 - **Required**: `FEISHU_APP_ID`, `FEISHU_APP_SECRET`
-- **Claude**: `ANTHROPIC_API_KEY`, `DEFAULT_WORK_DIR` (default: `/home/ubuntu/projects`), `CLAUDE_TIMEOUT` (default: 300s)
+- **Claude**: `ANTHROPIC_API_KEY`, `DEFAULT_WORK_DIR` (default: `/home/ubuntu/projects`), `CLAUDE_TIMEOUT` (default: 300s), `CLAUDE_MAX_TURNS` (default: 500), `CLAUDE_MAX_BUDGET_USD` (default: 50)
 - **Workspace**: `REPO_CACHE_DIR` (bare clone cache), `WORKSPACE_BASE_DIR` (writable workspaces), `WORKSPACE_BRANCH_PREFIX`
 - **Event mode**: `FEISHU_EVENT_MODE` (`websocket` | `webhook`), `FEISHU_ENCRYPT_KEY`, `FEISHU_VERIFY_TOKEN` (webhook only)
 - **Security**: `ALLOWED_USER_IDS` (comma-separated, empty = allow all)

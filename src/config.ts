@@ -32,6 +32,10 @@ export const config = {
     thinking: (process.env.CLAUDE_THINKING || 'adaptive') as 'adaptive' | 'disabled',
     /** effort 等级: 'low' | 'medium' | 'high' | 'max' (Opus 4.6 支持 max) */
     effort: (process.env.CLAUDE_EFFORT || 'max') as 'low' | 'medium' | 'high' | 'max',
+    /** 单次 query 最大轮次 (Agent ↔ Tool 来回次数)，兜底防死循环 */
+    maxTurns: parseInt(process.env.CLAUDE_MAX_TURNS || '500', 10),
+    /** 单次 query 最大花费 (美元)，真正的费用熔断 */
+    maxBudgetUsd: parseFloat(process.env.CLAUDE_MAX_BUDGET_USD || '50'),
   },
 
   // 工作区配置
