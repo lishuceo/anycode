@@ -215,7 +215,7 @@ export class ClaudeExecutor {
         },
 
         // 加载项目设置 (CLAUDE.md 等)；路由 agent 传 [] 避免加载
-        settingSources: settingSourcesOverride ?? ['project'],
+        settingSources: settingSourcesOverride ?? ['user', 'project'],
 
         // MCP 服务器：工作区管理工具 (restart 时为空对象，不注入 setup_workspace)
         mcpServers,
@@ -401,6 +401,21 @@ export class ClaudeExecutor {
       q.close();
       this.runningQueries.delete(sessionKey);
       logger.info({ sessionKey }, 'Killed Claude Agent SDK query');
+    }
+  }
+
+  /**
+   * 中断某个 chat 下所有运行中的查询（匹配 sessionKey 前缀）
+   * 用于 /stop：per-thread 并行后一个 chat 可能有多个 running query
+   */
+  killSessionsForChat(chatId: string, userId: string): void {
+    const prefix = `${chatId}:${userId}`;
+    for (const [key, q] of this.runningQueries) {
+      if (key === prefix || key.startsWith(prefix + ':') || key === `routing:${prefix}` || key.startsWith(`routing:${prefix}:`)) {
+        q.close();
+        this.runningQueries.delete(key);
+        logger.info({ sessionKey: key }, 'Killed Claude Agent SDK query');
+      }
     }
   }
 

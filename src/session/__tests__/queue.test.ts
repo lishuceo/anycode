@@ -17,9 +17,9 @@ describe('TaskQueue', () => {
 
   describe('enqueue / dequeue', () => {
     it('should dequeue tasks in FIFO order', () => {
-      queue.enqueue('chat1', 'user1', 'msg1', 'mid1');
-      queue.enqueue('chat1', 'user1', 'msg2', 'mid2');
-      queue.enqueue('chat1', 'user1', 'msg3', 'mid3');
+      queue.enqueue('chat1', 'chat1', 'user1', 'msg1', 'mid1');
+      queue.enqueue('chat1', 'chat1', 'user1', 'msg2', 'mid2');
+      queue.enqueue('chat1', 'chat1', 'user1', 'msg3', 'mid3');
 
       const t1 = queue.dequeue('chat1');
       expect(t1).toBeDefined();
@@ -42,9 +42,9 @@ describe('TaskQueue', () => {
       expect(queue.dequeue('chat1')).toBeUndefined();
     });
 
-    it('should isolate queues per chatId', () => {
-      queue.enqueue('chat1', 'user1', 'msg-a', 'mid1');
-      queue.enqueue('chat2', 'user2', 'msg-b', 'mid2');
+    it('should isolate queues per queueKey', () => {
+      queue.enqueue('chat1', 'chat1', 'user1', 'msg-a', 'mid1');
+      queue.enqueue('chat2', 'chat2', 'user2', 'msg-b', 'mid2');
 
       const t1 = queue.dequeue('chat1');
       const t2 = queue.dequeue('chat2');
@@ -53,10 +53,41 @@ describe('TaskQueue', () => {
     });
   });
 
-  describe('serial execution per chat', () => {
+  describe('per-thread isolation', () => {
+    it('should allow parallel execution across different threads', () => {
+      // Thread A and Thread B in the same chat
+      queue.enqueue('chat1:threadA', 'chat1', 'user1', 'msg-a', 'mid1', 'threadA');
+      queue.enqueue('chat1:threadB', 'chat1', 'user1', 'msg-b', 'mid2', 'threadB');
+
+      // Both can be dequeued simultaneously
+      const tA = queue.dequeue('chat1:threadA');
+      const tB = queue.dequeue('chat1:threadB');
+      expect(tA!.message).toBe('msg-a');
+      expect(tB!.message).toBe('msg-b');
+    });
+
+    it('should serialize within the same thread', () => {
+      queue.enqueue('chat1:threadA', 'chat1', 'user1', 'msg1', 'mid1', 'threadA');
+      queue.enqueue('chat1:threadA', 'chat1', 'user1', 'msg2', 'mid2', 'threadA');
+
+      queue.dequeue('chat1:threadA'); // start msg1
+      expect(queue.dequeue('chat1:threadA')).toBeUndefined(); // blocked
+    });
+
+    it('should not block main chat when thread is busy', () => {
+      queue.enqueue('chat1:threadA', 'chat1', 'user1', 'msg-thread', 'mid1', 'threadA');
+      queue.enqueue('chat1', 'chat1', 'user1', 'msg-main', 'mid2');
+
+      queue.dequeue('chat1:threadA'); // start thread msg
+      const mainTask = queue.dequeue('chat1'); // main chat should not be blocked
+      expect(mainTask!.message).toBe('msg-main');
+    });
+  });
+
+  describe('serial execution per queue', () => {
     it('should block dequeue while a task is running', () => {
-      queue.enqueue('chat1', 'user1', 'msg1', 'mid1');
-      queue.enqueue('chat1', 'user1', 'msg2', 'mid2');
+      queue.enqueue('chat1', 'chat1', 'user1', 'msg1', 'mid1');
+      queue.enqueue('chat1', 'chat1', 'user1', 'msg2', 'mid2');
 
       queue.dequeue('chat1'); // start msg1
       expect(queue.dequeue('chat1')).toBeUndefined(); // blocked
@@ -69,13 +100,13 @@ describe('TaskQueue', () => {
     });
 
     it('should return true when a task is running', () => {
-      queue.enqueue('chat1', 'user1', 'msg1', 'mid1');
+      queue.enqueue('chat1', 'chat1', 'user1', 'msg1', 'mid1');
       queue.dequeue('chat1');
       expect(queue.isBusy('chat1')).toBe(true);
     });
 
     it('should return false after task completes', () => {
-      queue.enqueue('chat1', 'user1', 'msg1', 'mid1');
+      queue.enqueue('chat1', 'chat1', 'user1', 'msg1', 'mid1');
       queue.dequeue('chat1');
       queue.complete('chat1');
       expect(queue.isBusy('chat1')).toBe(false);
@@ -83,28 +114,45 @@ describe('TaskQueue', () => {
   });
 
   describe('pendingCount', () => {
-    it('should return 0 for unknown chat', () => {
+    it('should return 0 for unknown queue', () => {
       expect(queue.pendingCount('chat1')).toBe(0);
     });
 
     it('should return count of queued tasks', () => {
-      queue.enqueue('chat1', 'user1', 'msg1', 'mid1');
-      queue.enqueue('chat1', 'user1', 'msg2', 'mid2');
+      queue.enqueue('chat1', 'chat1', 'user1', 'msg1', 'mid1');
+      queue.enqueue('chat1', 'chat1', 'user1', 'msg2', 'mid2');
       expect(queue.pendingCount('chat1')).toBe(2);
     });
 
     it('should decrease after dequeue', () => {
-      queue.enqueue('chat1', 'user1', 'msg1', 'mid1');
-      queue.enqueue('chat1', 'user1', 'msg2', 'mid2');
+      queue.enqueue('chat1', 'chat1', 'user1', 'msg1', 'mid1');
+      queue.enqueue('chat1', 'chat1', 'user1', 'msg2', 'mid2');
       queue.dequeue('chat1');
       expect(queue.pendingCount('chat1')).toBe(1);
     });
   });
 
+  describe('pendingCountForChat', () => {
+    it('should aggregate pending across all threads for a chat', () => {
+      queue.enqueue('chat1:threadA', 'chat1', 'user1', 'msg1', 'mid1', 'threadA');
+      queue.enqueue('chat1:threadB', 'chat1', 'user1', 'msg2', 'mid2', 'threadB');
+      queue.enqueue('chat1', 'chat1', 'user1', 'msg3', 'mid3');
+
+      expect(queue.pendingCountForChat('chat1')).toBe(3);
+    });
+
+    it('should not count tasks from other chats', () => {
+      queue.enqueue('chat1:threadA', 'chat1', 'user1', 'msg1', 'mid1', 'threadA');
+      queue.enqueue('chat2:threadB', 'chat2', 'user2', 'msg2', 'mid2', 'threadB');
+
+      expect(queue.pendingCountForChat('chat1')).toBe(1);
+    });
+  });
+
   describe('cancelPending', () => {
     it('should cancel all pending tasks and reject their promises', async () => {
-      const p1 = queue.enqueue('chat1', 'user1', 'msg1', 'mid1');
-      const p2 = queue.enqueue('chat1', 'user1', 'msg2', 'mid2');
+      const p1 = queue.enqueue('chat1', 'chat1', 'user1', 'msg1', 'mid1');
+      const p2 = queue.enqueue('chat1', 'chat1', 'user1', 'msg2', 'mid2');
 
       const cancelled = queue.cancelPending('chat1');
       expect(cancelled).toBe(2);
@@ -114,8 +162,31 @@ describe('TaskQueue', () => {
       await expect(p2).rejects.toThrow('Task cancelled');
     });
 
-    it('should return 0 for unknown chat', () => {
+    it('should return 0 for unknown queue', () => {
       expect(queue.cancelPending('unknown')).toBe(0);
+    });
+  });
+
+  describe('cancelAllForChat', () => {
+    it('should cancel pending tasks across all threads for a chat', async () => {
+      const p1 = queue.enqueue('chat1:threadA', 'chat1', 'user1', 'msg1', 'mid1', 'threadA');
+      const p2 = queue.enqueue('chat1:threadB', 'chat1', 'user1', 'msg2', 'mid2', 'threadB');
+      const p3 = queue.enqueue('chat1', 'chat1', 'user1', 'msg3', 'mid3');
+
+      const cancelled = queue.cancelAllForChat('chat1');
+      expect(cancelled).toBe(3);
+
+      await expect(p1).rejects.toThrow('Task cancelled');
+      await expect(p2).rejects.toThrow('Task cancelled');
+      await expect(p3).rejects.toThrow('Task cancelled');
+    });
+
+    it('should not cancel tasks from other chats', () => {
+      queue.enqueue('chat1:threadA', 'chat1', 'user1', 'msg1', 'mid1', 'threadA').catch(() => {});
+      queue.enqueue('chat2:threadB', 'chat2', 'user2', 'msg2', 'mid2', 'threadB').catch(() => {});
+
+      queue.cancelAllForChat('chat1');
+      expect(queue.pendingCount('chat2:threadB')).toBe(1);
     });
   });
 });
