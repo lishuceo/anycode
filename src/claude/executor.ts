@@ -167,6 +167,10 @@ export class ClaudeExecutor {
           workspaceChanged = true;
           newWorkingDir = newDir;
           onWorkspaceChanged(newDir);
+          // workspace 变更后立即 abort 当前 query，不再等它自然结束
+          // event-handler 通过 needsRestart 用新 cwd 立即 restart
+          abortController.abort();
+          logger.info({ sessionKey, newDir }, 'Workspace changed — aborting query for immediate restart');
         }
       : undefined;
 
