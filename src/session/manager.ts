@@ -168,6 +168,11 @@ export class SessionManager {
     if (oldSummaries > 0) {
       logger.info({ oldSummaries }, 'Cleaned up old session summaries');
     }
+    const threadMaxIdleMs = 30 * 24 * 60 * 60 * 1000; // 30 days
+    const cleanedThreads = this.db.deleteExpiredThreadSessions(threadMaxIdleMs);
+    if (cleanedThreads > 0) {
+      logger.info({ cleanedThreads }, 'Cleaned up idle thread sessions');
+    }
     return cleaned;
   }
 

@@ -768,8 +768,8 @@ async function executeClaudeTask(
         const status = result.success ? '成功' : `失败: ${result.error?.slice(0, 100) || '未知'}`;
         const promptSnippet = prompt.length > 200 ? prompt.slice(0, 200) + '...' : prompt;
         const tail = result.output.slice(-500).trim();
-        const summary = `[${date}] [${status}] dir: ${session.workingDir} | 用户: ${promptSnippet} | 回复: ${tail}`;
-        sessionManager.saveSummary(chatId, userId, session.workingDir, summary);
+        const summary = `[${date}] [${status}] dir: ${workingDir} | 用户: ${promptSnippet} | 回复: ${tail}`;
+        sessionManager.saveSummary(chatId, userId, workingDir, summary);
       } catch (err) {
         logger.warn({ err }, 'Failed to save session summary');
       }

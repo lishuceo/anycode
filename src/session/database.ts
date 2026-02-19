@@ -54,6 +54,7 @@ export class SessionDatabase {
   private stmtGetThreadSession: Database.Statement;
   private stmtUpdateThreadConversationId: Database.Statement;
   private stmtUpdateThreadWorkingDir: Database.Statement;
+  private stmtDeleteExpiredThreadSessions: Database.Statement;
 
   constructor(dbPath: string) {
     dbPath = resolve(dbPath);
@@ -215,6 +216,10 @@ export class SessionDatabase {
       'UPDATE thread_sessions SET working_dir = ?, conversation_id = NULL, conversation_cwd = NULL, updated_at = ? WHERE thread_id = ?',
     );
 
+    this.stmtDeleteExpiredThreadSessions = this.db.prepare(
+      'DELETE FROM thread_sessions WHERE updated_at < ?',
+    );
+
     logger.info({ dbPath }, 'Session database initialized');
   }
 
@@ -328,6 +333,12 @@ export class SessionDatabase {
 
   updateThreadWorkingDir(threadId: string, workingDir: string): void {
     this.stmtUpdateThreadWorkingDir.run(workingDir, new Date().toISOString(), threadId);
+  }
+
+  deleteExpiredThreadSessions(maxIdleMs: number): number {
+    const cutoff = new Date(Date.now() - maxIdleMs).toISOString();
+    const result = this.stmtDeleteExpiredThreadSessions.run(cutoff);
+    return result.changes;
   }
 
   close(): void {
