@@ -389,8 +389,7 @@ async function handleSlashCommand(
 
   // /reset - 重置会话
   if (trimmed === '/reset') {
-    const sessionKey = `${chatId}:${userId}`;
-    claudeExecutor.killSession(sessionKey);
+    claudeExecutor.killSessionsForChat(chatId, userId);
     // 先在旧话题内回复确认，再清除 session
     const reply = '🔄 会话已重置';
     if (threadRootMsgId) {
@@ -404,9 +403,7 @@ async function handleSlashCommand(
 
   // /stop - 中断执行
   if (trimmed === '/stop') {
-    const sessionKey = `${chatId}:${userId}`;
-    claudeExecutor.killSession(sessionKey);
-    claudeExecutor.killSession(`routing:${sessionKey}`);
+    claudeExecutor.killSessionsForChat(chatId, userId);
     taskQueue.cancelAllForChat(chatId);
     sessionManager.setStatus(chatId, userId, 'idle');
     const reply = '🛑 已中断当前会话的执行';
@@ -532,7 +529,8 @@ async function executeClaudeTask(
   messageId: string,
   rootId?: string,
 ): Promise<void> {
-  const sessionKey = `${chatId}:${userId}`;
+  // sessionKey 包含 rootId，per-thread 并行时各 query 有独立的 key
+  const sessionKey = rootId ? `${chatId}:${userId}:${rootId}` : `${chatId}:${userId}`;
 
   // 确保话题存在，返回话题锚点消息 ID
   const threadRootMsgId = await ensureThread(chatId, userId, messageId, rootId);
@@ -582,7 +580,7 @@ async function executeClaudeTask(
       ].join('\n');
 
       logger.info({ chatId, userId, threadId, retryCount }, 'Re-routing with clarification context');
-      const decision = await routeWorkspace(context, chatId, userId);
+      const decision = await routeWorkspace(context, chatId, userId, rootId);
 
       if (decision.decision === 'need_clarification') {
         // 再次需要澄清，更新 routingState（递增 retryCount）
@@ -612,7 +610,7 @@ async function executeClaudeTask(
   } else if (threadId && !threadSession?.routingCompleted) {
     // Thread 首条消息（路由尚未完成），需要路由
     logger.info({ chatId, userId, threadId }, 'First message in thread, running routing agent');
-    const decision = await routeWorkspace(prompt, chatId, userId);
+    const decision = await routeWorkspace(prompt, chatId, userId, rootId);
 
     if (decision.decision === 'need_clarification') {
       const question = decision.question || '请提供更多信息，我需要知道你想要操作哪个仓库或项目。';
