@@ -523,12 +523,15 @@ async function handleSlashCommand(
  * 每个 thread 独立管理自己的 conversationId，互不干扰。
  */
 async function executeClaudeTask(
-  prompt: string,
+  rawPrompt: string,
   chatId: string,
   userId: string,
   messageId: string,
   rootId?: string,
 ): Promise<void> {
+  // prompt 可被路由追问流程替换为原始请求（用户的路由回复如 "1" 不作为任务 prompt）
+  let prompt = rawPrompt;
+
   // sessionKey 包含 rootId，per-thread 并行时各 query 有独立的 key
   const sessionKey = rootId ? `${chatId}:${userId}:${rootId}` : `${chatId}:${userId}`;
 
