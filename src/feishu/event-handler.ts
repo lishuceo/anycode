@@ -69,56 +69,82 @@ export function createEventDispatcher(): lark.EventDispatcher {
     },
   });
 
-  logger.info('Feishu EventDispatcher created with im.message.receive_v1 handler');
+  // 注册卡片交互回调 (card.action.trigger)
+  // WebSocket 长连接模式下，卡片回调也通过 EventDispatcher 接收
+  // （CardActionHandler 仅适用于 HTTP Webhook 模式）
+  dispatcher.register({
+    'card.action.trigger': async (data: Record<string, unknown>) => {
+      try {
+        const cardBody = await handleCardAction(data);
+        // card.action.trigger 返回格式与 CardActionHandler 不同：
+        // 需要用 { card: { type: "raw", data: ... } } 包装
+        if (cardBody && Object.keys(cardBody).length > 0) {
+          return { card: { type: 'raw', data: cardBody } };
+        }
+        return {};
+      } catch (err) {
+        logger.error({ err }, 'Error handling card action trigger');
+        return {};
+      }
+    },
+  });
+
+  logger.info('Feishu EventDispatcher created with im.message.receive_v1 + card.action.trigger handlers');
   return dispatcher;
 }
 
 /**
- * 创建飞书卡片交互处理器
+ * 处理卡片交互动作（共享逻辑）
+ * 被 EventDispatcher (card.action.trigger) 和 CardActionHandler 共用
+ */
+async function handleCardAction(data: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const action = data.action as { value?: Record<string, unknown> } | undefined;
+  const actionType = action?.value?.action as string | undefined;
+  const pipelineId = action?.value?.pipelineId as string | undefined;
+
+  // 提取操作者 user ID
+  const operatorId = (data.operator as { open_id?: string } | undefined)?.open_id;
+
+  logger.info({ actionType, pipelineId, operatorId }, 'Card action received');
+
+  if (!actionType || !pipelineId) return {};
+
+  // 验证操作者身份：无法识别身份时拒绝操作（fail closed）
+  if (!operatorId) {
+    logger.warn({ pipelineId }, 'Card action rejected: no operator identity');
+    return {};
+  }
+
+  // 只有管道创建者可以操作
+  const record = pipelineStore.get(pipelineId);
+  if (record && record.userId !== operatorId) {
+    logger.warn({ pipelineId, operatorId, ownerId: record.userId }, 'Card action rejected: operator is not pipeline owner');
+    return {};
+  }
+
+  switch (actionType) {
+    case 'pipeline_confirm':
+      return handlePipelineConfirm(pipelineId);
+    case 'pipeline_cancel':
+      return handlePipelineCancel(pipelineId);
+    case 'pipeline_abort':
+      return handlePipelineAbort(pipelineId);
+    case 'pipeline_retry':
+      return handlePipelineRetry(pipelineId);
+    default:
+      logger.warn({ actionType }, 'Unknown card action');
+      return {};
+  }
+}
+
+/**
+ * 创建飞书卡片交互处理器（Webhook 模式使用）
  */
 export function createCardActionHandler(): lark.CardActionHandler {
   const handler = new lark.CardActionHandler({
     encryptKey: config.feishu.encryptKey || undefined,
     verificationToken: config.feishu.verifyToken || undefined,
-  }, async (data: Record<string, unknown>) => {
-    const action = data.action as { value?: Record<string, unknown> } | undefined;
-    const actionType = action?.value?.action as string | undefined;
-    const pipelineId = action?.value?.pipelineId as string | undefined;
-
-    // 提取操作者 user ID
-    const operatorId = (data.operator as { open_id?: string } | undefined)?.open_id;
-
-    logger.info({ actionType, pipelineId, operatorId }, 'Card action received');
-
-    if (!actionType || !pipelineId) return {};
-
-    // 验证操作者身份：无法识别身份时拒绝操作（fail closed）
-    if (!operatorId) {
-      logger.warn({ pipelineId }, 'Card action rejected: no operator identity');
-      return {};
-    }
-
-    // 只有管道创建者可以操作
-    const record = pipelineStore.get(pipelineId);
-    if (record && record.userId !== operatorId) {
-      logger.warn({ pipelineId, operatorId, ownerId: record.userId }, 'Card action rejected: operator is not pipeline owner');
-      return {};
-    }
-
-    switch (actionType) {
-      case 'pipeline_confirm':
-        return handlePipelineConfirm(pipelineId);
-      case 'pipeline_cancel':
-        return handlePipelineCancel(pipelineId);
-      case 'pipeline_abort':
-        return handlePipelineAbort(pipelineId);
-      case 'pipeline_retry':
-        return handlePipelineRetry(pipelineId);
-      default:
-        logger.warn({ actionType }, 'Unknown card action');
-        return {};
-    }
-  });
+  }, (data: Record<string, unknown>) => handleCardAction(data));
 
   return handler;
 }
