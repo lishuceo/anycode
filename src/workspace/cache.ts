@@ -4,7 +4,7 @@ import { resolve, join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { config } from '../config.js';
 import { logger } from '../utils/logger.js';
-import { GIT_REMOTE_CLONE_ARGS, GIT_REMOTE_FETCH_ARGS } from './git-security.js';
+import { GIT_REMOTE_CLONE_ARGS, GIT_REMOTE_FETCH_TOP_ARGS, GIT_REMOTE_FETCH_SUB_ARGS } from './git-security.js';
 
 // ============================================================
 // 仓库缓存管理
@@ -175,8 +175,9 @@ function fetchIfStale(cachePath: string): void {
   try {
     execFileSync('git', [
       '-C', cachePath,
-      ...GIT_REMOTE_FETCH_ARGS,
+      ...GIT_REMOTE_FETCH_TOP_ARGS,
       'fetch', '--all',
+      ...GIT_REMOTE_FETCH_SUB_ARGS,
     ], {
       timeout: 120_000,
       stdio: ['ignore', 'pipe', 'pipe'],

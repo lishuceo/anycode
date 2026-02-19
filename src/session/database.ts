@@ -2,7 +2,7 @@ import Database from 'better-sqlite3';
 import { mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { logger } from '../utils/logger.js';
-import type { Session, SessionStatus, ThreadSession } from './types.js';
+import type { Session, SessionStatus, ThreadSession, RoutingState } from './types.js';
 
 interface ThreadSessionRow {
   thread_id: string;
@@ -11,6 +11,8 @@ interface ThreadSessionRow {
   working_dir: string;
   conversation_id: string | null;
   conversation_cwd: string | null;
+  routing_completed: number | null;
+  routing_state: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -55,6 +57,9 @@ export class SessionDatabase {
   private stmtUpdateThreadConversationId: Database.Statement;
   private stmtUpdateThreadWorkingDir: Database.Statement;
   private stmtDeleteExpiredThreadSessions: Database.Statement;
+  private stmtUpdateThreadRoutingState: Database.Statement;
+  private stmtClearThreadRoutingState: Database.Statement;
+  private stmtMarkThreadRoutingCompleted: Database.Statement;
 
   constructor(dbPath: string) {
     dbPath = resolve(dbPath);
@@ -114,6 +119,24 @@ export class SessionDatabase {
           ON thread_sessions(chat_id, user_id)
       `);
       this.db.exec('UPDATE schema_version SET version = 3');
+    }
+
+    // Migration v3 → v4: add routing_state column to thread_sessions
+    if (version < 4) {
+      const cols = this.db.prepare("PRAGMA table_info(thread_sessions)").all() as Array<{ name: string }>;
+      if (!cols.some((c) => c.name === 'routing_state')) {
+        this.db.exec('ALTER TABLE thread_sessions ADD COLUMN routing_state TEXT');
+      }
+      this.db.exec('UPDATE schema_version SET version = 4');
+    }
+
+    // Migration v4 → v5: add routing_completed column to thread_sessions
+    if (version < 5) {
+      const cols = this.db.prepare("PRAGMA table_info(thread_sessions)").all() as Array<{ name: string }>;
+      if (!cols.some((c) => c.name === 'routing_completed')) {
+        this.db.exec('ALTER TABLE thread_sessions ADD COLUMN routing_completed INTEGER DEFAULT 0');
+      }
+      this.db.exec('UPDATE schema_version SET version = 5');
     }
 
     this.stmtUpsert = this.db.prepare(`
@@ -218,6 +241,18 @@ export class SessionDatabase {
 
     this.stmtDeleteExpiredThreadSessions = this.db.prepare(
       'DELETE FROM thread_sessions WHERE updated_at < ?',
+    );
+
+    this.stmtUpdateThreadRoutingState = this.db.prepare(
+      'UPDATE thread_sessions SET routing_state = ?, updated_at = ? WHERE thread_id = ?',
+    );
+
+    this.stmtClearThreadRoutingState = this.db.prepare(
+      'UPDATE thread_sessions SET routing_state = NULL, updated_at = ? WHERE thread_id = ?',
+    );
+
+    this.stmtMarkThreadRoutingCompleted = this.db.prepare(
+      'UPDATE thread_sessions SET routing_completed = 1, updated_at = ? WHERE thread_id = ?',
     );
 
     logger.info({ dbPath }, 'Session database initialized');
@@ -341,12 +376,32 @@ export class SessionDatabase {
     return result.changes;
   }
 
+  updateThreadRoutingState(threadId: string, state: RoutingState): void {
+    this.stmtUpdateThreadRoutingState.run(JSON.stringify(state), new Date().toISOString(), threadId);
+  }
+
+  clearThreadRoutingState(threadId: string): void {
+    this.stmtClearThreadRoutingState.run(new Date().toISOString(), threadId);
+  }
+
+  markThreadRoutingCompleted(threadId: string): void {
+    this.stmtMarkThreadRoutingCompleted.run(new Date().toISOString(), threadId);
+  }
+
   close(): void {
     this.db.close();
     logger.info('Session database closed');
   }
 
   private rowToThreadSession(row: ThreadSessionRow): ThreadSession {
+    let routingState: RoutingState | undefined;
+    if (row.routing_state) {
+      try {
+        routingState = JSON.parse(row.routing_state) as RoutingState;
+      } catch {
+        // 无效 JSON，忽略
+      }
+    }
     return {
       threadId: row.thread_id,
       chatId: row.chat_id,
@@ -354,6 +409,8 @@ export class SessionDatabase {
       workingDir: row.working_dir,
       conversationId: row.conversation_id ?? undefined,
       conversationCwd: row.conversation_cwd ?? undefined,
+      routingCompleted: !!row.routing_completed,
+      routingState,
       createdAt: new Date(row.created_at),
       updatedAt: new Date(row.updated_at),
     };
