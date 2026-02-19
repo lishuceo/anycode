@@ -11,29 +11,29 @@ jobs:
       group: deploy-production
       cancel-in-progress: true
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          path: /root/dev/anywhere-code
-          clean: false
+      - name: Pull latest code
+        run: |
+          cd /root/dev/tapcode/anywhere-code
+          git fetch origin main
+          git reset --hard origin/main
 
       - name: Install dependencies
         run: |
           export NVM_DIR="$HOME/.nvm"
           . "$NVM_DIR/nvm.sh"
-          cd /root/dev/anywhere-code
+          cd /root/dev/tapcode/anywhere-code
           npm ci
 
       - name: Build
         run: |
           export NVM_DIR="$HOME/.nvm"
           . "$NVM_DIR/nvm.sh"
-          cd /root/dev/anywhere-code
+          cd /root/dev/tapcode/anywhere-code
           npm run build
 
       - name: Restart service
         run: |
           export NVM_DIR="$HOME/.nvm"
           . "$NVM_DIR/nvm.sh"
-          cd /root/dev/anywhere-code
+          cd /root/dev/tapcode/anywhere-code
           npx pm2 restart ecosystem.config.cjs || npx pm2 start ecosystem.config.cjs
