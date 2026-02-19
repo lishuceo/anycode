@@ -11,6 +11,8 @@ export interface Session {
   workingDir: string;
   /** Claude Code 会话 ID (用于 --resume 续接) */
   conversationId?: string;
+  /** conversationId 对应的工作目录（resume 时需 cwd 匹配） */
+  conversationCwd?: string;
   /** 飞书话题 ID (thread_id) - 每个新会话创建一个话题 */
   threadId?: string;
   /** 话题根消息 ID (创建话题时的第一条消息) */

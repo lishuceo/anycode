@@ -10,6 +10,7 @@ interface SessionRow {
   user_id: string;
   working_dir: string;
   conversation_id: string | null;
+  conversation_cwd: string | null;
   thread_id: string | null;
   thread_root_message_id: string | null;
   status: string;
@@ -58,6 +59,7 @@ export class SessionDatabase {
         user_id                 TEXT NOT NULL,
         working_dir             TEXT NOT NULL,
         conversation_id         TEXT,
+        conversation_cwd        TEXT,
         thread_id               TEXT,
         thread_root_message_id  TEXT,
         status                  TEXT NOT NULL DEFAULT 'idle',
@@ -66,12 +68,23 @@ export class SessionDatabase {
       )
     `);
 
+    // Migration v1 → v2: add conversation_cwd column
+    const version = (this.db.prepare('SELECT version FROM schema_version').get() as { version: number })?.version ?? 1;
+    if (version < 2) {
+      const cols = this.db.prepare("PRAGMA table_info(sessions)").all() as Array<{ name: string }>;
+      if (!cols.some((c) => c.name === 'conversation_cwd')) {
+        this.db.exec('ALTER TABLE sessions ADD COLUMN conversation_cwd TEXT');
+      }
+      this.db.exec('UPDATE schema_version SET version = 2');
+    }
+
     this.stmtUpsert = this.db.prepare(`
-      INSERT INTO sessions (key, chat_id, user_id, working_dir, conversation_id, thread_id, thread_root_message_id, status, created_at, last_active_at)
-      VALUES (@key, @chat_id, @user_id, @working_dir, @conversation_id, @thread_id, @thread_root_message_id, @status, @created_at, @last_active_at)
+      INSERT INTO sessions (key, chat_id, user_id, working_dir, conversation_id, conversation_cwd, thread_id, thread_root_message_id, status, created_at, last_active_at)
+      VALUES (@key, @chat_id, @user_id, @working_dir, @conversation_id, @conversation_cwd, @thread_id, @thread_root_message_id, @status, @created_at, @last_active_at)
       ON CONFLICT(key) DO UPDATE SET
         working_dir = @working_dir,
         conversation_id = @conversation_id,
+        conversation_cwd = @conversation_cwd,
         thread_id = @thread_id,
         thread_root_message_id = @thread_root_message_id,
         status = @status,
@@ -96,7 +109,7 @@ export class SessionDatabase {
     );
 
     this.stmtUpdateConversationId = this.db.prepare(
-      'UPDATE sessions SET conversation_id = ?, last_active_at = ? WHERE key = ?',
+      'UPDATE sessions SET conversation_id = ?, conversation_cwd = ?, last_active_at = ? WHERE key = ?',
     );
 
     this.stmtUpdateThread = this.db.prepare(
@@ -153,6 +166,7 @@ export class SessionDatabase {
       user_id: session.userId,
       working_dir: session.workingDir,
       conversation_id: session.conversationId ?? null,
+      conversation_cwd: session.conversationCwd ?? null,
       thread_id: session.threadId ?? null,
       thread_root_message_id: session.threadRootMessageId ?? null,
       status: session.status,
@@ -185,8 +199,8 @@ export class SessionDatabase {
     this.stmtUpdateStatus.run(status, new Date().toISOString(), key);
   }
 
-  updateConversationId(key: string, conversationId: string): void {
-    this.stmtUpdateConversationId.run(conversationId, new Date().toISOString(), key);
+  updateConversationId(key: string, conversationId: string, cwd?: string): void {
+    this.stmtUpdateConversationId.run(conversationId, cwd ?? null, new Date().toISOString(), key);
   }
 
   updateThread(key: string, threadId: string, rootMessageId: string): void {
@@ -241,6 +255,7 @@ export class SessionDatabase {
       userId: row.user_id,
       workingDir: row.working_dir,
       conversationId: row.conversation_id ?? undefined,
+      conversationCwd: row.conversation_cwd ?? undefined,
       threadId: row.thread_id ?? undefined,
       threadRootMessageId: row.thread_root_message_id ?? undefined,
       status: validStatus(row.status),

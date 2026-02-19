@@ -575,12 +575,24 @@ async function executeClaudeTask(
   };
 
   try {
-    // 第一次 query：可能触发 workspace setup
+    // Resume 策略：Claude Code 根据 cwd 定位 session 文件。
+    // 只有 cwd 匹配时才 resume，否则说明用户主动切了工作区，应开始新 session。
+    // cwd 不匹配的 session 历史不会丢失——workspace 变更时已通过 abort+restart
+    // 在新 cwd 下创建了正确的 session。
+    const canResume = session.conversationId
+      && (!session.conversationCwd || session.conversationCwd === session.workingDir);
+    if (session.conversationId && !canResume) {
+      logger.info(
+        { sessionKey, sessionId: session.conversationId, sessionCwd: session.conversationCwd, currentCwd: session.workingDir },
+        'Skipping resume: cwd mismatch (workspace switched), starting fresh session',
+      );
+    }
+
     const result = await claudeExecutor.execute({
       sessionKey,
       prompt,
       workingDir: session.workingDir,
-      resumeSessionId: session.conversationId,
+      resumeSessionId: canResume ? session.conversationId : undefined,
       onProgress,
       onWorkspaceChanged,
       onTurn,
@@ -588,6 +600,7 @@ async function executeClaudeTask(
     });
 
     // 检测是否需要 restart（workspace 变更后重新执行以加载 CLAUDE.md）
+    // 优先级高于 resume 失败检查：即使 query 失败，只要 workspace 已变更就应重启
     if (result.needsRestart && result.newWorkingDir) {
       logger.info(
         { chatId, userId, newWorkingDir: result.newWorkingDir },
@@ -634,7 +647,7 @@ async function executeClaudeTask(
       // 如果 restart query 失败未返回 sessionId，用第一次 query 的作为 fallback
       const finalSessionId = restartResult.sessionId || result.sessionId;
       if (finalSessionId) {
-        sessionManager.setConversationId(chatId, userId, finalSessionId);
+        sessionManager.setConversationId(chatId, userId, finalSessionId, result.newWorkingDir);
       }
 
       // 合并两次 query 的耗时和花费
@@ -648,9 +661,39 @@ async function executeClaudeTask(
       return;
     }
 
-    // 无 restart，正常流程
+    // Resume 失败（非 workspace 变更场景）：报错给用户，保留 session ID 不动
+    // 用 !result.output 区分 resume 失败和正常 query 失败：
+    //   - resume 失败：子进程秒退，无 output
+    //   - 正常失败（超时、预算等）：有 output，应走 sendResultCard 展示部分结果
+    if (!result.success && canResume && !result.output) {
+      logger.error(
+        { sessionKey, error: result.error, sessionId: session.conversationId, durationMs: result.durationMs },
+        'Resume failed — session ID preserved for user to decide',
+      );
+
+      const errorDetail = [
+        '⚠️ 会话恢复失败',
+        '',
+        `**Session ID**: \`${session.conversationId}\``,
+        `**工作目录**: \`${session.workingDir}\``,
+        `**错误**: ${result.error || '未知错误'}`,
+        `**耗时**: ${formatDuration(result.durationMs)}`,
+        '',
+        '再次发送消息会继续尝试恢复。如需放弃旧会话重新开始，请发送 `/reset`。',
+      ].join('\n');
+
+      if (threadRootMsgId) {
+        await feishuClient.replyTextInThread(threadRootMsgId, errorDetail);
+      } else {
+        await feishuClient.replyText(messageId, errorDetail);
+      }
+      return;
+    }
+
+    // 无 restart，正常流程：保存 session ID + 对应 cwd 用于下次 resume
+    // 即使失败也保存——下次 resume 可能成功（如超时但 session 数据完整）
     if (result.sessionId) {
-      sessionManager.setConversationId(chatId, userId, result.sessionId);
+      sessionManager.setConversationId(chatId, userId, result.sessionId, session.workingDir);
     }
 
     await sendResultCard(
@@ -658,13 +701,14 @@ async function executeClaudeTask(
       threadRootMsgId, chatId, threadRootMsgId ? pendingTurn : undefined, turnCount,
     );
 
-    // 保存会话摘要（用户 prompt + 输出末尾）
-    if (result.success && result.output && result.output.length > 100) {
+    // 保存会话摘要（成功和失败都保存，失败时至少记录做了什么）
+    if (result.output && result.output.length > 100) {
       try {
         const date = new Date().toISOString().slice(0, 10);
+        const status = result.success ? '成功' : `失败: ${result.error?.slice(0, 100) || '未知'}`;
         const promptSnippet = prompt.length > 200 ? prompt.slice(0, 200) + '...' : prompt;
-        const tail = result.output.slice(-300).trim();
-        const summary = `[${date}] dir: ${session.workingDir} | 用户: ${promptSnippet} | 回复: ${tail}`;
+        const tail = result.output.slice(-500).trim();
+        const summary = `[${date}] [${status}] dir: ${session.workingDir} | 用户: ${promptSnippet} | 回复: ${tail}`;
         sessionManager.saveSummary(chatId, userId, session.workingDir, summary);
       } catch (err) {
         logger.warn({ err }, 'Failed to save session summary');
