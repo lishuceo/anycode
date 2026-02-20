@@ -75,7 +75,6 @@ export function createEventDispatcher(): lark.EventDispatcher {
   // （CardActionHandler 仅适用于 HTTP Webhook 模式）
   dispatcher.register({
     'card.action.trigger': async (data: Record<string, unknown>) => {
-      logger.info({ keys: Object.keys(data), hasAction: !!data.action, hasOperator: !!data.operator }, 'card.action.trigger event received (raw)');
       try {
         const cardBody = await handleCardAction(data);
         // card.action.trigger 返回格式与 CardActionHandler 不同：
@@ -90,16 +89,6 @@ export function createEventDispatcher(): lark.EventDispatcher {
       }
     },
   });
-
-  // DEBUG: 包装 invoke 来记录所有 WebSocket 收到的事件类型
-  const originalInvoke = dispatcher.invoke.bind(dispatcher);
-  (dispatcher as unknown as Record<string, unknown>).invoke = async (data: Record<string, unknown>, params?: { needCheck?: boolean }) => {
-    const header = data?.header as Record<string, unknown> | undefined;
-    const event = data?.event as Record<string, unknown> | undefined;
-    const eventType = header?.event_type ?? event?.type ?? 'unknown';
-    logger.info({ eventType, topKeys: Object.keys(data).slice(0, 10) }, 'EventDispatcher.invoke called');
-    return originalInvoke(data, params);
-  };
 
   logger.info('Feishu EventDispatcher created with im.message.receive_v1 + card.action.trigger handlers');
   return dispatcher;
@@ -244,17 +233,12 @@ async function handlePipelineTextConfirm(
   text: string,
   chatId: string,
   userId: string,
-  messageId: string,
-  rootId?: string,
 ): Promise<boolean> {
   const trimmed = text.trim();
   if (trimmed !== '确认' && trimmed !== '取消') return false;
 
   const pending = pipelineStore.findPendingByChat(chatId, userId);
   if (!pending) return false;
-
-  const currentSession = sessionManager.get(chatId, userId);
-  const threadRootMsgId = rootId || currentSession?.threadRootMessageId;
 
   if (trimmed === '确认') {
     if (!pipelineStore.tryStart(pending.id)) {
@@ -377,7 +361,7 @@ async function handleMessageEvent(data: MessageEventData): Promise<void> {
   if (commandResult) return;
 
   // 处理管道消息确认（卡片按钮的文本 fallback）
-  const pipelineHandled = await handlePipelineTextConfirm(text, chatId, userId, messageId, rootId);
+  const pipelineHandled = await handlePipelineTextConfirm(text, chatId, userId);
   if (pipelineHandled) return;
 
   // 安全检查
