@@ -953,19 +953,6 @@ async function executeClaudeTask(
       threadRootMsgId, chatId, threadRootMsgId ? pendingTurn : undefined, turnCount,
     );
 
-    // 保存会话摘要（成功和失败都保存，失败时至少记录做了什么）
-    if (result.output && result.output.length > 100) {
-      try {
-        const date = new Date().toISOString().slice(0, 10);
-        const status = result.success ? '成功' : `失败: ${result.error?.slice(0, 100) || '未知'}`;
-        const promptSnippet = prompt.length > 200 ? prompt.slice(0, 200) + '...' : prompt;
-        const tail = result.output.slice(-500).trim();
-        const summary = `[${date}] [${status}] dir: ${workingDir} | 用户: ${promptSnippet} | 回复: ${tail}`;
-        sessionManager.saveSummary(chatId, userId, workingDir, summary);
-      } catch (err) {
-        logger.warn({ err }, 'Failed to save session summary');
-      }
-    }
   } catch (err) {
     logger.error({ err }, 'Error executing Claude Agent SDK query');
     // 进度卡片切换为完成态（best-effort，含最后一轮的 tool calls）

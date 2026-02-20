@@ -4,7 +4,6 @@ import { config } from '../config.js';
 import { logger } from '../utils/logger.js';
 import { claudeExecutor } from './executor.js';
 import { setupWorkspace } from '../workspace/manager.js';
-import { sessionManager } from '../session/manager.js';
 
 // ============================================================
 // Routing Agent
@@ -92,14 +91,9 @@ function buildRoutingSystemPrompt(): string {
 - 回复中只输出 JSON 代码块，不要输出其他内容`;
 }
 
-/** 构建路由 prompt（用户消息 + 历史摘要） */
-function buildRoutingPrompt(userMessage: string, summaries: string[]): string {
-  let prompt = userMessage;
-  if (summaries.length > 0) {
-    const summaryText = summaries.join('\n');
-    prompt = `${userMessage}\n\n---\n[历史会话摘要，帮助你了解上下文]\n${summaryText}`;
-  }
-  return prompt;
+/** 构建路由 prompt */
+function buildRoutingPrompt(userMessage: string): string {
+  return userMessage;
 }
 
 /** 从 agent 输出中解析 JSON 决策 */
@@ -138,16 +132,8 @@ function parseRoutingDecision(output: string): RoutingDecision | null {
   }
 }
 
-/** 获取用户最近使用的 workdir（从 session_summaries 表），作为降级 fallback */
-function getRecentWorkdir(chatId: string, userId: string): string {
-  const summaries = sessionManager.getRecentSummaries(chatId, userId, 1);
-  if (summaries.length > 0) {
-    // summary 格式: "[date] [status] dir: /path/to/dir | ..."
-    const dirMatch = summaries[0].match(/dir:\s*(\S+)/);
-    if (dirMatch && dirMatch[1]) {
-      return dirMatch[1];
-    }
-  }
+/** 获取路由失败时的 fallback 目录 */
+function getFallbackWorkdir(): string {
   return config.claude.defaultWorkDir;
 }
 
@@ -181,10 +167,8 @@ export async function routeWorkspace(
   userId: string,
   rootId?: string,
 ): Promise<RoutingDecision> {
-  const summaries = sessionManager.getRecentSummaries(chatId, userId, 5);
-
   logger.info(
-    { chatId, userId, promptLength: prompt.length, summaryCount: summaries.length },
+    { chatId, userId, promptLength: prompt.length },
     'Starting routing agent',
   );
 
@@ -192,7 +176,7 @@ export async function routeWorkspace(
   try {
     result = await claudeExecutor.execute({
       sessionKey: rootId ? `routing:${chatId}:${userId}:${rootId}` : `routing:${chatId}:${userId}`,
-      prompt: buildRoutingPrompt(prompt, summaries),
+      prompt: buildRoutingPrompt(prompt),
       workingDir: config.claude.defaultWorkDir,
       systemPromptOverride: buildRoutingSystemPrompt(),
       disableWorkspaceTool: true,
@@ -204,8 +188,7 @@ export async function routeWorkspace(
     });
   } catch (err) {
     logger.error({ err, chatId, userId }, 'Routing agent execution failed');
-    const fallbackDir = getRecentWorkdir(chatId, userId);
-    return { decision: 'use_default', workdir: fallbackDir };
+    return { decision: 'use_default', workdir: getFallbackWorkdir() };
   }
 
   logger.info(
@@ -215,15 +198,13 @@ export async function routeWorkspace(
 
   if (!result.success || !result.output) {
     logger.warn({ chatId, userId, error: result.error }, 'Routing agent failed, using fallback');
-    const fallbackDir = getRecentWorkdir(chatId, userId);
-    return { decision: 'use_default', workdir: fallbackDir };
+    return { decision: 'use_default', workdir: getFallbackWorkdir() };
   }
 
   const decision = parseRoutingDecision(result.output);
   if (!decision) {
     logger.warn({ chatId, userId, output: result.output.slice(0, 500) }, 'Failed to parse routing decision, using fallback');
-    const fallbackDir = getRecentWorkdir(chatId, userId);
-    return { decision: 'use_default', workdir: fallbackDir };
+    return { decision: 'use_default', workdir: getFallbackWorkdir() };
   }
 
   logger.info({ chatId, userId, decision }, 'Routing decision');
@@ -232,7 +213,7 @@ export async function routeWorkspace(
   if (decision.decision === 'clone_remote') {
     if (!decision.repo_url) {
       logger.warn({ chatId, userId }, 'clone_remote decision missing repo_url, using fallback');
-      const fallbackDir = getRecentWorkdir(chatId, userId);
+      const fallbackDir = getFallbackWorkdir();
       return { decision: 'use_default', workdir: fallbackDir };
     }
 
@@ -245,13 +226,13 @@ export async function routeWorkspace(
       // 验证 clone 结果路径在允许范围内（防止 symlink 等绕过）
       if (!isPathAllowed(workspace.workspacePath)) {
         logger.warn({ chatId, userId, workspacePath: workspace.workspacePath }, 'clone_remote result path outside allowed directories, using fallback');
-        const fallbackDir = getRecentWorkdir(chatId, userId);
+        const fallbackDir = getFallbackWorkdir();
         return { decision: 'use_default', workdir: fallbackDir };
       }
       return { ...decision, workdir: workspace.workspacePath };
     } catch (err) {
       logger.error({ err, chatId, userId, repoUrl: decision.repo_url }, 'Failed to setup workspace from routing decision');
-      const fallbackDir = getRecentWorkdir(chatId, userId);
+      const fallbackDir = getFallbackWorkdir();
       return { decision: 'use_default', workdir: fallbackDir };
     }
   }
@@ -265,20 +246,20 @@ export async function routeWorkspace(
   if (decision.decision === 'use_existing') {
     if (!decision.workdir) {
       logger.warn({ chatId, userId }, 'use_existing decision missing workdir, using fallback');
-      const fallbackDir = getRecentWorkdir(chatId, userId);
+      const fallbackDir = getFallbackWorkdir();
       return { decision: 'use_default', workdir: fallbackDir };
     }
 
     if (!existsSync(decision.workdir)) {
       logger.warn({ chatId, userId, workdir: decision.workdir }, 'use_existing workdir does not exist, using fallback');
-      const fallbackDir = getRecentWorkdir(chatId, userId);
+      const fallbackDir = getFallbackWorkdir();
       return { decision: 'use_default', workdir: fallbackDir };
     }
 
     // 路径 allowlist：防止 AI 生成的路径指向敏感目录
     if (!isPathAllowed(decision.workdir)) {
       logger.warn({ chatId, userId, workdir: decision.workdir }, 'use_existing workdir outside allowed directories, using fallback');
-      const fallbackDir = getRecentWorkdir(chatId, userId);
+      const fallbackDir = getFallbackWorkdir();
       return { decision: 'use_default', workdir: fallbackDir };
     }
   }
