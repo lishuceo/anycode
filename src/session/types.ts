@@ -54,10 +54,22 @@ export interface ThreadSession {
   routingCompleted?: boolean;
   /** 路由状态（need_clarification 时非空） */
   routingState?: RoutingState;
+  /** Pipeline 上下文（pipeline 完成后保存，供后续普通消息注入历史） */
+  pipelineContext?: PipelineContext;
   /** 创建时间 */
   createdAt: Date;
   /** 最后更新时间 */
   updatedAt: Date;
+}
+
+/** Pipeline 上下文（存储在 thread_sessions 中，供后续消息使用） */
+export interface PipelineContext {
+  /** 用户原始开发需求 */
+  prompt: string;
+  /** Pipeline 执行摘要 */
+  summary: string;
+  /** Pipeline 工作目录 */
+  workingDir: string;
 }
 
 /** 队列中的任务 */

@@ -2,7 +2,7 @@ import Database from 'better-sqlite3';
 import { mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { logger } from '../utils/logger.js';
-import type { Session, SessionStatus, ThreadSession, RoutingState } from './types.js';
+import type { Session, SessionStatus, ThreadSession, RoutingState, PipelineContext } from './types.js';
 
 interface ThreadSessionRow {
   thread_id: string;
@@ -13,6 +13,7 @@ interface ThreadSessionRow {
   conversation_cwd: string | null;
   routing_completed: number | null;
   routing_state: string | null;
+  pipeline_context: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -60,6 +61,7 @@ export class SessionDatabase {
   private stmtUpdateThreadRoutingState: Database.Statement;
   private stmtClearThreadRoutingState: Database.Statement;
   private stmtMarkThreadRoutingCompleted: Database.Statement;
+  private stmtSetThreadPipelineContext: Database.Statement;
 
   constructor(dbPath: string) {
     dbPath = resolve(dbPath);
@@ -139,6 +141,15 @@ export class SessionDatabase {
         this.db.exec('UPDATE thread_sessions SET routing_completed = 1 WHERE conversation_id IS NOT NULL');
       }
       this.db.exec('UPDATE schema_version SET version = 5');
+    }
+
+    // Migration v5 → v6: add pipeline_context column to thread_sessions
+    if (version < 6) {
+      const cols = this.db.prepare("PRAGMA table_info(thread_sessions)").all() as Array<{ name: string }>;
+      if (!cols.some((c) => c.name === 'pipeline_context')) {
+        this.db.exec('ALTER TABLE thread_sessions ADD COLUMN pipeline_context TEXT');
+      }
+      this.db.exec('UPDATE schema_version SET version = 6');
     }
 
     this.stmtUpsert = this.db.prepare(`
@@ -255,6 +266,10 @@ export class SessionDatabase {
 
     this.stmtMarkThreadRoutingCompleted = this.db.prepare(
       'UPDATE thread_sessions SET routing_completed = 1, updated_at = ? WHERE thread_id = ?',
+    );
+
+    this.stmtSetThreadPipelineContext = this.db.prepare(
+      'UPDATE thread_sessions SET pipeline_context = ?, routing_completed = 1, updated_at = ? WHERE thread_id = ?',
     );
 
     logger.info({ dbPath }, 'Session database initialized');
@@ -390,6 +405,10 @@ export class SessionDatabase {
     this.stmtMarkThreadRoutingCompleted.run(new Date().toISOString(), threadId);
   }
 
+  setThreadPipelineContext(threadId: string, context: PipelineContext): void {
+    this.stmtSetThreadPipelineContext.run(JSON.stringify(context), new Date().toISOString(), threadId);
+  }
+
   close(): void {
     this.db.close();
     logger.info('Session database closed');
@@ -404,6 +423,14 @@ export class SessionDatabase {
         // 无效 JSON，忽略
       }
     }
+    let pipelineContext: PipelineContext | undefined;
+    if (row.pipeline_context) {
+      try {
+        pipelineContext = JSON.parse(row.pipeline_context) as PipelineContext;
+      } catch {
+        // 无效 JSON，忽略
+      }
+    }
     return {
       threadId: row.thread_id,
       chatId: row.chat_id,
@@ -413,6 +440,7 @@ export class SessionDatabase {
       conversationCwd: row.conversation_cwd ?? undefined,
       routingCompleted: !!row.routing_completed,
       routingState,
+      pipelineContext,
       createdAt: new Date(row.created_at),
       updatedAt: new Date(row.updated_at),
     };

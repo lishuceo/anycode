@@ -1,7 +1,7 @@
 import { config } from '../config.js';
 import { logger } from '../utils/logger.js';
 import { SessionDatabase } from './database.js';
-import type { Session, ThreadSession, RoutingState } from './types.js';
+import type { Session, ThreadSession, RoutingState, PipelineContext } from './types.js';
 
 /**
  * 会话管理器
@@ -161,6 +161,13 @@ export class SessionManager {
    */
   markThreadRoutingCompleted(threadId: string): void {
     this.db.markThreadRoutingCompleted(threadId);
+  }
+
+  /**
+   * 保存 pipeline 上下文到 thread session（pipeline 完成后调用）
+   */
+  setThreadPipelineContext(threadId: string, context: PipelineContext): void {
+    this.db.setThreadPipelineContext(threadId, context);
   }
 
   /**

@@ -209,6 +209,23 @@ export async function startPipeline(pipelineId: string): Promise<void> {
       }
     }
 
+    // 保存 pipeline 上下文到 thread session（供后续普通消息注入历史）
+    if (threadRootMsgId) {
+      try {
+        // 确保 thread session 存在
+        if (!sessionManager.getThreadSession(threadRootMsgId)) {
+          sessionManager.upsertThreadSession(threadRootMsgId, chatId, userId, workingDir);
+        }
+        sessionManager.setThreadPipelineContext(threadRootMsgId, {
+          prompt,
+          summary: pipelineResult.summary,
+          workingDir,
+        });
+      } catch (err) {
+        logger.warn({ err }, 'Failed to save pipeline context to thread session');
+      }
+    }
+
     // 保存摘要（含用户原始 prompt）
     if (pipelineResult.summary.length > 100) {
       try {
