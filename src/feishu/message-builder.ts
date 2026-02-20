@@ -348,6 +348,15 @@ export function buildPipelineConfirmCard(
           },
         ],
       },
+      {
+        tag: 'note',
+        elements: [
+          {
+            tag: 'plain_text',
+            content: '💡 如按钮不可用，可直接回复「确认」或「取消」',
+          },
+        ],
+      },
     ],
   };
 }

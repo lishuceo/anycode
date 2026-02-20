@@ -59,6 +59,7 @@ export class PipelineStore {
   private stmtUpdateState: Database.Statement;
   private stmtUpdateProgressMsgId: Database.Statement;
   private stmtFindByStatus: Database.Statement;
+  private stmtFindPendingByChat: Database.Statement;
   private stmtMarkRunningAsInterrupted: Database.Statement;
   private stmtCleanExpired: Database.Statement;
 
@@ -112,6 +113,10 @@ export class PipelineStore {
 
     this.stmtFindByStatus = this.db.prepare(
       'SELECT * FROM pipelines WHERE status = ?',
+    );
+
+    this.stmtFindPendingByChat = this.db.prepare(
+      'SELECT * FROM pipelines WHERE chat_id = ? AND user_id = ? AND status = \'pending_confirm\' ORDER BY created_at DESC LIMIT 1',
     );
 
     this.stmtMarkRunningAsInterrupted = this.db.prepare(`
@@ -182,6 +187,16 @@ export class PipelineStore {
   findByStatus(status: PipelineStatus): PipelineRecord[] {
     const rows = this.stmtFindByStatus.all(status) as PipelineRow[];
     return rows.map((r) => this.rowToRecord(r));
+  }
+
+  /**
+   * Find the most recent pending_confirm pipeline for a given chat+user.
+   * Used for message-based confirmation fallback when card actions are unavailable.
+   */
+  findPendingByChat(chatId: string, userId: string): PipelineRecord | undefined {
+    const row = this.stmtFindPendingByChat.get(chatId, userId) as PipelineRow | undefined;
+    if (!row) return undefined;
+    return this.rowToRecord(row);
   }
 
   /**

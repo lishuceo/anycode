@@ -14,6 +14,11 @@ import type { ClaudeResult, ExecuteOptions, ProgressCallback, TurnInfo, ToolCall
 // SDK 会自动管理工具执行、权限、流式输出等
 // ============================================================
 
+/** 只读模式下禁止调用的写入类工具 */
+const WRITE_TOOLS = new Set([
+  'Edit', 'Write', 'NotebookEdit', 'Bash', 'Skill',
+]);
+
 /** 执行 Claude query 的完整参数 */
 export interface ExecuteInput extends ExecuteOptions {
   sessionKey: string;
@@ -103,6 +108,7 @@ export class ClaudeExecutor {
       onProgress, onWorkspaceChanged, onStreamUpdate, onTurn, historySummaries,
       systemPromptOverride, disableWorkspaceTool, maxTurns, maxBudgetUsd,
       model: modelOverride, settingSources: settingSourcesOverride,
+      readOnly,
     } = input;
 
     const startTime = Date.now();
@@ -161,9 +167,13 @@ export class ClaudeExecutor {
     // 构建 systemPrompt.append 内容
     // pipeline 模式使用独立的 system prompt，不需要工作区管理指引
     const baseAppend = systemPromptOverride ?? buildWorkspaceSystemPrompt();
-    const promptAppend = historySummaries
+    const readOnlyNotice = readOnly
+      ? `\n\n## 权限限制\n当前用户处于只读模式。你可以阅读和分析代码、回答问题，但不能修改文件或执行命令。不要尝试使用 Edit、Write、Bash 等工具。如果用户请求代码修改，告知他们需要管理员权限。`
+      : '';
+    const baseAppendWithHistory = historySummaries
       ? baseAppend + `\n\n## 历史会话摘要\n以下是该用户之前的会话记录，帮助你了解项目上下文：\n${historySummaries}`
       : baseAppend;
+    const promptAppend = baseAppendWithHistory + readOnlyNotice;
 
     // 构建 SDK query
     const q = query({
@@ -188,6 +198,16 @@ export class ClaudeExecutor {
         // 这样 .claude/skills/ 中的 SKILL.md 才能被加载和使用
         allowedTools: ['Skill'],
         canUseTool: async (toolName: string, inputObj: Record<string, unknown>) => {
+          // 只读模式：拦截写入类工具
+          if (readOnly && WRITE_TOOLS.has(toolName)) {
+            logger.info({ toolName, readOnly }, 'canUseTool denied — read-only mode');
+            return { behavior: 'deny' as const, message: '当前用户处于只读模式，无法使用此工具。需要管理员权限才能修改文件或执行命令。' };
+          }
+          // MCP tool 名带前缀 (mcp__workspace-manager__setup_workspace)，也拦截
+          if (readOnly && toolName.startsWith('mcp__')) {
+            logger.info({ toolName, readOnly }, 'canUseTool denied — read-only mode (MCP tool)');
+            return { behavior: 'deny' as const, message: '当前用户处于只读模式，无法使用此工具。需要管理员权限才能修改文件或执行命令。' };
+          }
           logger.info({ toolName, inputKeys: Object.keys(inputObj) }, 'canUseTool called — auto allowing');
           // updatedInput 必须显式传回，否则 SDK 内部 Zod 校验会因 undefined 报错
           return { behavior: 'allow' as const, updatedInput: inputObj };

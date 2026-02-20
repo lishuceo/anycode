@@ -19,6 +19,8 @@ export const config = {
       .split(',')
       .map((s) => s.trim())
       .filter(Boolean),
+    /** 管理员用户 open_id，拥有完整代码编辑权限。为空则所有允许用户均有完整权限（向后兼容） */
+    ownerUserId: process.env.OWNER_USER_ID?.trim() || '',
   },
 
   // Claude Code 配置
