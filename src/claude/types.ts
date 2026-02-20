@@ -52,6 +52,8 @@ export interface ExecuteOptions {
   model?: string;
   /** 覆盖 settingSources (路由 agent 使用 [] 避免加载项目 CLAUDE.md) */
   settingSources?: Array<'user' | 'project' | 'local'>;
+  /** 只读模式：禁止 Edit/Write/Bash 等修改工具 */
+  readOnly?: boolean;
 }
 
 /** 工具调用信息 */
