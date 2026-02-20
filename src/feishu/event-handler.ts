@@ -731,13 +731,21 @@ async function executeClaudeTask(
   // 标记会话为忙碌
   sessionManager.setStatus(chatId, userId, 'busy');
 
-  // 获取历史摘要用于注入 system prompt
-  const summaries = sessionManager.getRecentSummaries(chatId, userId, 5);
+  // 构建历史上下文：仅 pipeline thread 注入 pipeline 上下文，其他场景不注入
+  // （不同 thread 通常是不同项目/话题，全局摘要反而是噪声）
   let historySummaries: string | undefined;
-  if (summaries.length > 0) {
-    let combined = summaries.join('\n');
-    if (combined.length > 3000) {
-      combined = combined.slice(-3000);
+  if (threadSession?.pipelineContext) {
+    const ctx = threadSession.pipelineContext;
+    const parts = [
+      `## 本话题的 /dev Pipeline 上下文`,
+      `**原始需求**: ${ctx.prompt}`,
+      `**工作目录**: ${ctx.workingDir}`,
+      `**执行摘要**:\n${ctx.summary}`,
+    ];
+    let combined = parts.join('\n\n');
+    // 限制 ~10000 tokens ≈ 30000 chars
+    if (combined.length > 30000) {
+      combined = combined.slice(0, 30000) + '\n\n[摘要已截断]';
     }
     historySummaries = combined;
   }
@@ -781,10 +789,15 @@ async function executeClaudeTask(
   };
 
   try {
-    // Resume 策略：优先用 thread session 的 conversationId。
-    // Claude Code 根据 cwd 定位 session 文件，cwd 必须匹配才能 resume。
-    const activeConversationId = threadSession?.conversationId ?? session.conversationId;
-    const activeConversationCwd = threadSession?.conversationCwd ?? session.conversationCwd;
+    // Resume 策略：有 threadId 时只用该 thread 自己的 conversationId，
+    // 避免跨 thread 串台（如 pipeline thread 回退到另一 thread 的全局 session）。
+    // 无 threadId（主聊天）时使用全局 session 的 conversationId。
+    const activeConversationId = threadId
+      ? threadSession?.conversationId
+      : session.conversationId;
+    const activeConversationCwd = threadId
+      ? threadSession?.conversationCwd
+      : session.conversationCwd;
     const canResume = activeConversationId
       && (!activeConversationCwd || activeConversationCwd === workingDir);
     if (activeConversationId && !canResume) {
@@ -940,19 +953,6 @@ async function executeClaudeTask(
       threadRootMsgId, chatId, threadRootMsgId ? pendingTurn : undefined, turnCount,
     );
 
-    // 保存会话摘要（成功和失败都保存，失败时至少记录做了什么）
-    if (result.output && result.output.length > 100) {
-      try {
-        const date = new Date().toISOString().slice(0, 10);
-        const status = result.success ? '成功' : `失败: ${result.error?.slice(0, 100) || '未知'}`;
-        const promptSnippet = prompt.length > 200 ? prompt.slice(0, 200) + '...' : prompt;
-        const tail = result.output.slice(-500).trim();
-        const summary = `[${date}] [${status}] dir: ${workingDir} | 用户: ${promptSnippet} | 回复: ${tail}`;
-        sessionManager.saveSummary(chatId, userId, workingDir, summary);
-      } catch (err) {
-        logger.warn({ err }, 'Failed to save session summary');
-      }
-    }
   } catch (err) {
     logger.error({ err }, 'Error executing Claude Agent SDK query');
     // 进度卡片切换为完成态（best-effort，含最后一轮的 tool calls）

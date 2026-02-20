@@ -107,17 +107,6 @@ export async function startPipeline(pipelineId: string): Promise<void> {
 
   const pipelineStartTime = Date.now();
 
-  // 获取历史摘要
-  const summaries = sessionManager.getRecentSummaries(chatId, userId, 5);
-  let historySummaries: string | undefined;
-  if (summaries.length > 0) {
-    let combined = summaries.join('\n');
-    if (combined.length > 3000) {
-      combined = combined.slice(-3000);
-    }
-    historySummaries = combined;
-  }
-
   const orchestrator = new PipelineOrchestrator();
   runningPipelines.set(pipelineId, { orchestrator, chatId, userId });
 
@@ -166,7 +155,6 @@ export async function startPipeline(pipelineId: string): Promise<void> {
           );
         },
       },
-      historySummaries,
     );
 
     // 更新最终状态（中止的管道保留 aborted 状态，不覆盖为 failed）
@@ -209,18 +197,23 @@ export async function startPipeline(pipelineId: string): Promise<void> {
       }
     }
 
-    // 保存摘要（含用户原始 prompt）
-    if (pipelineResult.summary.length > 100) {
+    // 保存 pipeline 上下文到 thread session（供后续普通消息注入历史）
+    if (threadRootMsgId) {
       try {
-        const date = new Date().toISOString().slice(0, 10);
-        const promptSnippet = prompt.length > 200 ? prompt.slice(0, 200) + '...' : prompt;
-        const tail = pipelineResult.summary.slice(-300).trim();
-        const summary = `[${date}] [pipeline] dir: ${workingDir} | 用户: ${promptSnippet} | 回复: ${tail}`;
-        sessionManager.saveSummary(chatId, userId, workingDir, summary);
+        // 确保 thread session 存在
+        if (!sessionManager.getThreadSession(threadRootMsgId)) {
+          sessionManager.upsertThreadSession(threadRootMsgId, chatId, userId, workingDir);
+        }
+        sessionManager.setThreadPipelineContext(threadRootMsgId, {
+          prompt,
+          summary: pipelineResult.summary,
+          workingDir,
+        });
       } catch (err) {
-        logger.warn({ err }, 'Failed to save pipeline summary');
+        logger.warn({ err }, 'Failed to save pipeline context to thread session');
       }
     }
+
   } catch (err) {
     logger.error({ err, pipelineId }, 'Error executing pipeline');
     pipelineStore.updateState(pipelineId, 'failed', '', JSON.stringify({ failureReason: String(err) }));

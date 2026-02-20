@@ -475,9 +475,14 @@ async function simulateThreadSessionFlow(
   // 工作目录：优先 thread session
   const workingDir = threadSession?.workingDir ?? session.workingDir;
 
-  // Resume 判断：优先 thread session 的 conversationId
-  const activeConversationId = threadSession?.conversationId ?? session.conversationId;
-  const activeConversationCwd = threadSession?.conversationCwd ?? session.conversationCwd;
+  // Resume 判断：有 threadId 时只用该 thread 自己的 conversationId，
+  // 避免跨 thread 串台（不再 fallback 到全局 session）
+  const activeConversationId = threadId
+    ? threadSession?.conversationId
+    : session.conversationId;
+  const activeConversationCwd = threadId
+    ? threadSession?.conversationCwd
+    : session.conversationCwd;
   const canResume = activeConversationId
     && (!activeConversationCwd || activeConversationCwd === workingDir);
 
@@ -492,13 +497,6 @@ async function simulateThreadSessionFlow(
       sessionManager.setThreadConversationId(threadId, result.sessionId, workingDir);
     }
     sessionManager.setConversationId(chatId, userId, result.sessionId, workingDir);
-  }
-
-  // 保存摘要（使用正确的 workingDir）
-  if (result.output && result.output.length > 100) {
-    const date = new Date().toISOString().slice(0, 10);
-    const summary = `[${date}] [成功] dir: ${workingDir} | 用户: ${prompt} | 回复: ...`;
-    sessionManager.saveSummary(chatId, userId, workingDir, summary);
   }
 
   return { workingDir, canResume, result };
@@ -601,25 +599,36 @@ describe('executeClaudeTask thread session integration', () => {
     expect(mockSessionSetConversationId).toHaveBeenCalledWith('chat1', 'user1', 'sess-1', '/projects/repo-a');
   });
 
-  it('should use resolved workingDir in summary, not global session workingDir', async () => {
-    const longOutput = 'x'.repeat(200); // > 100 chars to trigger summary
+  it('should NOT fallback to global session conversationId when thread has none (cross-thread isolation)', async () => {
     mockExecute.mockResolvedValueOnce({
-      success: true, output: longOutput, sessionId: 'sess-1', durationMs: 100,
+      success: true, output: 'done', sessionId: 'sess-new', durationMs: 100,
     });
 
-    await simulateThreadSessionFlow(
-      'fix bug', 'chat1', 'user1',
-      { workingDir: '/global/dir', threadId: 'thread-1' },
-      { workingDir: '/thread/specific/dir' },
+    // Thread exists but has no conversationId; global session has one from another thread
+    const outcome = await simulateThreadSessionFlow(
+      'hello', 'chat1', 'user1',
+      { workingDir: '/projects/repo-a', threadId: 'thread-2', conversationId: 'conv-from-other-thread' },
+      { workingDir: '/projects/repo-a' }, // threadSession with no conversationId
     );
 
-    // saveSummary should use the thread's workingDir, not the global one
-    expect(mockSaveSummary).toHaveBeenCalledWith(
-      'chat1', 'user1', '/thread/specific/dir',
-      expect.stringContaining('/thread/specific/dir'),
+    // Must NOT resume — thread has no own conversationId
+    expect(outcome.canResume).toBeFalsy();
+    expect(mockExecute.mock.calls[0][3]).toBeUndefined();
+  });
+
+  it('should use global session conversationId when there is no threadId (main chat)', async () => {
+    mockExecute.mockResolvedValueOnce({
+      success: true, output: 'done', sessionId: 'sess-1', durationMs: 100,
+    });
+
+    // No threadId → main chat, should use global session conversationId
+    const outcome = await simulateThreadSessionFlow(
+      'hello', 'chat1', 'user1',
+      { workingDir: '/projects/repo-a', conversationId: 'global-conv', conversationCwd: '/projects/repo-a' },
+      undefined,
     );
-    // Verify it does NOT contain the global dir
-    const summaryArg = mockSaveSummary.mock.calls[0][3];
-    expect(summaryArg).not.toContain('/global/dir');
+
+    expect(outcome.canResume).toBe(true);
+    expect(mockExecute.mock.calls[0][3]).toBe('global-conv');
   });
 });
