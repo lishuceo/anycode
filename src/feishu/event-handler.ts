@@ -1,6 +1,6 @@
 import * as lark from '@larksuiteoapi/node-sdk';
 import { logger } from '../utils/logger.js';
-import { isUserAllowed, containsDangerousCommand } from '../utils/security.js';
+import { isUserAllowed, containsDangerousCommand, isOwner } from '../utils/security.js';
 import { sessionManager } from '../session/manager.js';
 import { taskQueue } from '../session/queue.js';
 import { claudeExecutor } from '../claude/executor.js';
@@ -75,6 +75,7 @@ export function createEventDispatcher(): lark.EventDispatcher {
   // （CardActionHandler 仅适用于 HTTP Webhook 模式）
   dispatcher.register({
     'card.action.trigger': async (data: Record<string, unknown>) => {
+      logger.info({ keys: Object.keys(data), hasAction: !!data.action, hasOperator: !!data.operator }, 'card.action.trigger event received (raw)');
       try {
         const cardBody = await handleCardAction(data);
         // card.action.trigger 返回格式与 CardActionHandler 不同：
@@ -89,6 +90,16 @@ export function createEventDispatcher(): lark.EventDispatcher {
       }
     },
   });
+
+  // DEBUG: 包装 invoke 来记录所有 WebSocket 收到的事件类型
+  const originalInvoke = dispatcher.invoke.bind(dispatcher);
+  (dispatcher as unknown as Record<string, unknown>).invoke = async (data: Record<string, unknown>, params?: { needCheck?: boolean }) => {
+    const header = data?.header as Record<string, unknown> | undefined;
+    const event = data?.event as Record<string, unknown> | undefined;
+    const eventType = header?.event_type ?? event?.type ?? 'unknown';
+    logger.info({ eventType, topKeys: Object.keys(data).slice(0, 10) }, 'EventDispatcher.invoke called');
+    return originalInvoke(data, params);
+  };
 
   logger.info('Feishu EventDispatcher created with im.message.receive_v1 + card.action.trigger handlers');
   return dispatcher;
@@ -221,6 +232,70 @@ function processQueue(queueKey: string): void {
 }
 
 // ============================================================
+// 管道文本确认 (卡片按钮不可用时的 fallback)
+// ============================================================
+
+/**
+ * 处理用户通过文本消息确认/取消管道。
+ * 当飞书卡片按钮不可用（如未配置 card.action.trigger 事件订阅）时，
+ * 用户可以直接回复 "确认" 或 "取消" 来操作待确认的管道。
+ */
+async function handlePipelineTextConfirm(
+  text: string,
+  chatId: string,
+  userId: string,
+  messageId: string,
+  rootId?: string,
+): Promise<boolean> {
+  const trimmed = text.trim();
+  if (trimmed !== '确认' && trimmed !== '取消') return false;
+
+  const pending = pipelineStore.findPendingByChat(chatId, userId);
+  if (!pending) return false;
+
+  const currentSession = sessionManager.get(chatId, userId);
+  const threadRootMsgId = rootId || currentSession?.threadRootMessageId;
+
+  if (trimmed === '确认') {
+    if (!pipelineStore.tryStart(pending.id)) {
+      // 已被处理（double-click 或并发）
+      return true;
+    }
+
+    logger.info({ pipelineId: pending.id, chatId, userId }, 'Pipeline confirmed via text message');
+
+    // 更新确认卡片为初始进度卡片
+    if (pending.progressMsgId) {
+      const progressCard = buildPipelineCard(pending.prompt, 'plan', 1, 5, 0, undefined, undefined, pending.id);
+      await feishuClient.updateCard(pending.progressMsgId, progressCard);
+    }
+
+    // 后台启动管道
+    startPipeline(pending.id).catch((err) => {
+      logger.error({ err, pipelineId: pending.id }, 'Failed to start pipeline');
+    });
+
+    return true;
+  }
+
+  if (trimmed === '取消') {
+    const cancelled = cancelPipeline(pending.id);
+    if (!cancelled) return true;
+
+    logger.info({ pipelineId: pending.id, chatId, userId }, 'Pipeline cancelled via text message');
+
+    // 更新卡片为已取消
+    if (pending.progressMsgId) {
+      await feishuClient.updateCard(pending.progressMsgId, buildCancelledCard(pending.prompt));
+    }
+
+    return true;
+  }
+
+  return false;
+}
+
+// ============================================================
 // 消息处理逻辑
 // ============================================================
 
@@ -300,6 +375,10 @@ async function handleMessageEvent(data: MessageEventData): Promise<void> {
   // 处理斜杠命令
   const commandResult = await handleSlashCommand(text, chatId, userId, messageId, rootId);
   if (commandResult) return;
+
+  // 处理管道消息确认（卡片按钮的文本 fallback）
+  const pipelineHandled = await handlePipelineTextConfirm(text, chatId, userId, messageId, rootId);
+  if (pipelineHandled) return;
 
   // 安全检查
   if (containsDangerousCommand(text)) {
@@ -466,6 +545,15 @@ async function handleSlashCommand(
 
   // /dev <task> - 自动开发管道
   if (trimmed.startsWith('/dev ')) {
+    if (!isOwner(userId)) {
+      const reply = '⚠️ 只有管理员可以使用 /dev 命令';
+      if (threadRootMsgId) {
+        await feishuClient.replyTextInThread(threadRootMsgId, reply);
+      } else {
+        await feishuClient.replyText(messageId, reply);
+      }
+      return true;
+    }
     const task = trimmed.slice('/dev '.length).trim();
     if (!task) {
       const reply = '⚠️ 用法: `/dev <开发任务描述>`';
@@ -722,10 +810,13 @@ async function executeClaudeTask(
       );
     }
 
+    const readOnly = !isOwner(userId);
+
     const result = await claudeExecutor.execute({
       sessionKey,
       prompt,
       workingDir,
+      readOnly,
       resumeSessionId: canResume ? activeConversationId : undefined,
       onProgress,
       onWorkspaceChanged,
@@ -775,6 +866,7 @@ async function executeClaudeTask(
         sessionKey,
         prompt,
         workingDir: result.newWorkingDir,
+        readOnly,
         onProgress,
         onTurn,
         historySummaries,

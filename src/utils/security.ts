@@ -11,6 +11,16 @@ export function isUserAllowed(userId: string): boolean {
   return allowedUserIds.includes(userId);
 }
 
+/**
+ * 检查用户是否为管理员（拥有完整代码编辑权限）
+ * 未配置 OWNER_USER_ID 时所有人都是 owner（向后兼容）
+ */
+export function isOwner(userId: string): boolean {
+  const { ownerUserId } = config.security;
+  if (!ownerUserId) return true;
+  return userId === ownerUserId;
+}
+
 /** 危险命令模式 */
 const DANGEROUS_PATTERNS = [
   /rm\s+-rf\s+\/(?!\S)/,  // rm -rf /
