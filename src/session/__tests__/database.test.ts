@@ -347,4 +347,67 @@ describe('SessionDatabase — thread_sessions', () => {
       expect(db.getThreadSession('thread-1')).toBeDefined();
     });
   });
+
+  describe('setThreadPipelineContext', () => {
+    it('should store and retrieve pipeline context', () => {
+      const now = new Date();
+      db.upsertThreadSession({
+        threadId: 'thread-pipe',
+        chatId: 'chat-1',
+        userId: 'user-1',
+        workingDir: '/projects/repo-a',
+        createdAt: now,
+        updatedAt: now,
+      });
+
+      db.setThreadPipelineContext('thread-pipe', {
+        prompt: '实现用户登录功能',
+        summary: 'Pipeline 完成，已创建 PR #42',
+        workingDir: '/projects/repo-a',
+      });
+
+      const session = db.getThreadSession('thread-pipe');
+      expect(session!.pipelineContext).toEqual({
+        prompt: '实现用户登录功能',
+        summary: 'Pipeline 完成，已创建 PR #42',
+        workingDir: '/projects/repo-a',
+      });
+    });
+
+    it('should also mark routing as completed', () => {
+      const now = new Date();
+      db.upsertThreadSession({
+        threadId: 'thread-pipe-2',
+        chatId: 'chat-1',
+        userId: 'user-1',
+        workingDir: '/projects/repo-a',
+        createdAt: now,
+        updatedAt: now,
+      });
+
+      db.setThreadPipelineContext('thread-pipe-2', {
+        prompt: 'fix bug',
+        summary: 'done',
+        workingDir: '/projects/repo-a',
+      });
+
+      const session = db.getThreadSession('thread-pipe-2');
+      expect(session!.routingCompleted).toBe(true);
+    });
+
+    it('should return undefined pipelineContext when not set', () => {
+      const now = new Date();
+      db.upsertThreadSession({
+        threadId: 'thread-no-pipe',
+        chatId: 'chat-1',
+        userId: 'user-1',
+        workingDir: '/projects/repo-a',
+        createdAt: now,
+        updatedAt: now,
+      });
+
+      const session = db.getThreadSession('thread-no-pipe');
+      expect(session!.pipelineContext).toBeUndefined();
+    });
+  });
 });
