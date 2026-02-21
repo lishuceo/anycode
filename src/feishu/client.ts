@@ -7,6 +7,12 @@ import { logger } from '../utils/logger.js';
  */
 export class FeishuClient {
   private client: lark.Client;
+  private _botOpenId: string | undefined;
+
+  /** Bot's own open_id, fetched at startup */
+  get botOpenId(): string | undefined {
+    return this._botOpenId;
+  }
 
   constructor() {
     this.client = new lark.Client({
@@ -14,6 +20,32 @@ export class FeishuClient {
       appSecret: config.feishu.appSecret,
       disableTokenCache: false,
     });
+  }
+
+  /**
+   * Fetch bot info from Feishu API and store bot's open_id.
+   * Should be called once at startup.
+   */
+  async fetchBotInfo(): Promise<void> {
+    try {
+      const resp = await this.client.request<{
+        code?: number;
+        msg?: string;
+        bot?: { open_id?: string; app_name?: string };
+      }>({
+        method: 'GET',
+        url: '/open-apis/bot/v3/info',
+      });
+
+      if (resp.code === 0 && resp.bot?.open_id) {
+        this._botOpenId = resp.bot.open_id;
+        logger.info({ botOpenId: this._botOpenId, appName: resp.bot.app_name }, 'Bot info fetched');
+      } else {
+        logger.warn({ code: resp.code, msg: resp.msg }, 'Failed to fetch bot info, @mention detection may be inaccurate');
+      }
+    } catch (err) {
+      logger.warn({ err }, 'Error fetching bot info, @mention detection may be inaccurate');
+    }
   }
 
   /**
@@ -265,6 +297,68 @@ export class FeishuClient {
       logger.error({ err }, 'Error creating thread with card');
       return {};
     }
+  }
+
+  /**
+   * 发送卡片消息给指定用户（通过 open_id）
+   */
+  async sendCardToUser(openId: string, card: Record<string, unknown>): Promise<string | undefined> {
+    try {
+      const resp = await this.client.im.message.create({
+        params: { receive_id_type: 'open_id' },
+        data: {
+          receive_id: openId,
+          msg_type: 'interactive',
+          content: JSON.stringify(card),
+        },
+      });
+
+      if (resp.code !== 0) {
+        logger.error({ code: resp.code, msg: resp.msg }, 'Failed to send card to user');
+        return undefined;
+      }
+
+      return resp.data?.message_id;
+    } catch (err) {
+      logger.error({ err }, 'Error sending card to user');
+      return undefined;
+    }
+  }
+
+  /**
+   * 获取飞书用户名（通过 open_id）
+   * 优先通过通讯录 API，失败时通过群成员列表查找
+   */
+  async getUserName(openId: string, chatId?: string): Promise<string | undefined> {
+    // 方案 1：通讯录 API（需要 contact 权限 + 通讯录范围覆盖）
+    try {
+      const resp = await this.client.contact.user.get({
+        path: { user_id: openId },
+        params: { user_id_type: 'open_id' },
+      });
+      if (resp.code === 0 && resp.data?.user?.name) {
+        return resp.data.user.name;
+      }
+    } catch {
+      // fall through
+    }
+
+    // 方案 2：从群成员列表中查找（bot 作为群成员天然有权限）
+    if (chatId) {
+      try {
+        for await (const page of await this.client.im.chatMembers.getWithIterator({
+          path: { chat_id: chatId },
+          params: { member_id_type: 'open_id', page_size: 100 },
+        })) {
+          const member = page?.items?.find((m) => m.member_id === openId);
+          if (member?.name) return member.name;
+        }
+      } catch {
+        // fall through
+      }
+    }
+
+    return undefined;
   }
 
   /** 获取原始 client 以便直接使用 */

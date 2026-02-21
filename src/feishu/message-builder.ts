@@ -687,6 +687,84 @@ export function buildSimpleResultCard(
   };
 }
 
+/** 构建审批请求卡片（owner 看到，带允许/拒绝按钮） */
+export function buildApprovalCard(
+  approvalId: string,
+  userName: string,
+  messagePreview: string,
+  chatType: 'group' | 'p2p',
+): Record<string, unknown> {
+  const source = chatType === 'group' ? '群聊' : '私聊';
+  return {
+    config: { wide_screen_mode: true },
+    header: {
+      title: { tag: 'plain_text', content: '🔐 有人找 Agent 聊天' },
+      template: 'orange',
+    },
+    elements: [
+      {
+        tag: 'div',
+        text: {
+          tag: 'lark_md',
+          content: `黎叔，**${escapeMarkdown(userName)}** 通过${source}向 Agent 发了条消息：\n> ${escapeMarkdown(truncate(messagePreview, 300))}\n\n要放行吗？`,
+        },
+      },
+      { tag: 'hr' },
+      {
+        tag: 'action',
+        actions: [
+          {
+            tag: 'button',
+            text: { tag: 'plain_text', content: '✅ 放行' },
+            type: 'primary',
+            value: { action: 'approval_approve', approvalId },
+          },
+          {
+            tag: 'button',
+            text: { tag: 'plain_text', content: '❌ 不给用' },
+            type: 'danger',
+            value: { action: 'approval_reject', approvalId },
+          },
+        ],
+      },
+      {
+        tag: 'note',
+        elements: [
+          {
+            tag: 'plain_text',
+            content: '放行后这个话题内 ta 后续的消息就不用再审批了。也可以直接回复「允许」或「拒绝」。',
+          },
+        ],
+      },
+    ],
+  };
+}
+
+/** 构建审批结果卡片（替换审批卡片） */
+export function buildApprovalResultCard(
+  userName: string,
+  approved: boolean,
+): Record<string, unknown> {
+  return {
+    config: { wide_screen_mode: true },
+    header: {
+      title: { tag: 'plain_text', content: approved ? '✅ 已放行' : '❌ 已拒绝' },
+      template: approved ? 'green' : 'red',
+    },
+    elements: [
+      {
+        tag: 'div',
+        text: {
+          tag: 'lark_md',
+          content: approved
+            ? `已放行 **${escapeMarkdown(userName)}**，ta 在这个话题里可以自由聊了`
+            : `已拒绝 **${escapeMarkdown(userName)}** 的请求`,
+        },
+      },
+    ],
+  };
+}
+
 /** 工具调用 → 图标 + 摘要 */
 const TOOL_ICONS: Record<string, string> = {
   Read: '📖',

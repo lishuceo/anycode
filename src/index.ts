@@ -7,6 +7,8 @@ import { cleanupTmpDirs, cleanupExpiredCaches } from './workspace/cache.js';
 import { pipelineStore } from './pipeline/store.js';
 import { recoverInterruptedPipelines } from './pipeline/runner.js';
 import { killOrphanedClaudeProcesses } from './utils/process-cleanup.js';
+import { feishuClient } from './feishu/client.js';
+import { cleanupExpiredApprovals } from './feishu/approval.js';
 
 function main(): void {
   logger.info('Starting Feishu Claude Code Bridge...');
@@ -30,6 +32,11 @@ function main(): void {
   cleanupTmpDirs();
   killOrphanedClaudeProcesses();
 
+  // 获取机器人信息（用于精确 @mention 检测）
+  feishuClient.fetchBotInfo().catch((err) => {
+    logger.warn({ err }, 'Failed to fetch bot info at startup');
+  });
+
   // 启动 HTTP 服务
   startServer();
 
@@ -44,6 +51,7 @@ function main(): void {
     claudeExecutor.cleanup();
     cleanupExpiredCaches();
     pipelineStore.cleanExpired(30);
+    cleanupExpiredApprovals();
   }, 30 * 60 * 1000);
 
   // 优雅退出
