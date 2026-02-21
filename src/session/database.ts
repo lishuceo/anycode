@@ -14,6 +14,7 @@ interface ThreadSessionRow {
   routing_completed: number | null;
   routing_state: string | null;
   pipeline_context: string | null;
+  approved: number | null;
   created_at: string;
   updated_at: string;
 }
@@ -62,6 +63,7 @@ export class SessionDatabase {
   private stmtClearThreadRoutingState: Database.Statement;
   private stmtMarkThreadRoutingCompleted: Database.Statement;
   private stmtSetThreadPipelineContext: Database.Statement;
+  private stmtSetThreadApproved: Database.Statement;
 
   constructor(dbPath: string) {
     dbPath = resolve(dbPath);
@@ -150,6 +152,17 @@ export class SessionDatabase {
         this.db.exec('ALTER TABLE thread_sessions ADD COLUMN pipeline_context TEXT');
       }
       this.db.exec('UPDATE schema_version SET version = 6');
+    }
+
+    // Migration v6 → v7: add approved column to thread_sessions
+    if (version < 7) {
+      const cols = this.db.prepare("PRAGMA table_info(thread_sessions)").all() as Array<{ name: string }>;
+      if (!cols.some((c) => c.name === 'approved')) {
+        this.db.exec('ALTER TABLE thread_sessions ADD COLUMN approved INTEGER');
+        // 已有 thread 默认视为 approved（向后兼容）
+        this.db.exec('UPDATE thread_sessions SET approved = 1');
+      }
+      this.db.exec('UPDATE schema_version SET version = 7');
     }
 
     this.stmtUpsert = this.db.prepare(`
@@ -270,6 +283,10 @@ export class SessionDatabase {
 
     this.stmtSetThreadPipelineContext = this.db.prepare(
       'UPDATE thread_sessions SET pipeline_context = ?, routing_completed = 1, updated_at = ? WHERE thread_id = ?',
+    );
+
+    this.stmtSetThreadApproved = this.db.prepare(
+      'UPDATE thread_sessions SET approved = ?, updated_at = ? WHERE thread_id = ?',
     );
 
     logger.info({ dbPath }, 'Session database initialized');
@@ -409,6 +426,10 @@ export class SessionDatabase {
     this.stmtSetThreadPipelineContext.run(JSON.stringify(context), new Date().toISOString(), threadId);
   }
 
+  setThreadApproved(threadId: string, approved: boolean): void {
+    this.stmtSetThreadApproved.run(approved ? 1 : 0, new Date().toISOString(), threadId);
+  }
+
   close(): void {
     this.db.close();
     logger.info('Session database closed');
@@ -441,6 +462,7 @@ export class SessionDatabase {
       routingCompleted: !!row.routing_completed,
       routingState,
       pipelineContext,
+      approved: row.approved === 1 ? true : row.approved === 0 ? false : undefined,
       createdAt: new Date(row.created_at),
       updatedAt: new Date(row.updated_at),
     };

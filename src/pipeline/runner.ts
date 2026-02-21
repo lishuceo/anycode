@@ -10,6 +10,7 @@ import {
   buildPipelineCard,
   buildCancelledCard,
   buildInterruptedCard,
+  buildGreetingCardReady,
 } from '../feishu/message-builder.js';
 
 // ============================================================
@@ -44,7 +45,19 @@ export async function createPendingPipeline(params: CreatePipelineParams): Promi
   const pipelineId = generatePipelineId();
 
   // 确保话题存在
-  const threadRootMsgId = await ensureThread(chatId, userId, messageId, rootId);
+  const { threadRootMsgId, greetingMsgId } = await ensureThread(chatId, userId, messageId, rootId);
+
+  // 更新问候卡片：显示话题 ID 和工作目录
+  const session = sessionManager.getOrCreate(chatId, userId);
+  const threadId = session.threadId;
+  if (greetingMsgId && threadId) {
+    feishuClient.updateCard(
+      greetingMsgId,
+      buildGreetingCardReady(threadId, workingDir),
+    ).catch((err) => {
+      logger.warn({ err }, 'Failed to update greeting card in pipeline');
+    });
+  }
 
   // 发送确认卡片
   const confirmCard = buildPipelineConfirmCard(prompt, pipelineId, workingDir);

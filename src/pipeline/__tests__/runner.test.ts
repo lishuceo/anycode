@@ -64,7 +64,7 @@ vi.mock('../reviewer.js', () => ({
 }));
 
 vi.mock('../../feishu/thread-utils.js', () => ({
-  ensureThread: vi.fn().mockResolvedValue('root1'),
+  ensureThread: vi.fn().mockResolvedValue({ threadRootMsgId: 'root1', greetingMsgId: 'greeting_1' }),
 }));
 
 // Use a dynamic import pattern to handle the store mock properly

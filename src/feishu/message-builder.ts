@@ -7,6 +7,55 @@ import { PHASE_META, TOTAL_PHASES } from '../pipeline/types.js';
 import type { PipelinePhase } from '../pipeline/types.js';
 import type { TurnInfo, ToolCallInfo } from '../claude/types.js';
 
+/** 构建新会话问候卡片（初始状态，工作目录未确定） */
+export function buildGreetingCard(): Record<string, unknown> {
+  return {
+    config: { wide_screen_mode: true },
+    header: {
+      title: { tag: 'plain_text', content: '🤖 新会话已创建' },
+      template: 'blue',
+    },
+    elements: [
+      {
+        tag: 'div',
+        text: {
+          tag: 'lark_md',
+          content: '⏳ 正在初始化工作目录...',
+        },
+      },
+    ],
+  };
+}
+
+/** 构建新会话问候卡片（已就绪，显示话题 ID 和工作目录） */
+export function buildGreetingCardReady(
+  threadId: string,
+  workingDir: string,
+): Record<string, unknown> {
+  return {
+    config: { wide_screen_mode: true },
+    header: {
+      title: { tag: 'plain_text', content: '🤖 新会话已就绪' },
+      template: 'green',
+    },
+    elements: [
+      {
+        tag: 'div',
+        fields: [
+          {
+            is_short: true,
+            text: { tag: 'lark_md', content: `**话题 ID:**\n\`${threadId}\`` },
+          },
+          {
+            is_short: true,
+            text: { tag: 'lark_md', content: `**工作目录:**\n${workingDir}` },
+          },
+        ],
+      },
+    ],
+  };
+}
+
 /** 构建 "执行中" 状态卡片 */
 export function buildProgressCard(prompt: string, statusText: string = '正在处理...'): Record<string, unknown> {
   return {
@@ -635,6 +684,84 @@ export function buildSimpleResultCard(
       template: headerTemplate,
     },
     elements,
+  };
+}
+
+/** 构建审批请求卡片（owner 看到，带允许/拒绝按钮） */
+export function buildApprovalCard(
+  approvalId: string,
+  userName: string,
+  messagePreview: string,
+  chatType: 'group' | 'p2p',
+): Record<string, unknown> {
+  const source = chatType === 'group' ? '群聊' : '私聊';
+  return {
+    config: { wide_screen_mode: true },
+    header: {
+      title: { tag: 'plain_text', content: '🔐 有人找 Agent 聊天' },
+      template: 'orange',
+    },
+    elements: [
+      {
+        tag: 'div',
+        text: {
+          tag: 'lark_md',
+          content: `黎叔，**${escapeMarkdown(userName)}** 通过${source}向 Agent 发了条消息：\n> ${escapeMarkdown(truncate(messagePreview, 300))}\n\n要放行吗？`,
+        },
+      },
+      { tag: 'hr' },
+      {
+        tag: 'action',
+        actions: [
+          {
+            tag: 'button',
+            text: { tag: 'plain_text', content: '✅ 放行' },
+            type: 'primary',
+            value: { action: 'approval_approve', approvalId },
+          },
+          {
+            tag: 'button',
+            text: { tag: 'plain_text', content: '❌ 不给用' },
+            type: 'danger',
+            value: { action: 'approval_reject', approvalId },
+          },
+        ],
+      },
+      {
+        tag: 'note',
+        elements: [
+          {
+            tag: 'plain_text',
+            content: '放行后这个话题内 ta 后续的消息就不用再审批了。也可以直接回复「允许」或「拒绝」。',
+          },
+        ],
+      },
+    ],
+  };
+}
+
+/** 构建审批结果卡片（替换审批卡片） */
+export function buildApprovalResultCard(
+  userName: string,
+  approved: boolean,
+): Record<string, unknown> {
+  return {
+    config: { wide_screen_mode: true },
+    header: {
+      title: { tag: 'plain_text', content: approved ? '✅ 已放行' : '❌ 已拒绝' },
+      template: approved ? 'green' : 'red',
+    },
+    elements: [
+      {
+        tag: 'div',
+        text: {
+          tag: 'lark_md',
+          content: approved
+            ? `已放行 **${escapeMarkdown(userName)}**，ta 在这个话题里可以自由聊了`
+            : `已拒绝 **${escapeMarkdown(userName)}** 的请求`,
+        },
+      },
+    ],
   };
 }
 
