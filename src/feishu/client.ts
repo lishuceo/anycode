@@ -234,6 +234,39 @@ export class FeishuClient {
     }
   }
 
+  /**
+   * 创建话题并发送卡片作为首条消息
+   * 返回 messageId 和 threadId
+   */
+  async createThreadWithCard(
+    messageId: string,
+    card: Record<string, unknown>,
+  ): Promise<{ messageId?: string; threadId?: string }> {
+    try {
+      const resp = await this.client.im.message.reply({
+        path: { message_id: messageId },
+        data: {
+          msg_type: 'interactive',
+          content: JSON.stringify(card),
+          reply_in_thread: true,
+        },
+      });
+
+      if (resp.code !== 0) {
+        logger.error({ code: resp.code, msg: resp.msg }, 'Failed to create thread with card');
+        return {};
+      }
+
+      return {
+        messageId: resp.data?.message_id,
+        threadId: resp.data?.thread_id,
+      };
+    } catch (err) {
+      logger.error({ err }, 'Error creating thread with card');
+      return {};
+    }
+  }
+
   /** 获取原始 client 以便直接使用 */
   get raw(): lark.Client {
     return this.client;

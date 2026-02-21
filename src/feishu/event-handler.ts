@@ -6,7 +6,7 @@ import { taskQueue } from '../session/queue.js';
 import { claudeExecutor } from '../claude/executor.js';
 import { routeWorkspace } from '../claude/router.js';
 import type { TurnInfo, ToolCallInfo } from '../claude/types.js';
-import { buildResultCard, buildStatusCard, buildCancelledCard, buildPipelineCard, buildPipelineConfirmCard, buildProgressCard, buildToolProgressCard, buildSimpleResultCard } from './message-builder.js';
+import { buildResultCard, buildStatusCard, buildCancelledCard, buildPipelineCard, buildPipelineConfirmCard, buildProgressCard, buildToolProgressCard, buildSimpleResultCard, buildGreetingCardReady } from './message-builder.js';
 import { feishuClient } from './client.js';
 import { config } from '../config.js';
 import { setupWorkspace } from '../workspace/manager.js';
@@ -607,8 +607,8 @@ async function executeClaudeTask(
   // sessionKey 包含 rootId，per-thread 并行时各 query 有独立的 key
   const sessionKey = rootId ? `${chatId}:${userId}:${rootId}` : `${chatId}:${userId}`;
 
-  // 确保话题存在，返回话题锚点消息 ID
-  const threadRootMsgId = await ensureThread(chatId, userId, messageId, rootId);
+  // 确保话题存在，返回话题锚点消息 ID 和问候卡片消息 ID
+  const { threadRootMsgId, greetingMsgId } = await ensureThread(chatId, userId, messageId, rootId);
   const session = sessionManager.getOrCreate(chatId, userId);
 
   // 获取 thread 级别的 session（优先于全局 session 的 conversationId）
@@ -714,6 +714,16 @@ async function executeClaudeTask(
   } else {
     // Thread 后续消息，使用已绑定的 workdir
     workingDir = threadSession?.workingDir ?? session.workingDir;
+  }
+
+  // 更新问候卡片：显示话题 ID 和工作目录（仅新建话题时有 greetingMsgId）
+  if (greetingMsgId && threadId) {
+    feishuClient.updateCard(
+      greetingMsgId,
+      buildGreetingCardReady(threadId, workingDir),
+    ).catch((err) => {
+      logger.warn({ err }, 'Failed to update greeting card');
+    });
   }
 
   // 发送初始进度卡片（即时反馈），后续原地更新为 tool call 进度卡片

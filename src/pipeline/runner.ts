@@ -44,7 +44,7 @@ export async function createPendingPipeline(params: CreatePipelineParams): Promi
   const pipelineId = generatePipelineId();
 
   // 确保话题存在
-  const threadRootMsgId = await ensureThread(chatId, userId, messageId, rootId);
+  const { threadRootMsgId } = await ensureThread(chatId, userId, messageId, rootId);
 
   // 发送确认卡片
   const confirmCard = buildPipelineConfirmCard(prompt, pipelineId, workingDir);

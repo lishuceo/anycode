@@ -7,6 +7,55 @@ import { PHASE_META, TOTAL_PHASES } from '../pipeline/types.js';
 import type { PipelinePhase } from '../pipeline/types.js';
 import type { TurnInfo, ToolCallInfo } from '../claude/types.js';
 
+/** 构建新会话问候卡片（初始状态，工作目录未确定） */
+export function buildGreetingCard(): Record<string, unknown> {
+  return {
+    config: { wide_screen_mode: true },
+    header: {
+      title: { tag: 'plain_text', content: '🤖 新会话已创建' },
+      template: 'blue',
+    },
+    elements: [
+      {
+        tag: 'div',
+        text: {
+          tag: 'lark_md',
+          content: '⏳ 正在初始化工作目录...',
+        },
+      },
+    ],
+  };
+}
+
+/** 构建新会话问候卡片（已就绪，显示话题 ID 和工作目录） */
+export function buildGreetingCardReady(
+  threadId: string,
+  workingDir: string,
+): Record<string, unknown> {
+  return {
+    config: { wide_screen_mode: true },
+    header: {
+      title: { tag: 'plain_text', content: '🤖 新会话已就绪' },
+      template: 'green',
+    },
+    elements: [
+      {
+        tag: 'div',
+        fields: [
+          {
+            is_short: true,
+            text: { tag: 'lark_md', content: `**话题 ID:**\n\`${threadId}\`` },
+          },
+          {
+            is_short: true,
+            text: { tag: 'lark_md', content: `**工作目录:**\n${workingDir}` },
+          },
+        ],
+      },
+    ],
+  };
+}
+
 /** 构建 "执行中" 状态卡片 */
 export function buildProgressCard(prompt: string, statusText: string = '正在处理...'): Record<string, unknown> {
   return {
