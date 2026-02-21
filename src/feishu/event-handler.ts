@@ -6,11 +6,12 @@ import { taskQueue } from '../session/queue.js';
 import { claudeExecutor } from '../claude/executor.js';
 import { routeWorkspace } from '../claude/router.js';
 import type { TurnInfo, ToolCallInfo } from '../claude/types.js';
-import { buildResultCard, buildStatusCard, buildCancelledCard, buildPipelineCard, buildPipelineConfirmCard, buildProgressCard, buildToolProgressCard, buildSimpleResultCard } from './message-builder.js';
+import { buildResultCard, buildStatusCard, buildCancelledCard, buildPipelineCard, buildPipelineConfirmCard, buildProgressCard, buildToolProgressCard, buildSimpleResultCard, buildGreetingCardReady } from './message-builder.js';
 import { feishuClient } from './client.js';
 import { config } from '../config.js';
 import { setupWorkspace } from '../workspace/manager.js';
 import { ensureThread } from './thread-utils.js';
+import { checkAndRequestApproval, handleApprovalTextCommand, handleApprovalCardAction, setOnApproved, consumePreApproved } from './approval.js';
 import { pipelineStore } from '../pipeline/store.js';
 import {
   createPendingPipeline,
@@ -19,6 +20,13 @@ import {
   cancelPipeline,
   retryPipeline,
 } from '../pipeline/runner.js';
+
+// 注册审批通过后的消息重新入队回调（避免 approval.ts → event-handler.ts 循环依赖）
+setOnApproved((chatId, userId, text, messageId, rootId) => {
+  const queueKey = makeQueueKey(chatId, rootId);
+  taskQueue.enqueue(queueKey, chatId, userId, text, messageId, rootId).catch(() => {});
+  processQueue(queueKey);
+});
 
 // ============================================================
 // 使用飞书 SDK 的 EventDispatcher 处理事件
@@ -102,13 +110,22 @@ async function handleCardAction(data: Record<string, unknown>): Promise<Record<s
   const action = data.action as { value?: Record<string, unknown> } | undefined;
   const actionType = action?.value?.action as string | undefined;
   const pipelineId = action?.value?.pipelineId as string | undefined;
+  const approvalId = action?.value?.approvalId as string | undefined;
 
   // 提取操作者 user ID
   const operatorId = (data.operator as { open_id?: string } | undefined)?.open_id;
 
-  logger.info({ actionType, pipelineId, operatorId }, 'Card action received');
+  logger.info({ actionType, pipelineId, approvalId, operatorId }, 'Card action received');
 
-  if (!actionType || !pipelineId) return {};
+  if (!actionType) return {};
+
+  // 审批卡片动作（approval_approve / approval_reject）
+  if ((actionType === 'approval_approve' || actionType === 'approval_reject') && approvalId && operatorId) {
+    return handleApprovalCardAction(actionType, approvalId, operatorId);
+  }
+
+  // 管道卡片动作需要 pipelineId
+  if (!pipelineId) return {};
 
   // 验证操作者身份：无法识别身份时拒绝操作（fail closed）
   if (!operatorId) {
@@ -364,6 +381,18 @@ async function handleMessageEvent(data: MessageEventData): Promise<void> {
   const pipelineHandled = await handlePipelineTextConfirm(text, chatId, userId);
   if (pipelineHandled) return;
 
+  // 处理审批文本命令（owner 回复 "允许"/"拒绝"）
+  if (handleApprovalTextCommand(text, userId, chatId, rootId)) return;
+
+  // 非 owner 用户审批检查（per-thread：首条消息需审批，审批后同 thread 自动放行）
+  const session = sessionManager.get(chatId, userId);
+  const threadIdForApproval = rootId || session?.threadId;
+  const approved = await checkAndRequestApproval(
+    userId, chatId, chatType, text, messageId,
+    rootId, rootId, threadIdForApproval,
+  );
+  if (!approved) return;
+
   // 安全检查
   if (containsDangerousCommand(text)) {
     await feishuClient.replyText(messageId, '⚠️ 检测到危险命令，已拒绝执行');
@@ -607,8 +636,8 @@ async function executeClaudeTask(
   // sessionKey 包含 rootId，per-thread 并行时各 query 有独立的 key
   const sessionKey = rootId ? `${chatId}:${userId}:${rootId}` : `${chatId}:${userId}`;
 
-  // 确保话题存在，返回话题锚点消息 ID
-  const threadRootMsgId = await ensureThread(chatId, userId, messageId, rootId);
+  // 确保话题存在，返回话题锚点消息 ID 和问候卡片消息 ID
+  const { threadRootMsgId, greetingMsgId } = await ensureThread(chatId, userId, messageId, rootId);
   const session = sessionManager.getOrCreate(chatId, userId);
 
   // 获取 thread 级别的 session（优先于全局 session 的 conversationId）
@@ -616,9 +645,15 @@ async function executeClaudeTask(
   let threadSession = threadId ? sessionManager.getThreadSession(threadId) : undefined;
 
   // 确保 thread_sessions 中有该 thread 的记录（首条消息时创建）
+  // 必须在 consumePreApproved 之前，否则 setThreadApproved 的 UPDATE 会命中空表
   if (threadId && !threadSession) {
     sessionManager.upsertThreadSession(threadId, chatId, userId, session.workingDir);
     threadSession = sessionManager.getThreadSession(threadId);
+  }
+
+  // 如果用户是预审批通过的（审批时 thread 尚未创建），将审批持久化到 thread
+  if (threadId && consumePreApproved(chatId, userId)) {
+    sessionManager.setThreadApproved(threadId, true);
   }
 
   // ============================================================
@@ -714,6 +749,16 @@ async function executeClaudeTask(
   } else {
     // Thread 后续消息，使用已绑定的 workdir
     workingDir = threadSession?.workingDir ?? session.workingDir;
+  }
+
+  // 更新问候卡片：显示话题 ID 和工作目录（仅新建话题时有 greetingMsgId）
+  if (greetingMsgId && threadId) {
+    feishuClient.updateCard(
+      greetingMsgId,
+      buildGreetingCardReady(threadId, workingDir),
+    ).catch((err) => {
+      logger.warn({ err }, 'Failed to update greeting card');
+    });
   }
 
   // 发送初始进度卡片（即时反馈），后续原地更新为 tool call 进度卡片
@@ -1071,12 +1116,19 @@ function parseMessage(data: MessageEventData): ParsedMessage | null {
     return null;
   }
 
-  // 清理 @mention 标记
+  // 清理 @mention 标记，检测是否 @了机器人
   let mentionedBot = false;
+  const botOpenId = feishuClient.botOpenId;
   if (message.mentions) {
     for (const mention of message.mentions) {
       text = text.replace(mention.key, '').trim();
-      mentionedBot = true;
+      if (botOpenId) {
+        // botOpenId 已知：精确匹配
+        if (mention.id.open_id === botOpenId) mentionedBot = true;
+      } else {
+        // botOpenId 未知（API 调用失败）：回退到旧行为
+        mentionedBot = true;
+      }
     }
   }
 

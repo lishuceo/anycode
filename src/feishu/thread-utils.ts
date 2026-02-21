@@ -1,41 +1,51 @@
 import { logger } from '../utils/logger.js';
 import { sessionManager } from '../session/manager.js';
 import { feishuClient } from './client.js';
+import { buildGreetingCard } from './message-builder.js';
+
+/** ensureThread 的返回结果 */
+export interface EnsureThreadResult {
+  /** 话题锚点消息 ID（用于后续 reply_in_thread） */
+  threadRootMsgId?: string;
+  /** 问候卡片消息 ID（仅新建话题时有值，用于后续更新卡片） */
+  greetingMsgId?: string;
+}
 
 /**
  * 确保会话有话题，如果没有则创建一个
- * 返回 threadRootMessageId (用于后续 reply_in_thread)，失败返回 undefined
+ * 返回 threadRootMessageId (用于后续 reply_in_thread) 和 greetingMsgId (用于更新问候卡片)
  */
 export async function ensureThread(
   chatId: string,
   userId: string,
   messageId: string,
   rootId?: string,
-): Promise<string | undefined> {
+): Promise<EnsureThreadResult> {
   sessionManager.getOrCreate(chatId, userId);
 
   // 1. 用户在已有话题内发消息 — 直接复用该话题，无需发送问候
   if (rootId) {
     // 更新 session 的话题信息，确保后续回复也发到这个话题
     sessionManager.setThread(chatId, userId, rootId, rootId);
-    return rootId;
+    return { threadRootMsgId: rootId };
   }
 
   // 2. 用户在主聊天区发消息（无 rootId）— 新会话意图
   //    如果想继续旧话题，用户应在话题内回复；在主区发消息 = 新对话
-  const greeting = '🤖 新会话已创建';
-  const { messageId: botMsgId, threadId } = await feishuClient.replyInThread(
+  //    发送卡片作为首条消息，后续可原地更新显示话题和工作目录信息
+  const card = buildGreetingCard();
+  const { messageId: botMsgId, threadId } = await feishuClient.createThreadWithCard(
     messageId,
-    greeting,
+    card,
   );
 
   if (threadId && botMsgId) {
     // 新话题创建成功，保存话题信息
     // 不清空全局 conversationId——各 thread 通过 thread_sessions 表独立管理自己的 conversationId
     sessionManager.setThread(chatId, userId, threadId, messageId);
-    return messageId;
+    return { threadRootMsgId: messageId, greetingMsgId: botMsgId };
   }
 
   logger.warn({ chatId, userId }, 'Failed to create thread, falling back to main chat');
-  return undefined;
+  return {};
 }

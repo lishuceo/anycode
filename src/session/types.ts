@@ -56,6 +56,8 @@ export interface ThreadSession {
   routingState?: RoutingState;
   /** Pipeline 上下文（pipeline 完成后保存，供后续普通消息注入历史） */
   pipelineContext?: PipelineContext;
+  /** 该 thread 是否已被 owner 审批通过（非 owner 用户需要审批） */
+  approved?: boolean;
   /** 创建时间 */
   createdAt: Date;
   /** 最后更新时间 */

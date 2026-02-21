@@ -164,6 +164,13 @@ export class SessionManager {
   }
 
   /**
+   * 设置 thread 的审批状态（owner 审批通过/拒绝）
+   */
+  setThreadApproved(threadId: string, approved: boolean): void {
+    this.db.setThreadApproved(threadId, approved);
+  }
+
+  /**
    * 保存 pipeline 上下文到 thread session（pipeline 完成后调用）
    */
   setThreadPipelineContext(threadId: string, context: PipelineContext): void {
