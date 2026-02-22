@@ -318,6 +318,157 @@ describe('SessionDatabase — thread_sessions', () => {
     });
   });
 
+  describe('getExpiredThreadSessions', () => {
+    it('should return empty array when no thread sessions exist', () => {
+      const expired = db.getExpiredThreadSessions(30 * 24 * 60 * 60 * 1000);
+      expect(expired).toEqual([]);
+    });
+
+    it('should not return recent thread sessions', () => {
+      const now = new Date();
+      db.upsertThreadSession({
+        threadId: 'thread-1',
+        chatId: 'chat-1',
+        userId: 'user-1',
+        workingDir: '/projects/repo-a',
+        createdAt: now,
+        updatedAt: now,
+      });
+
+      const expired = db.getExpiredThreadSessions(30 * 24 * 60 * 60 * 1000);
+      expect(expired).toEqual([]);
+    });
+
+    it('should return expired thread sessions with correct data', () => {
+      const now = new Date();
+      db.upsertThreadSession({
+        threadId: 'thread-old',
+        chatId: 'chat-1',
+        userId: 'user-1',
+        workingDir: '/workspaces/repo-abc123',
+        createdAt: now,
+        updatedAt: now,
+      });
+      db.upsertThreadSession({
+        threadId: 'thread-new',
+        chatId: 'chat-1',
+        userId: 'user-1',
+        workingDir: '/workspaces/repo-def456',
+        createdAt: now,
+        updatedAt: now,
+      });
+
+      // Back-date the old thread session
+      const oldDate = new Date(Date.now() - 31 * 24 * 60 * 60 * 1000).toISOString();
+      (db as any).db.prepare(
+        "UPDATE thread_sessions SET updated_at = ? WHERE thread_id = 'thread-old'"
+      ).run(oldDate);
+
+      const expired = db.getExpiredThreadSessions(30 * 24 * 60 * 60 * 1000);
+      expect(expired).toHaveLength(1);
+      expect(expired[0].threadId).toBe('thread-old');
+      expect(expired[0].workingDir).toBe('/workspaces/repo-abc123');
+      expect(expired[0].chatId).toBe('chat-1');
+      expect(expired[0].userId).toBe('user-1');
+    });
+
+    it('should return data consistent with deleteExpiredThreadSessions', () => {
+      const now = new Date();
+      db.upsertThreadSession({
+        threadId: 'thread-a',
+        chatId: 'chat-1',
+        userId: 'user-1',
+        workingDir: '/workspaces/a',
+        createdAt: now,
+        updatedAt: now,
+      });
+      db.upsertThreadSession({
+        threadId: 'thread-b',
+        chatId: 'chat-1',
+        userId: 'user-1',
+        workingDir: '/workspaces/b',
+        createdAt: now,
+        updatedAt: now,
+      });
+
+      // Back-date both
+      const oldDate = new Date(Date.now() - 31 * 24 * 60 * 60 * 1000).toISOString();
+      (db as any).db.prepare(
+        "UPDATE thread_sessions SET updated_at = ? WHERE thread_id IN ('thread-a', 'thread-b')"
+      ).run(oldDate);
+
+      const expired = db.getExpiredThreadSessions(30 * 24 * 60 * 60 * 1000);
+      const deleted = db.deleteExpiredThreadSessions(30 * 24 * 60 * 60 * 1000);
+
+      // Same count
+      expect(expired).toHaveLength(2);
+      expect(deleted).toBe(2);
+    });
+  });
+
+  describe('cutoff-based methods', () => {
+    it('should use the same cutoff for get and delete to avoid TOCTOU', () => {
+      const now = new Date();
+      db.upsertThreadSession({
+        threadId: 'thread-cutoff',
+        chatId: 'chat-1',
+        userId: 'user-1',
+        workingDir: '/workspaces/cutoff-test',
+        createdAt: now,
+        updatedAt: now,
+      });
+
+      const oldDate = new Date(Date.now() - 31 * 24 * 60 * 60 * 1000).toISOString();
+      (db as any).db.prepare(
+        "UPDATE thread_sessions SET updated_at = ? WHERE thread_id = 'thread-cutoff'"
+      ).run(oldDate);
+
+      // Use same cutoff for both operations
+      const cutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+      const expired = db.getExpiredThreadSessionsByCutoff(cutoff);
+      const deleted = db.deleteExpiredThreadSessionsByCutoff(cutoff);
+
+      expect(expired).toHaveLength(1);
+      expect(deleted).toBe(1);
+      expect(expired[0].threadId).toBe('thread-cutoff');
+    });
+  });
+
+  describe('touchThreadSession', () => {
+    it('should update the updated_at timestamp', () => {
+      const now = new Date();
+      db.upsertThreadSession({
+        threadId: 'thread-touch',
+        chatId: 'chat-1',
+        userId: 'user-1',
+        workingDir: '/workspaces/touch-test',
+        createdAt: now,
+        updatedAt: now,
+      });
+
+      // Back-date to make it "old"
+      const oldDate = new Date(Date.now() - 31 * 24 * 60 * 60 * 1000).toISOString();
+      (db as any).db.prepare(
+        "UPDATE thread_sessions SET updated_at = ? WHERE thread_id = 'thread-touch'"
+      ).run(oldDate);
+
+      // Verify it would be expired
+      const beforeTouch = db.getExpiredThreadSessions(30 * 24 * 60 * 60 * 1000);
+      expect(beforeTouch).toHaveLength(1);
+
+      // Touch it
+      db.touchThreadSession('thread-touch');
+
+      // Should no longer be expired
+      const afterTouch = db.getExpiredThreadSessions(30 * 24 * 60 * 60 * 1000);
+      expect(afterTouch).toHaveLength(0);
+
+      // Data should still be intact
+      const session = db.getThreadSession('thread-touch');
+      expect(session!.workingDir).toBe('/workspaces/touch-test');
+    });
+  });
+
   describe('thread_sessions survive session cleanup', () => {
     it('should not be affected by deleteExpired on sessions table', () => {
       const now = new Date();

@@ -36,7 +36,6 @@ function buildRoutingSystemPrompt(): string {
 ## 你能做的事
 - 运行 \`ls ${cacheDir}\` 查看本地已缓存的仓库
 - 运行 \`ls ${projectsDir}\` 查看项目目录下的仓库
-- 运行 \`ls ${workspacesDir}\` 查看已有的工作区
 - 运行 \`ls <path>\` 验证本地路径是否存在
 - 运行 \`gh repo list --json name,url,updatedAt --limit 50\` 查看 GitHub 账号下的仓库
 - 如果信息不足，向用户提问（保持简短）
@@ -50,11 +49,12 @@ function buildRoutingSystemPrompt(): string {
 
 当用户提到某个仓库或项目名时，按以下顺序查找：
 
-1. **本地缓存** — \`ls ${cacheDir}\`，看有没有匹配的 bare clone
-2. **项目目录** — \`ls ${projectsDir}\`，看有没有匹配的目录
-3. **已有工作区** — \`ls ${workspacesDir}\`，看有没有之前创建的工作区
-4. **GitHub 账号** — \`gh repo list --json name,url --limit 50\`，在用户的 GitHub 仓库中搜索匹配
-5. 以上都找不到 → 如果用户给了 URL 则用 URL；否则向用户提问
+1. **本地缓存** — \`ls -R ${cacheDir}\`，看有没有匹配的 bare clone（目录名以 .git 结尾）。如果找到，从缓存路径推导 URL（如 \`${cacheDir}/github.com/user/repo.git\` → \`https://github.com/user/repo\`），返回 **clone_remote**
+2. **项目目录** — \`ls ${projectsDir}\`，看有没有匹配的目录（非 bare clone），返回 **use_existing**
+3. **GitHub 账号** — \`gh repo list --json name,url --limit 50\`，在用户的 GitHub 仓库中搜索匹配，返回 **clone_remote**
+4. 以上都找不到 → 如果用户给了 URL 则用 URL；否则向用户提问
+
+**重要：缓存目录中的 bare clone 不能直接用作工作目录（它们没有工作树），必须通过 clone_remote 让系统创建隔离工作区。**
 
 ## 输出格式
 
@@ -246,6 +246,36 @@ export async function routeWorkspace(
   if (decision.decision === 'use_existing') {
     if (!decision.workdir) {
       logger.warn({ chatId, userId }, 'use_existing decision missing workdir, using fallback');
+      const fallbackDir = getFallbackWorkdir();
+      return { decision: 'use_default', workdir: fallbackDir };
+    }
+
+    // bare cache 检测：routing agent 可能返回 bare clone 缓存路径作为 use_existing，
+    // 但 bare repo 不能直接当工作目录。如果有 repo_url，走 clone_remote 创建工作区。
+    const resolvedCacheDir = resolve(config.repoCache.dir);
+    const resolvedWorkdir = resolve(decision.workdir);
+    if (resolvedWorkdir.startsWith(resolvedCacheDir + '/')) {
+      logger.info({ chatId, userId, workdir: decision.workdir }, 'use_existing points to bare cache, converting to clone_remote');
+      if (decision.repo_url) {
+        try {
+          const workspace = setupWorkspace({
+            repoUrl: decision.repo_url,
+            mode: decision.mode ?? 'writable',
+            sourceBranch: decision.branch,
+          });
+          if (!isPathAllowed(workspace.workspacePath)) {
+            logger.warn({ chatId, userId, workspacePath: workspace.workspacePath }, 'clone_remote result path outside allowed directories, using fallback');
+            const fallbackDir = getFallbackWorkdir();
+            return { decision: 'use_default', workdir: fallbackDir };
+          }
+          return { ...decision, decision: 'clone_remote', workdir: workspace.workspacePath };
+        } catch (err) {
+          logger.error({ err, chatId, userId, repoUrl: decision.repo_url }, 'Failed to clone from bare cache, using fallback');
+          const fallbackDir = getFallbackWorkdir();
+          return { decision: 'use_default', workdir: fallbackDir };
+        }
+      }
+      // 无 repo_url，无法 clone，使用默认目录
       const fallbackDir = getFallbackWorkdir();
       return { decision: 'use_default', workdir: fallbackDir };
     }

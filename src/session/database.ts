@@ -59,11 +59,13 @@ export class SessionDatabase {
   private stmtUpdateThreadConversationId: Database.Statement;
   private stmtUpdateThreadWorkingDir: Database.Statement;
   private stmtDeleteExpiredThreadSessions: Database.Statement;
+  private stmtGetExpiredThreadSessions: Database.Statement;
   private stmtUpdateThreadRoutingState: Database.Statement;
   private stmtClearThreadRoutingState: Database.Statement;
   private stmtMarkThreadRoutingCompleted: Database.Statement;
   private stmtSetThreadPipelineContext: Database.Statement;
   private stmtSetThreadApproved: Database.Statement;
+  private stmtTouchThreadSession: Database.Statement;
 
   constructor(dbPath: string) {
     dbPath = resolve(dbPath);
@@ -269,6 +271,10 @@ export class SessionDatabase {
       'DELETE FROM thread_sessions WHERE updated_at < ?',
     );
 
+    this.stmtGetExpiredThreadSessions = this.db.prepare(
+      'SELECT * FROM thread_sessions WHERE updated_at < ?',
+    );
+
     this.stmtUpdateThreadRoutingState = this.db.prepare(
       'UPDATE thread_sessions SET routing_state = ?, updated_at = ? WHERE thread_id = ?',
     );
@@ -287,6 +293,10 @@ export class SessionDatabase {
 
     this.stmtSetThreadApproved = this.db.prepare(
       'UPDATE thread_sessions SET approved = ?, updated_at = ? WHERE thread_id = ?',
+    );
+
+    this.stmtTouchThreadSession = this.db.prepare(
+      'UPDATE thread_sessions SET updated_at = ? WHERE thread_id = ?',
     );
 
     logger.info({ dbPath }, 'Session database initialized');
@@ -404,10 +414,34 @@ export class SessionDatabase {
     this.stmtUpdateThreadWorkingDir.run(workingDir, new Date().toISOString(), threadId);
   }
 
+  /**
+   * 获取即将过期的 thread sessions（在删除前调用，用于清理工作区目录）
+   */
+  getExpiredThreadSessions(maxIdleMs: number): ThreadSession[] {
+    const cutoff = new Date(Date.now() - maxIdleMs).toISOString();
+    return this.getExpiredThreadSessionsByCutoff(cutoff);
+  }
+
+  /** 使用预计算的 cutoff 获取过期 thread sessions（避免与 delete 的 cutoff 不一致） */
+  getExpiredThreadSessionsByCutoff(cutoff: string): ThreadSession[] {
+    const rows = this.stmtGetExpiredThreadSessions.all(cutoff) as ThreadSessionRow[];
+    return rows.map((r) => this.rowToThreadSession(r));
+  }
+
   deleteExpiredThreadSessions(maxIdleMs: number): number {
     const cutoff = new Date(Date.now() - maxIdleMs).toISOString();
+    return this.deleteExpiredThreadSessionsByCutoff(cutoff);
+  }
+
+  /** 使用预计算的 cutoff 删除过期 thread sessions（避免与 get 的 cutoff 不一致） */
+  deleteExpiredThreadSessionsByCutoff(cutoff: string): number {
     const result = this.stmtDeleteExpiredThreadSessions.run(cutoff);
     return result.changes;
+  }
+
+  /** 刷新 thread session 的 updated_at（防止活跃 thread 被 cleanup 清理） */
+  touchThreadSession(threadId: string): void {
+    this.stmtTouchThreadSession.run(new Date().toISOString(), threadId);
   }
 
   updateThreadRoutingState(threadId: string, state: RoutingState): void {

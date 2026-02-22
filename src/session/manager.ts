@@ -1,6 +1,8 @@
+import { existsSync, rmSync } from 'node:fs';
 import { config } from '../config.js';
 import { logger } from '../utils/logger.js';
 import { SessionDatabase } from './database.js';
+import { isAutoWorkspacePath } from '../workspace/isolation.js';
 import type { Session, ThreadSession, RoutingState, PipelineContext } from './types.js';
 
 /**
@@ -178,6 +180,13 @@ export class SessionManager {
   }
 
   /**
+   * 刷新 thread session 的 updated_at（防止活跃 thread 被 cleanup 清理）
+   */
+  touchThreadSession(threadId: string): void {
+    this.db.touchThreadSession(threadId);
+  }
+
+  /**
    * 保存会话摘要（独立于 sessions 表，不受 cleanup 影响）
    */
   saveSummary(chatId: string, userId: string, workingDir: string, summary: string): void {
@@ -203,11 +212,37 @@ export class SessionManager {
     if (oldSummaries > 0) {
       logger.info({ oldSummaries }, 'Cleaned up old session summaries');
     }
+
+    // Thread session 清理：用统一 cutoff 原子化查询 + 删除，避免 TOCTOU
     const threadMaxIdleMs = 30 * 24 * 60 * 60 * 1000; // 30 days
-    const cleanedThreads = this.db.deleteExpiredThreadSessions(threadMaxIdleMs);
+    const cutoff = new Date(Date.now() - threadMaxIdleMs).toISOString();
+    const expiredThreads = this.db.getExpiredThreadSessionsByCutoff(cutoff);
+    const cleanedThreads = this.db.deleteExpiredThreadSessionsByCutoff(cutoff);
     if (cleanedThreads > 0) {
       logger.info({ cleanedThreads }, 'Cleaned up idle thread sessions');
     }
+
+    // 删除过期 thread 的自动创建工作区目录
+    let cleanedWorkspaces = 0;
+    for (const thread of expiredThreads) {
+      // 只删除 WORKSPACE_BASE_DIR 下的自动创建目录，不删除用户手动指定的路径
+      if (isAutoWorkspacePath(thread.workingDir) && existsSync(thread.workingDir)) {
+        try {
+          rmSync(thread.workingDir, { recursive: true, force: true });
+          cleanedWorkspaces++;
+          logger.debug(
+            { workspacePath: thread.workingDir, threadId: thread.threadId },
+            'Removed expired workspace directory',
+          );
+        } catch (err) {
+          logger.warn({ err, workspacePath: thread.workingDir }, 'Failed to remove expired workspace');
+        }
+      }
+    }
+    if (cleanedWorkspaces > 0) {
+      logger.info({ cleanedWorkspaces }, 'Cleaned up expired workspace directories');
+    }
+
     return cleaned;
   }
 
