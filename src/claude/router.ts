@@ -36,7 +36,6 @@ function buildRoutingSystemPrompt(): string {
 ## 你能做的事
 - 运行 \`ls ${cacheDir}\` 查看本地已缓存的仓库
 - 运行 \`ls ${projectsDir}\` 查看项目目录下的仓库
-- 运行 \`ls ${workspacesDir}\` 查看已有的工作区
 - 运行 \`ls <path>\` 验证本地路径是否存在
 - 运行 \`gh repo list --json name,url,updatedAt --limit 50\` 查看 GitHub 账号下的仓库
 - 如果信息不足，向用户提问（保持简短）
@@ -52,9 +51,8 @@ function buildRoutingSystemPrompt(): string {
 
 1. **本地缓存** — \`ls ${cacheDir}\`，看有没有匹配的 bare clone
 2. **项目目录** — \`ls ${projectsDir}\`，看有没有匹配的目录
-3. **已有工作区** — \`ls ${workspacesDir}\`，看有没有之前创建的工作区
-4. **GitHub 账号** — \`gh repo list --json name,url --limit 50\`，在用户的 GitHub 仓库中搜索匹配
-5. 以上都找不到 → 如果用户给了 URL 则用 URL；否则向用户提问
+3. **GitHub 账号** — \`gh repo list --json name,url --limit 50\`，在用户的 GitHub 仓库中搜索匹配
+4. 以上都找不到 → 如果用户给了 URL 则用 URL；否则向用户提问
 
 ## 输出格式
 

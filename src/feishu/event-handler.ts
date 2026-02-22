@@ -8,8 +8,11 @@ import { routeWorkspace } from '../claude/router.js';
 import type { TurnInfo, ToolCallInfo } from '../claude/types.js';
 import { buildResultCard, buildStatusCard, buildCancelledCard, buildPipelineCard, buildPipelineConfirmCard, buildProgressCard, buildToolProgressCard, buildSimpleResultCard, buildGreetingCardReady } from './message-builder.js';
 import { feishuClient } from './client.js';
+import { existsSync } from 'node:fs';
+import { basename } from 'node:path';
 import { config } from '../config.js';
 import { setupWorkspace } from '../workspace/manager.js';
+import { isAutoWorkspacePath, ensureIsolatedWorkspace } from '../workspace/isolation.js';
 import { ensureThread } from './thread-utils.js';
 import { checkAndRequestApproval, handleApprovalTextCommand, handleApprovalCardAction, setOnApproved, consumePreApproved } from './approval.js';
 import { pipelineStore } from '../pipeline/store.js';
@@ -656,6 +659,11 @@ async function executeClaudeTask(
     sessionManager.setThreadApproved(threadId, true);
   }
 
+  // 刷新 thread session 的 updated_at，防止活跃 thread 被 cleanup 清理
+  if (threadId && threadSession) {
+    sessionManager.touchThreadSession(threadId);
+  }
+
   // ============================================================
   // Routing Agent：决定工作目录
   // ============================================================
@@ -710,6 +718,20 @@ async function executeClaudeTask(
       }
 
       workingDir = decision.workdir || config.claude.defaultWorkDir;
+      // 确保工作区隔离：use_existing 指向源仓库时自动 clone 到独立工作区
+      try {
+        workingDir = ensureIsolatedWorkspace(workingDir, decision.mode || 'writable');
+      } catch (err) {
+        const errorMsg = `❌ 无法创建隔离工作区: ${(err as Error).message}`;
+        if (threadRootMsgId) {
+          await feishuClient.replyTextInThread(threadRootMsgId, errorMsg);
+        } else {
+          await feishuClient.replyText(messageId, errorMsg);
+        }
+        return;
+      }
+      // 路由成功后恢复原始请求作为主查询 prompt（用户的路由回复如 "1" 不应作为任务 prompt）
+      prompt = threadSession.routingState.originalPrompt;
       sessionManager.clearThreadRoutingState(threadId);
       sessionManager.setThreadWorkingDir(threadId, workingDir);
       sessionManager.markThreadRoutingCompleted(threadId);
@@ -739,6 +761,18 @@ async function executeClaudeTask(
     }
 
     workingDir = decision.workdir || config.claude.defaultWorkDir;
+    // 确保工作区隔离：use_existing 指向源仓库时自动 clone 到独立工作区
+    try {
+      workingDir = ensureIsolatedWorkspace(workingDir, decision.mode || 'writable');
+    } catch (err) {
+      const errorMsg = `❌ 无法创建隔离工作区: ${(err as Error).message}`;
+      if (threadRootMsgId) {
+        await feishuClient.replyTextInThread(threadRootMsgId, errorMsg);
+      } else {
+        await feishuClient.replyText(messageId, errorMsg);
+      }
+      return;
+    }
     sessionManager.setThreadWorkingDir(threadId, workingDir);
     sessionManager.markThreadRoutingCompleted(threadId);
     // 同步更新全局 session 的 workingDir
@@ -749,6 +783,24 @@ async function executeClaudeTask(
   } else {
     // Thread 后续消息，使用已绑定的 workdir
     workingDir = threadSession?.workingDir ?? session.workingDir;
+  }
+
+  // 过期工作区检测：如果自动创建的工作区目录已被清理，通知用户开新话题
+  if (isAutoWorkspacePath(workingDir) && !existsSync(workingDir)) {
+    logger.warn({ workingDir, threadId }, 'Stale workspace detected');
+    const reply = [
+      '⚠️ 该话题的工作区已过期清理。',
+      `原工作区: \`${basename(workingDir)}\``,
+      '',
+      '请开启新话题继续操作，系统会自动创建新的工作区。',
+    ].join('\n');
+    if (threadRootMsgId) {
+      await feishuClient.replyTextInThread(threadRootMsgId, reply);
+    } else {
+      await feishuClient.replyText(messageId, reply);
+    }
+    sessionManager.setStatus(chatId, userId, 'idle');
+    return;
   }
 
   // 更新问候卡片：显示话题 ID 和工作目录（仅新建话题时有 greetingMsgId）
