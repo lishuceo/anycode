@@ -4,6 +4,7 @@ import { mkdirSync, existsSync } from 'node:fs';
 import { config } from '../config.js';
 import { logger } from '../utils/logger.js';
 import { createWorkspaceMcpServer } from '../workspace/tool.js';
+import { isAutoWorkspacePath } from '../workspace/isolation.js';
 import type { ClaudeResult, ExecuteOptions, ProgressCallback, TurnInfo, ToolCallInfo } from './types.js';
 
 // ============================================================
@@ -131,7 +132,12 @@ export class ClaudeExecutor {
     resetIdleTimer();
 
     // 确保工作目录存在，否则 spawn 会报 ENOENT
+    // 自动创建的工作区目录（WORKSPACE_BASE_DIR 下）不应在此处兜底创建：
+    // 如果目录不存在说明已被清理，应由调用方（event-handler）检测并提示用户
     if (!existsSync(workingDir)) {
+      if (isAutoWorkspacePath(workingDir)) {
+        throw new Error(`工作区目录不存在（可能已被清理）: ${workingDir}`);
+      }
       mkdirSync(workingDir, { recursive: true });
       logger.info({ workingDir }, 'Created working directory');
     }

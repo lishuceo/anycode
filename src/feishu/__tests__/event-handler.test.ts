@@ -632,3 +632,123 @@ describe('executeClaudeTask thread session integration', () => {
     expect(mockExecute.mock.calls[0][3]).toBe('global-conv');
   });
 });
+
+// ============================================================
+// Per-thread workspace isolation tests
+//
+// 直接测试 src/workspace/isolation.ts 导出的生产函数，
+// 而非重新实现逻辑。
+// ============================================================
+
+// Mock node:fs for isolation tests (已在上方 mock 过 workspace/manager)
+const mockExistsSync = vi.fn(() => true);
+vi.mock('node:fs', () => ({
+  existsSync: (...args: unknown[]) => mockExistsSync(...args),
+  realpathSync: vi.fn((p: string) => p), // 测试环境无真实文件，直接返回原路径
+}));
+
+// 获取 setupWorkspace mock 引用
+const { setupWorkspace: setupWorkspaceMock } = await import('../../workspace/manager.js');
+
+// 导入生产函数
+const { isAutoWorkspacePath, ensureIsolatedWorkspace } = await import('../../workspace/isolation.js');
+
+describe('isAutoWorkspacePath', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockExistsSync.mockReturnValue(true);
+  });
+
+  it('should return true for paths under workspace baseDir', () => {
+    expect(isAutoWorkspacePath('/tmp/workspaces/repo-abc123')).toBe(true);
+  });
+
+  it('should return false for paths outside workspace baseDir', () => {
+    expect(isAutoWorkspacePath('/tmp/work/my-repo')).toBe(false);
+  });
+
+  it('should return false for the base dir itself (not a subdirectory)', () => {
+    expect(isAutoWorkspacePath('/tmp/workspaces')).toBe(false);
+  });
+
+  it('should return false for similar prefix but different dir', () => {
+    expect(isAutoWorkspacePath('/tmp/workspaces-backup/repo')).toBe(false);
+  });
+});
+
+describe('ensureIsolatedWorkspace', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockExistsSync.mockReturnValue(true);
+  });
+
+  it('should return as-is when path is already under workspace baseDir', () => {
+    const result = ensureIsolatedWorkspace('/tmp/workspaces/repo-abc123');
+    expect(result).toBe('/tmp/workspaces/repo-abc123');
+    expect(setupWorkspaceMock).not.toHaveBeenCalled();
+  });
+
+  it('should clone to workspace when path is a git repo outside workspace baseDir', () => {
+    mockExistsSync.mockReturnValue(true); // .git exists
+    (setupWorkspaceMock as ReturnType<typeof vi.fn>).mockReturnValue({
+      workspacePath: '/tmp/workspaces/my-repo-writable-abc123',
+      branch: 'feat/claude-session-abc123',
+      repoName: 'my-repo',
+    });
+
+    const result = ensureIsolatedWorkspace('/tmp/work/my-repo', 'writable');
+
+    expect(result).toBe('/tmp/workspaces/my-repo-writable-abc123');
+    expect(setupWorkspaceMock).toHaveBeenCalledWith({
+      localPath: '/tmp/work/my-repo',
+      mode: 'writable',
+    });
+  });
+
+  it('should pass readonly mode to setupWorkspace', () => {
+    mockExistsSync.mockReturnValue(true);
+    (setupWorkspaceMock as ReturnType<typeof vi.fn>).mockReturnValue({
+      workspacePath: '/tmp/workspaces/my-repo-readonly-abc123',
+      branch: 'main',
+      repoName: 'my-repo',
+    });
+
+    const result = ensureIsolatedWorkspace('/tmp/work/my-repo', 'readonly');
+
+    expect(result).toBe('/tmp/workspaces/my-repo-readonly-abc123');
+    expect(setupWorkspaceMock).toHaveBeenCalledWith({
+      localPath: '/tmp/work/my-repo',
+      mode: 'readonly',
+    });
+  });
+
+  it('should return as-is when path is not a git repo', () => {
+    mockExistsSync.mockReturnValue(false); // no .git
+
+    const result = ensureIsolatedWorkspace('/tmp/work');
+
+    expect(result).toBe('/tmp/work');
+    expect(setupWorkspaceMock).not.toHaveBeenCalled();
+  });
+
+  it('should throw in writable mode when setupWorkspace fails', () => {
+    mockExistsSync.mockReturnValue(true); // .git exists
+    (setupWorkspaceMock as ReturnType<typeof vi.fn>).mockImplementation(() => {
+      throw new Error('clone failed');
+    });
+
+    expect(() => ensureIsolatedWorkspace('/tmp/work/my-repo', 'writable'))
+      .toThrow('无法创建隔离工作区');
+  });
+
+  it('should fallback to original path in readonly mode when setupWorkspace fails', () => {
+    mockExistsSync.mockReturnValue(true); // .git exists
+    (setupWorkspaceMock as ReturnType<typeof vi.fn>).mockImplementation(() => {
+      throw new Error('clone failed');
+    });
+
+    const result = ensureIsolatedWorkspace('/tmp/work/my-repo', 'readonly');
+
+    expect(result).toBe('/tmp/work/my-repo');
+  });
+});

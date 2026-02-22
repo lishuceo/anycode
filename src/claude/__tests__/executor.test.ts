@@ -33,6 +33,12 @@ vi.mock('../../workspace/tool.js', () => ({
   createWorkspaceMcpServer: (...args: unknown[]) => mockCreateWorkspaceMcpServer(...args),
 }));
 
+// Mock workspace isolation utility
+const mockIsAutoWorkspacePath = vi.fn(() => false);
+vi.mock('../../workspace/isolation.js', () => ({
+  isAutoWorkspacePath: (...args: unknown[]) => mockIsAutoWorkspacePath(...args),
+}));
+
 // Mock the SDK query function — returns an async iterable of messages
 const mockQueryInstance = {
   close: vi.fn(),
@@ -248,6 +254,39 @@ describe('ClaudeExecutor', () => {
 
       expect(q1.close).toHaveBeenCalled();
       expect(q2.close).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('workspace dir auto-create guard', () => {
+    it('should throw when isAutoWorkspacePath returns true and dir does not exist', async () => {
+      const { existsSync } = await import('node:fs');
+      (existsSync as ReturnType<typeof vi.fn>).mockReturnValue(false);
+      mockIsAutoWorkspacePath.mockReturnValue(true);
+
+      await expect(
+        executor.execute(makeInput({ workingDir: '/tmp/workspaces/repo-abc123' })),
+      ).rejects.toThrow('工作区目录不存在');
+
+      mockIsAutoWorkspacePath.mockReturnValue(false);
+    });
+
+    it('should auto-create when isAutoWorkspacePath returns false', async () => {
+      const { existsSync, mkdirSync } = await import('node:fs');
+      (existsSync as ReturnType<typeof vi.fn>).mockReturnValue(false);
+      mockIsAutoWorkspacePath.mockReturnValue(false);
+
+      await executor.execute(makeInput({ workingDir: '/tmp/other-dir' }));
+
+      expect(mkdirSync).toHaveBeenCalledWith('/tmp/other-dir', { recursive: true });
+    });
+
+    it('should not auto-create when workingDir already exists', async () => {
+      const { existsSync, mkdirSync } = await import('node:fs');
+      (existsSync as ReturnType<typeof vi.fn>).mockReturnValue(true);
+
+      await executor.execute(makeInput({ workingDir: '/tmp/workspaces/repo-abc123' }));
+
+      expect(mkdirSync).not.toHaveBeenCalled();
     });
   });
 
