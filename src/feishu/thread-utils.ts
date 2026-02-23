@@ -20,13 +20,20 @@ export async function ensureThread(
   userId: string,
   messageId: string,
   rootId?: string,
+  /** 飞书事件中的 thread_id（可靠的话题标识，优先于 root_id） */
+  threadId?: string,
 ): Promise<EnsureThreadResult> {
   sessionManager.getOrCreate(chatId, userId);
 
   // 1. 用户在已有话题内发消息 — 直接复用该话题，无需发送问候
   if (rootId) {
-    // 更新 session 的话题信息，确保后续回复也发到这个话题
-    sessionManager.setThread(chatId, userId, rootId, rootId);
+    // 有 rootId 说明是话题内回复，飞书应始终提供 thread_id。
+    // 如果 threadId 缺失，说明调用方未正确传递或飞书 API 异常，抛出错误以暴露问题。
+    if (!threadId) {
+      throw new Error(`ensureThread: rootId present (${rootId}) but threadId missing — Feishu event may be malformed`);
+    }
+    // threadId (omt_xxx) 做话题标识，rootId (om_xxx) 做回复目标
+    sessionManager.setThread(chatId, userId, threadId, rootId);
     return { threadRootMsgId: rootId };
   }
 
@@ -34,15 +41,15 @@ export async function ensureThread(
   //    如果想继续旧话题，用户应在话题内回复；在主区发消息 = 新对话
   //    发送卡片作为首条消息，后续可原地更新显示话题和工作目录信息
   const card = buildGreetingCard();
-  const { messageId: botMsgId, threadId } = await feishuClient.createThreadWithCard(
+  const { messageId: botMsgId, threadId: newThreadId } = await feishuClient.createThreadWithCard(
     messageId,
     card,
   );
 
-  if (threadId && botMsgId) {
+  if (newThreadId && botMsgId) {
     // 新话题创建成功，保存话题信息
     // 不清空全局 conversationId——各 thread 通过 thread_sessions 表独立管理自己的 conversationId
-    sessionManager.setThread(chatId, userId, threadId, messageId);
+    sessionManager.setThread(chatId, userId, newThreadId, messageId);
     return { threadRootMsgId: messageId, greetingMsgId: botMsgId };
   }
 
