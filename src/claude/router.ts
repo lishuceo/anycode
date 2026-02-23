@@ -166,7 +166,8 @@ export async function routeWorkspace(
   prompt: string,
   chatId: string,
   userId: string,
-  rootId?: string,
+  /** 话题标识（用于 session key 隔离），优先传 thread_id，fallback root_id */
+  threadId?: string,
 ): Promise<RoutingDecision> {
   logger.info(
     { chatId, userId, promptLength: prompt.length },
@@ -176,7 +177,7 @@ export async function routeWorkspace(
   let result;
   try {
     result = await claudeExecutor.execute({
-      sessionKey: rootId ? `routing:${chatId}:${userId}:${rootId}` : `routing:${chatId}:${userId}`,
+      sessionKey: threadId ? `routing:${chatId}:${userId}:${threadId}` : `routing:${chatId}:${userId}`,
       prompt: buildRoutingPrompt(prompt),
       workingDir: config.claude.defaultWorkDir,
       systemPromptOverride: buildRoutingSystemPrompt(),

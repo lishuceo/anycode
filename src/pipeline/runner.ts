@@ -32,6 +32,8 @@ export interface CreatePipelineParams {
   userId: string;
   messageId: string;
   rootId?: string;
+  /** 飞书话题 ID（message.thread_id，优先于 rootId 做话题标识） */
+  threadId?: string;
   prompt: string;
   workingDir: string;
   /** 预创建的话题锚点消息 ID（由调用方 ensureThread 后传入，跳过内部的 ensureThread） */
@@ -50,7 +52,7 @@ export async function createPendingPipeline(params: CreatePipelineParams): Promi
   if (params.threadRootMsgId) {
     threadRootMsgId = params.threadRootMsgId;
   } else {
-    const threadResult = await ensureThread(chatId, userId, messageId, rootId);
+    const threadResult = await ensureThread(chatId, userId, messageId, rootId, params.threadId);
     threadRootMsgId = threadResult.threadRootMsgId;
 
     // 更新问候卡片：显示话题 ID 和工作目录
@@ -76,12 +78,17 @@ export async function createPendingPipeline(params: CreatePipelineParams): Promi
     progressMsgId = await feishuClient.sendCard(chatId, confirmCard);
   }
 
+  // 获取实际 threadId（ensureThread 设置后从 session 读取）
+  const sessionForThreadId = sessionManager.getOrCreate(chatId, userId);
+  const resolvedThreadId = params.threadId || sessionForThreadId.threadId;
+
   // 保存到 store
   pipelineStore.create({
     id: pipelineId,
     chatId,
     userId,
     messageId,
+    threadId: resolvedThreadId,
     threadRootMsgId,
     progressMsgId,
     workingDir,
@@ -127,14 +134,16 @@ export async function startPipeline(pipelineId: string): Promise<void> {
 
   // 将 workingDir 绑定到 thread session，确保后续普通消息使用同一工作区
   // 放在 tryAcquire 之后，避免锁获取失败时意外修改 thread session（setThreadWorkingDir 会清空 conversationId）
-  if (threadRootMsgId) {
-    const existingTs = sessionManager.getThreadSession(threadRootMsgId);
+  // 使用 record.threadId（omt_xxx）做 thread session key，而非 threadRootMsgId（om_xxx 消息 ID）
+  const pipelineThreadId = record.threadId;
+  if (pipelineThreadId) {
+    const existingTs = sessionManager.getThreadSession(pipelineThreadId);
     if (!existingTs) {
-      sessionManager.upsertThreadSession(threadRootMsgId, chatId, userId, workingDir);
+      sessionManager.upsertThreadSession(pipelineThreadId, chatId, userId, workingDir);
     } else if (existingTs.workingDir !== workingDir) {
-      sessionManager.setThreadWorkingDir(threadRootMsgId, workingDir);
+      sessionManager.setThreadWorkingDir(pipelineThreadId, workingDir);
     }
-    sessionManager.markThreadRoutingCompleted(threadRootMsgId);
+    sessionManager.markThreadRoutingCompleted(pipelineThreadId);
   }
 
   const pipelineStartTime = Date.now();
@@ -255,13 +264,14 @@ export async function startPipeline(pipelineId: string): Promise<void> {
     }
 
     // 保存 pipeline 上下文到 thread session（供后续普通消息注入历史）
-    if (threadRootMsgId) {
+    // 使用 pipelineThreadId（omt_xxx）做 thread session key
+    if (pipelineThreadId) {
       try {
         // 确保 thread session 存在
-        if (!sessionManager.getThreadSession(threadRootMsgId)) {
-          sessionManager.upsertThreadSession(threadRootMsgId, chatId, userId, workingDir);
+        if (!sessionManager.getThreadSession(pipelineThreadId)) {
+          sessionManager.upsertThreadSession(pipelineThreadId, chatId, userId, workingDir);
         }
-        sessionManager.setThreadPipelineContext(threadRootMsgId, {
+        sessionManager.setThreadPipelineContext(pipelineThreadId, {
           prompt,
           summary: pipelineResult.summary,
           workingDir,
@@ -341,6 +351,7 @@ export async function retryPipeline(pipelineId: string): Promise<string | undefi
     userId: record.userId,
     messageId: record.messageId,
     rootId: record.threadRootMsgId,
+    threadId: record.threadId,
     prompt: record.prompt,
     workingDir: record.workingDir,
     threadRootMsgId: record.threadRootMsgId,

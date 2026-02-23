@@ -171,7 +171,7 @@ describe('Pipeline Runner', () => {
         workingDir: '/tmp/work',
       });
 
-      expect(ensureThread).toHaveBeenCalledWith('chat1', 'user1', 'msg2', undefined);
+      expect(ensureThread).toHaveBeenCalledWith('chat1', 'user1', 'msg2', undefined, undefined);
     });
 
     it('should store pre-created threadRootMsgId in pipeline record', async () => {

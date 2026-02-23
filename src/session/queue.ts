@@ -23,6 +23,7 @@ export class TaskQueue {
     message: string,
     messageId: string,
     rootId?: string,
+    threadId?: string,
   ): Promise<string> {
     return new Promise((resolve, reject) => {
       const task: QueueTask = {
@@ -32,6 +33,7 @@ export class TaskQueue {
         message,
         messageId,
         rootId,
+        threadId,
         resolve,
         reject,
         createdAt: new Date(),

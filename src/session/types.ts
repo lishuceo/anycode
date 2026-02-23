@@ -82,6 +82,8 @@ export interface QueueTask {
   message: string;
   messageId: string;
   rootId?: string;
+  /** 飞书话题 ID (message.thread_id)，用于话题标识 */
+  threadId?: string;
   resolve: (result: string) => void;
   reject: (error: Error) => void;
   createdAt: Date;
