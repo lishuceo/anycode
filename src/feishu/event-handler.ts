@@ -1126,7 +1126,7 @@ async function sendResultCard(
 
 /**
  * 执行自动开发管道（/dev 命令触发）
- * 创建待确认管道，等待用户卡片确认后再开始执行
+ * 运行 routing agent 确定工作目录 → 创建隔离工作区 → 创建待确认管道
  */
 async function executePipelineTask(
   prompt: string,
@@ -1135,15 +1135,92 @@ async function executePipelineTask(
   messageId: string,
   rootId?: string,
 ): Promise<void> {
-  const session = sessionManager.getOrCreate(chatId, userId);
-  await createPendingPipeline({
-    chatId,
-    userId,
-    messageId,
-    rootId,
-    prompt,
-    workingDir: session.workingDir,
-  });
+  let threadRootMsgId: string | undefined;
+
+  try {
+    // 1. 确保话题存在（提前到此处，以便在路由前发送即时反馈）
+    const threadResult = await ensureThread(chatId, userId, messageId, rootId);
+    threadRootMsgId = threadResult.threadRootMsgId;
+    const greetingMsgId = threadResult.greetingMsgId;
+
+    // 2. 运行 routing agent 确定工作目录（路由耗时 ~10s，先给用户即时反馈）
+    if (threadRootMsgId) {
+      await feishuClient.replyTextInThread(threadRootMsgId, '🔍 正在分析工作目录...');
+    }
+
+    const decision = await routeWorkspace(prompt, chatId, userId, rootId);
+
+    // 路由需要澄清：保存路由状态，用户在话题内回复可通过 executeClaudeTask 的追问流程继续
+    if (decision.decision === 'need_clarification') {
+      const question = decision.question || '请提供更多信息，我需要知道你想要操作哪个仓库或项目。';
+      // 保存路由状态到 threadRootMsgId（后续消息 rootId 会匹配此 key）
+      if (threadRootMsgId) {
+        if (!sessionManager.getThreadSession(threadRootMsgId)) {
+          sessionManager.upsertThreadSession(threadRootMsgId, chatId, userId, config.claude.defaultWorkDir);
+        }
+        sessionManager.setThreadRoutingState(threadRootMsgId, {
+          status: 'pending_clarification',
+          originalPrompt: prompt,
+          question,
+          retryCount: 0,
+        });
+        await feishuClient.replyTextInThread(threadRootMsgId, question);
+      } else {
+        await feishuClient.replyText(messageId, question);
+      }
+      return;
+    }
+
+    let workingDir = decision.workdir || config.claude.defaultWorkDir;
+
+    // 3. 确保工作区隔离
+    try {
+      workingDir = ensureIsolatedWorkspace(workingDir, decision.mode || 'writable');
+    } catch (err) {
+      const errorMsg = `❌ 无法创建隔离工作区: ${(err as Error).message}`;
+      if (threadRootMsgId) {
+        await feishuClient.replyTextInThread(threadRootMsgId, errorMsg);
+      } else {
+        await feishuClient.replyText(messageId, errorMsg);
+      }
+      return;
+    }
+
+    // 4. 更新问候卡片：显示话题 ID 和工作目录
+    const session = sessionManager.getOrCreate(chatId, userId);
+    const threadId = session.threadId;
+    if (greetingMsgId && threadId) {
+      feishuClient.updateCard(
+        greetingMsgId,
+        buildGreetingCardReady(threadId, workingDir),
+      ).catch((err) => {
+        logger.warn({ err }, 'Failed to update greeting card');
+      });
+    }
+
+    // 5. 创建 pipeline，使用路由确定的工作目录
+    await createPendingPipeline({
+      chatId,
+      userId,
+      messageId,
+      rootId,
+      prompt,
+      workingDir,
+      threadRootMsgId,
+    });
+  } catch (err) {
+    logger.error({ err }, 'Error in executePipelineTask');
+    const errorMsg = `❌ 开发管道创建失败: ${(err as Error).message}`;
+    try {
+      if (threadRootMsgId) {
+        await feishuClient.replyTextInThread(threadRootMsgId, errorMsg);
+      } else {
+        await feishuClient.replyText(messageId, errorMsg);
+      }
+    } catch {
+      // best-effort notification
+    }
+  }
 }
 
 /**
