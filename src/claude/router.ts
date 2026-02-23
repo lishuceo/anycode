@@ -118,6 +118,7 @@ function parseRoutingDecision(output: string): RoutingDecision | null {
     if (parsed.workdir !== undefined && typeof parsed.workdir !== 'string') return null;
     if (parsed.repo_url !== undefined && typeof parsed.repo_url !== 'string') return null;
     if (parsed.question !== undefined && typeof parsed.question !== 'string') return null;
+    if (parsed.mode !== undefined && parsed.mode !== 'readonly' && parsed.mode !== 'writable') return null;
 
     return {
       decision: decision as RoutingDecision['decision'],
