@@ -41,7 +41,7 @@ function generateApprovalId(): string {
 // 回调机制：避免循环依赖
 // ============================================================
 
-type OnApprovedCallback = (chatId: string, userId: string, text: string, messageId: string, rootId?: string) => void;
+type OnApprovedCallback = (chatId: string, userId: string, text: string, messageId: string, rootId?: string, threadId?: string) => void;
 let onApprovedCallback: OnApprovedCallback | undefined;
 
 /**
@@ -242,7 +242,7 @@ export function resolveApproval(approvalId: string, approved: boolean): PendingA
 
     // 重新入队原始消息
     if (onApprovedCallback) {
-      onApprovedCallback(pending.chatId, pending.userId, pending.messagePreview, pending.messageId, pending.rootId);
+      onApprovedCallback(pending.chatId, pending.userId, pending.messagePreview, pending.messageId, pending.rootId, pending.threadId || undefined);
     }
   } else {
     const notification = '❌ 管理员已拒绝你的请求';
@@ -270,7 +270,8 @@ export function handleApprovalTextCommand(
   text: string,
   userId: string,
   chatId: string,
-  rootId?: string,
+  /** 话题标识（优先 thread_id，fallback root_id） */
+  threadId?: string,
 ): boolean {
   if (!isOwner(userId)) return false;
 
@@ -279,9 +280,9 @@ export function handleApprovalTextCommand(
 
   const approved = trimmed === '允许';
 
-  // 先按 thread (rootId) 查找
-  if (rootId) {
-    const approvalId = threadToApproval.get(rootId);
+  // 按 threadId 查找对应的 pending approval
+  if (threadId) {
+    const approvalId = threadToApproval.get(threadId);
     if (approvalId) {
       resolveApproval(approvalId, approved);
       return true;

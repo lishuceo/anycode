@@ -4,17 +4,13 @@ import { isUserAllowed, containsDangerousCommand, isOwner } from '../utils/secur
 import { sessionManager } from '../session/manager.js';
 import { taskQueue } from '../session/queue.js';
 import { claudeExecutor } from '../claude/executor.js';
-import { routeWorkspace } from '../claude/router.js';
 import type { TurnInfo, ToolCallInfo } from '../claude/types.js';
-import { buildResultCard, buildStatusCard, buildCancelledCard, buildPipelineCard, buildPipelineConfirmCard, buildProgressCard, buildToolProgressCard, buildSimpleResultCard, buildGreetingCardReady } from './message-builder.js';
+import { buildResultCard, buildStatusCard, buildCancelledCard, buildPipelineCard, buildPipelineConfirmCard, buildProgressCard, buildToolProgressCard, buildSimpleResultCard } from './message-builder.js';
 import { feishuClient } from './client.js';
-import { existsSync } from 'node:fs';
-import { basename } from 'node:path';
 import { config } from '../config.js';
 import { setupWorkspace } from '../workspace/manager.js';
-import { isAutoWorkspacePath, ensureIsolatedWorkspace } from '../workspace/isolation.js';
-import { ensureThread } from './thread-utils.js';
-import { checkAndRequestApproval, handleApprovalTextCommand, handleApprovalCardAction, setOnApproved, consumePreApproved } from './approval.js';
+import { checkAndRequestApproval, handleApprovalTextCommand, handleApprovalCardAction, setOnApproved } from './approval.js';
+import { resolveThreadContext } from './thread-context.js';
 import { pipelineStore } from '../pipeline/store.js';
 import {
   createPendingPipeline,
@@ -25,9 +21,10 @@ import {
 } from '../pipeline/runner.js';
 
 // 注册审批通过后的消息重新入队回调（避免 approval.ts → event-handler.ts 循环依赖）
-setOnApproved((chatId, userId, text, messageId, rootId) => {
-  const queueKey = makeQueueKey(chatId, rootId);
-  taskQueue.enqueue(queueKey, chatId, userId, text, messageId, rootId).catch(() => {});
+setOnApproved((chatId, userId, text, messageId, rootId, threadId) => {
+  // threadId 由 handleMessageEvent 校验后传入（有 rootId 时必有 threadId）
+  const queueKey = makeQueueKey(chatId, threadId);
+  taskQueue.enqueue(queueKey, chatId, userId, text, messageId, rootId, threadId).catch(() => {});
   processQueue(queueKey);
 });
 
@@ -219,18 +216,18 @@ async function handlePipelineRetry(pipelineId: string): Promise<Record<string, u
 
 // ============================================================
 // 队列驱动：同一 thread 内串行执行，不同 thread 间可并行
-// queueKey = rootId 存在时用 `chatId:rootId`，否则用 `chatId`
+// queueKey = threadId 存在时用 `chatId:threadId`，否则用 `chatId`
 // ============================================================
 
-function makeQueueKey(chatId: string, rootId?: string): string {
-  return rootId ? `${chatId}:${rootId}` : chatId;
+function makeQueueKey(chatId: string, threadId?: string): string {
+  return threadId ? `${chatId}:${threadId}` : chatId;
 }
 
 function processQueue(queueKey: string): void {
   const task = taskQueue.dequeue(queueKey);
   if (!task) return;
 
-  executeClaudeTask(task.message, task.chatId, task.userId, task.messageId, task.rootId)
+  executeClaudeTask(task.message, task.chatId, task.userId, task.messageId, task.rootId, task.threadId)
     .then(() => task.resolve('done'))
     .catch((err) => task.reject(err instanceof Error ? err : new Error(String(err))))
     .finally(() => {
@@ -318,6 +315,7 @@ interface MessageEventData {
     message_id: string;
     root_id?: string;
     parent_id?: string;
+    thread_id?: string;
     create_time: string;
     chat_id: string;
     chat_type: string;
@@ -344,7 +342,10 @@ interface ParsedMessage {
   chatId: string;
   chatType: string;
   mentionedBot: boolean;
+  /** message.root_id — 回复链根消息 ID */
   rootId?: string;
+  /** message.thread_id — 飞书话题 ID（可靠的话题标识） */
+  threadId?: string;
 }
 
 /**
@@ -360,9 +361,20 @@ async function handleMessageEvent(data: MessageEventData): Promise<void> {
     return;
   }
 
-  const { text, messageId, userId, chatId, chatType, mentionedBot, rootId } = parsed;
+  const { text, messageId, userId, chatId, chatType, mentionedBot, rootId, threadId } = parsed;
 
-  logger.info({ userId, chatId, chatType, rootId, text: text.slice(0, 100) }, 'Received message');
+  logger.info({ userId, chatId, chatType, rootId, threadId, text: text.slice(0, 100) }, 'Received message');
+
+  // 话题内消息必须有 thread_id：有 root_id 说明是话题内回复，
+  // 飞书应始终返回 thread_id。如果缺失，说明 API 行为异常，中断并报错以暴露问题。
+  if (rootId && !threadId) {
+    logger.error({ messageId, rootId, chatId }, 'Feishu event has root_id but missing thread_id — aborting to surface the issue');
+    await feishuClient.replyText(messageId, '⚠️ 系统异常：飞书事件缺少 thread_id，请联系管理员');
+    return;
+  }
+
+  // threadId 用于话题标识（话题内消息有值，新消息为 undefined）
+  const effectiveThreadId = threadId;
 
   // 群聊中需要 @机器人 才响应
   if (chatType === 'group' && !mentionedBot) {
@@ -377,7 +389,7 @@ async function handleMessageEvent(data: MessageEventData): Promise<void> {
   }
 
   // 处理斜杠命令
-  const commandResult = await handleSlashCommand(text, chatId, userId, messageId, rootId);
+  const commandResult = await handleSlashCommand(text, chatId, userId, messageId, rootId, effectiveThreadId);
   if (commandResult) return;
 
   // 处理管道消息确认（卡片按钮的文本 fallback）
@@ -385,11 +397,11 @@ async function handleMessageEvent(data: MessageEventData): Promise<void> {
   if (pipelineHandled) return;
 
   // 处理审批文本命令（owner 回复 "允许"/"拒绝"）
-  if (handleApprovalTextCommand(text, userId, chatId, rootId)) return;
+  if (handleApprovalTextCommand(text, userId, chatId, effectiveThreadId)) return;
 
   // 非 owner 用户审批检查（per-thread：首条消息需审批，审批后同 thread 自动放行）
   const session = sessionManager.get(chatId, userId);
-  const threadIdForApproval = rootId || session?.threadId;
+  const threadIdForApproval = effectiveThreadId || session?.threadId;
   const approved = await checkAndRequestApproval(
     userId, chatId, chatType, text, messageId,
     rootId, rootId, threadIdForApproval,
@@ -404,8 +416,8 @@ async function handleMessageEvent(data: MessageEventData): Promise<void> {
 
   // 通过 taskQueue 串行化执行：同一 thread 内串行，不同 thread 可并行
   // enqueue 返回的 Promise 的错误处理在 processQueue/executeClaudeTask 中完成
-  const queueKey = makeQueueKey(chatId, rootId);
-  taskQueue.enqueue(queueKey, chatId, userId, text, messageId, rootId).catch(() => {});
+  const queueKey = makeQueueKey(chatId, effectiveThreadId);
+  taskQueue.enqueue(queueKey, chatId, userId, text, messageId, rootId, effectiveThreadId).catch(() => {});
   processQueue(queueKey);
 }
 
@@ -418,6 +430,7 @@ async function handleSlashCommand(
   userId: string,
   messageId: string,
   rootId?: string,
+  effectiveThreadId?: string,
 ): Promise<boolean> {
   const trimmed = text.trim();
 
@@ -585,7 +598,7 @@ async function handleSlashCommand(
       await feishuClient.replyText(messageId, '⚠️ 检测到危险命令，已拒绝执行');
       return true;
     }
-    await executePipelineTask(task, chatId, userId, messageId, rootId);
+    await executePipelineTask(task, chatId, userId, messageId, rootId, effectiveThreadId);
     return true;
   }
 
@@ -632,186 +645,25 @@ async function executeClaudeTask(
   userId: string,
   messageId: string,
   rootId?: string,
+  eventThreadId?: string,
 ): Promise<void> {
-  // prompt 可被路由追问流程替换为原始请求（用户的路由回复如 "1" 不作为任务 prompt）
-  let prompt = rawPrompt;
+  // 1. 解析话题上下文（thread + 路由 + 工作区隔离 + greeting）
+  const resolved = await resolveThreadContext({
+    prompt: rawPrompt,
+    chatId,
+    userId,
+    messageId,
+    rootId,
+    threadId: eventThreadId,
+  });
 
-  // sessionKey 包含 rootId，per-thread 并行时各 query 有独立的 key
-  const sessionKey = rootId ? `${chatId}:${userId}:${rootId}` : `${chatId}:${userId}`;
+  if (resolved.status !== 'resolved') return;
 
-  // 确保话题存在，返回话题锚点消息 ID 和问候卡片消息 ID
-  const { threadRootMsgId, greetingMsgId } = await ensureThread(chatId, userId, messageId, rootId);
+  const { threadRootMsgId, workingDir, threadId, threadSession, prompt } = resolved.ctx;
   const session = sessionManager.getOrCreate(chatId, userId);
 
-  // 获取 thread 级别的 session（优先于全局 session 的 conversationId）
-  const threadId = session.threadId;
-  let threadSession = threadId ? sessionManager.getThreadSession(threadId) : undefined;
-
-  // 确保 thread_sessions 中有该 thread 的记录（首条消息时创建）
-  // 必须在 consumePreApproved 之前，否则 setThreadApproved 的 UPDATE 会命中空表
-  if (threadId && !threadSession) {
-    sessionManager.upsertThreadSession(threadId, chatId, userId, session.workingDir);
-    threadSession = sessionManager.getThreadSession(threadId);
-  }
-
-  // 如果用户是预审批通过的（审批时 thread 尚未创建），将审批持久化到 thread
-  if (threadId && consumePreApproved(chatId, userId)) {
-    sessionManager.setThreadApproved(threadId, true);
-  }
-
-  // 刷新 thread session 的 updated_at，防止活跃 thread 被 cleanup 清理
-  if (threadId && threadSession) {
-    sessionManager.touchThreadSession(threadId);
-  }
-
-  // ============================================================
-  // Routing Agent：决定工作目录
-  // ============================================================
-  let workingDir: string;
-  const needsRouting = (threadId && threadSession?.routingState?.status === 'pending_clarification')
-    || (threadId && !threadSession?.routingCompleted);
-
-  // 路由可能耗时较长，先给用户发送即时反馈
-  if (needsRouting && threadRootMsgId) {
-    await feishuClient.replyTextInThread(threadRootMsgId, '🔍 正在分析工作目录...');
-  }
-
-  if (threadId && threadSession?.routingState?.status === 'pending_clarification') {
-    const retryCount = threadSession.routingState.retryCount ?? 0;
-    const MAX_ROUTING_RETRIES = 3;
-
-    // 超过最大追问次数，放弃路由，使用默认目录
-    if (retryCount >= MAX_ROUTING_RETRIES) {
-      logger.warn({ chatId, userId, threadId, retryCount }, 'Routing clarification limit reached, using default workdir');
-      workingDir = config.claude.defaultWorkDir;
-      sessionManager.clearThreadRoutingState(threadId);
-      sessionManager.setThreadWorkingDir(threadId, workingDir);
-      sessionManager.markThreadRoutingCompleted(threadId);
-      threadSession = sessionManager.getThreadSession(threadId);
-      // 继续执行主查询，不 return
-    } else {
-      // 用户回复了路由问题，拼接上下文重新路由
-      const context = [
-        `[原始请求] ${threadSession.routingState.originalPrompt}`,
-        `[路由问题] ${threadSession.routingState.question}`,
-        `[用户回复] ${prompt}`,
-      ].join('\n');
-
-      logger.info({ chatId, userId, threadId, retryCount }, 'Re-routing with clarification context');
-      const decision = await routeWorkspace(context, chatId, userId, rootId);
-
-      if (decision.decision === 'need_clarification') {
-        // 再次需要澄清，更新 routingState（递增 retryCount）
-        const question = decision.question || '请提供更多信息，我需要知道你想要操作哪个仓库或项目。';
-        sessionManager.setThreadRoutingState(threadId, {
-          status: 'pending_clarification',
-          originalPrompt: threadSession.routingState.originalPrompt,
-          question,
-          retryCount: retryCount + 1,
-        });
-        if (threadRootMsgId) {
-          await feishuClient.replyTextInThread(threadRootMsgId, question);
-        } else {
-          await feishuClient.replyText(messageId, question);
-        }
-        return;
-      }
-
-      workingDir = decision.workdir || config.claude.defaultWorkDir;
-      // 确保工作区隔离：use_existing 指向源仓库时自动 clone 到独立工作区
-      try {
-        workingDir = ensureIsolatedWorkspace(workingDir, decision.mode || 'writable');
-      } catch (err) {
-        const errorMsg = `❌ 无法创建隔离工作区: ${(err as Error).message}`;
-        if (threadRootMsgId) {
-          await feishuClient.replyTextInThread(threadRootMsgId, errorMsg);
-        } else {
-          await feishuClient.replyText(messageId, errorMsg);
-        }
-        return;
-      }
-      // 路由成功后恢复原始请求作为主查询 prompt（用户的路由回复如 "1" 不应作为任务 prompt）
-      prompt = threadSession.routingState.originalPrompt;
-      sessionManager.clearThreadRoutingState(threadId);
-      sessionManager.setThreadWorkingDir(threadId, workingDir);
-      sessionManager.markThreadRoutingCompleted(threadId);
-      // 重新读取 threadSession 以获得更新后的数据
-      threadSession = sessionManager.getThreadSession(threadId);
-    }
-
-  } else if (threadId && !threadSession?.routingCompleted && !threadSession?.conversationId) {
-    // Thread 首条消息（路由尚未完成，且无已有会话），需要路由
-    logger.info({ chatId, userId, threadId }, 'First message in thread, running routing agent');
-    const decision = await routeWorkspace(prompt, chatId, userId, rootId);
-
-    if (decision.decision === 'need_clarification') {
-      const question = decision.question || '请提供更多信息，我需要知道你想要操作哪个仓库或项目。';
-      sessionManager.setThreadRoutingState(threadId, {
-        status: 'pending_clarification',
-        originalPrompt: prompt,
-        question,
-        retryCount: 0,
-      });
-      if (threadRootMsgId) {
-        await feishuClient.replyTextInThread(threadRootMsgId, question);
-      } else {
-        await feishuClient.replyText(messageId, question);
-      }
-      return;
-    }
-
-    workingDir = decision.workdir || config.claude.defaultWorkDir;
-    // 确保工作区隔离：use_existing 指向源仓库时自动 clone 到独立工作区
-    try {
-      workingDir = ensureIsolatedWorkspace(workingDir, decision.mode || 'writable');
-    } catch (err) {
-      const errorMsg = `❌ 无法创建隔离工作区: ${(err as Error).message}`;
-      if (threadRootMsgId) {
-        await feishuClient.replyTextInThread(threadRootMsgId, errorMsg);
-      } else {
-        await feishuClient.replyText(messageId, errorMsg);
-      }
-      return;
-    }
-    sessionManager.setThreadWorkingDir(threadId, workingDir);
-    sessionManager.markThreadRoutingCompleted(threadId);
-    // 同步更新全局 session 的 workingDir
-    sessionManager.setWorkingDir(chatId, userId, workingDir);
-    // 重新读取 threadSession
-    threadSession = sessionManager.getThreadSession(threadId);
-
-  } else {
-    // Thread 后续消息，使用已绑定的 workdir
-    workingDir = threadSession?.workingDir ?? session.workingDir;
-  }
-
-  // 过期工作区检测：如果自动创建的工作区目录已被清理，通知用户开新话题
-  if (isAutoWorkspacePath(workingDir) && !existsSync(workingDir)) {
-    logger.warn({ workingDir, threadId }, 'Stale workspace detected');
-    const reply = [
-      '⚠️ 该话题的工作区已过期清理。',
-      `原工作区: \`${basename(workingDir)}\``,
-      '',
-      '请开启新话题继续操作，系统会自动创建新的工作区。',
-    ].join('\n');
-    if (threadRootMsgId) {
-      await feishuClient.replyTextInThread(threadRootMsgId, reply);
-    } else {
-      await feishuClient.replyText(messageId, reply);
-    }
-    sessionManager.setStatus(chatId, userId, 'idle');
-    return;
-  }
-
-  // 更新问候卡片：显示话题 ID 和工作目录（仅新建话题时有 greetingMsgId）
-  if (greetingMsgId && threadId) {
-    feishuClient.updateCard(
-      greetingMsgId,
-      buildGreetingCardReady(threadId, workingDir),
-    ).catch((err) => {
-      logger.warn({ err }, 'Failed to update greeting card');
-    });
-  }
+  // sessionKey 包含 threadId，per-thread 并行时各 query 有独立的 key
+  const sessionKey = threadId ? `${chatId}:${userId}:${threadId}` : `${chatId}:${userId}`;
 
   // 发送初始进度卡片（即时反馈），后续原地更新为 tool call 进度卡片
   let progressCardMsgId: string | undefined;
@@ -1126,7 +978,7 @@ async function sendResultCard(
 
 /**
  * 执行自动开发管道（/dev 命令触发）
- * 运行 routing agent 确定工作目录 → 创建隔离工作区 → 创建待确认管道
+ * 通过 resolveThreadContext 解析话题上下文（路由 + 工作区隔离），然后创建待确认管道
  */
 async function executePipelineTask(
   prompt: string,
@@ -1134,76 +986,33 @@ async function executePipelineTask(
   userId: string,
   messageId: string,
   rootId?: string,
+  eventThreadId?: string,
 ): Promise<void> {
   let threadRootMsgId: string | undefined;
 
   try {
-    // 1. 确保话题存在（提前到此处，以便在路由前发送即时反馈）
-    const threadResult = await ensureThread(chatId, userId, messageId, rootId);
-    threadRootMsgId = threadResult.threadRootMsgId;
-    const greetingMsgId = threadResult.greetingMsgId;
+    // 1. 解析话题上下文（共享逻辑：thread + 路由 + 工作区隔离 + greeting）
+    const resolved = await resolveThreadContext({
+      prompt,
+      chatId,
+      userId,
+      messageId,
+      rootId,
+      threadId: eventThreadId,
+    });
 
-    // 2. 运行 routing agent 确定工作目录（路由耗时 ~10s，先给用户即时反馈）
-    if (threadRootMsgId) {
-      await feishuClient.replyTextInThread(threadRootMsgId, '🔍 正在分析工作目录...');
-    }
+    if (resolved.status !== 'resolved') return;
 
-    const decision = await routeWorkspace(prompt, chatId, userId, rootId);
+    threadRootMsgId = resolved.ctx.threadRootMsgId;
+    const { workingDir } = resolved.ctx;
 
-    // 路由需要澄清：保存路由状态，用户在话题内回复可通过 executeClaudeTask 的追问流程继续
-    if (decision.decision === 'need_clarification') {
-      const question = decision.question || '请提供更多信息，我需要知道你想要操作哪个仓库或项目。';
-      // 保存路由状态到 threadRootMsgId（后续消息 rootId 会匹配此 key）
-      if (threadRootMsgId) {
-        if (!sessionManager.getThreadSession(threadRootMsgId)) {
-          sessionManager.upsertThreadSession(threadRootMsgId, chatId, userId, config.claude.defaultWorkDir);
-        }
-        sessionManager.setThreadRoutingState(threadRootMsgId, {
-          status: 'pending_clarification',
-          originalPrompt: prompt,
-          question,
-          retryCount: 0,
-        });
-        await feishuClient.replyTextInThread(threadRootMsgId, question);
-      } else {
-        await feishuClient.replyText(messageId, question);
-      }
-      return;
-    }
-
-    let workingDir = decision.workdir || config.claude.defaultWorkDir;
-
-    // 3. 确保工作区隔离
-    try {
-      workingDir = ensureIsolatedWorkspace(workingDir, decision.mode || 'writable');
-    } catch (err) {
-      const errorMsg = `❌ 无法创建隔离工作区: ${(err as Error).message}`;
-      if (threadRootMsgId) {
-        await feishuClient.replyTextInThread(threadRootMsgId, errorMsg);
-      } else {
-        await feishuClient.replyText(messageId, errorMsg);
-      }
-      return;
-    }
-
-    // 4. 更新问候卡片：显示话题 ID 和工作目录
-    const session = sessionManager.getOrCreate(chatId, userId);
-    const threadId = session.threadId;
-    if (greetingMsgId && threadId) {
-      feishuClient.updateCard(
-        greetingMsgId,
-        buildGreetingCardReady(threadId, workingDir),
-      ).catch((err) => {
-        logger.warn({ err }, 'Failed to update greeting card');
-      });
-    }
-
-    // 5. 创建 pipeline，使用路由确定的工作目录
+    // 2. 创建 pipeline，使用路由确定的工作目录
     await createPendingPipeline({
       chatId,
       userId,
       messageId,
       rootId,
+      threadId: eventThreadId,
       prompt,
       workingDir,
       threadRootMsgId,
@@ -1271,6 +1080,7 @@ function parseMessage(data: MessageEventData): ParsedMessage | null {
     chatType: message.chat_type,
     mentionedBot,
     rootId: message.root_id || undefined,
+    threadId: message.thread_id || undefined,
   };
 }
 

@@ -15,6 +15,8 @@ export interface PipelineRecord {
   chatId: string;
   userId: string;
   messageId: string;
+  /** 飞书话题 ID（omt_xxx，用于 thread session 操作） */
+  threadId?: string;
   threadRootMsgId?: string;
   progressMsgId?: string;
   workingDir: string;
@@ -31,6 +33,7 @@ interface PipelineRow {
   chat_id: string;
   user_id: string;
   message_id: string;
+  thread_id: string | null;
   thread_root_msg_id: string | null;
   progress_msg_id: string | null;
   working_dir: string;
@@ -76,6 +79,7 @@ export class PipelineStore {
         chat_id TEXT NOT NULL,
         user_id TEXT NOT NULL,
         message_id TEXT NOT NULL,
+        thread_id TEXT,
         thread_root_msg_id TEXT,
         progress_msg_id TEXT,
         working_dir TEXT NOT NULL,
@@ -88,9 +92,16 @@ export class PipelineStore {
       )
     `);
 
+    // Migration: add thread_id column for existing databases
+    try {
+      this.db.exec('ALTER TABLE pipelines ADD COLUMN thread_id TEXT');
+    } catch {
+      // Column already exists — ignore
+    }
+
     this.stmtCreate = this.db.prepare(`
-      INSERT INTO pipelines (id, chat_id, user_id, message_id, thread_root_msg_id, progress_msg_id, working_dir, prompt, status, phase, state_json, created_at, updated_at)
-      VALUES (@id, @chat_id, @user_id, @message_id, @thread_root_msg_id, @progress_msg_id, @working_dir, @prompt, @status, @phase, @state_json, @created_at, @updated_at)
+      INSERT INTO pipelines (id, chat_id, user_id, message_id, thread_id, thread_root_msg_id, progress_msg_id, working_dir, prompt, status, phase, state_json, created_at, updated_at)
+      VALUES (@id, @chat_id, @user_id, @message_id, @thread_id, @thread_root_msg_id, @progress_msg_id, @working_dir, @prompt, @status, @phase, @state_json, @created_at, @updated_at)
     `);
 
     this.stmtGet = this.db.prepare('SELECT * FROM pipelines WHERE id = ?');
@@ -147,6 +158,7 @@ export class PipelineStore {
       chat_id: full.chatId,
       user_id: full.userId,
       message_id: full.messageId,
+      thread_id: full.threadId ?? null,
       thread_root_msg_id: full.threadRootMsgId ?? null,
       progress_msg_id: full.progressMsgId ?? null,
       working_dir: full.workingDir,
@@ -228,6 +240,7 @@ export class PipelineStore {
       chatId: row.chat_id,
       userId: row.user_id,
       messageId: row.message_id,
+      threadId: row.thread_id ?? undefined,
       threadRootMsgId: row.thread_root_msg_id ?? undefined,
       progressMsgId: row.progress_msg_id ?? undefined,
       workingDir: row.working_dir,
