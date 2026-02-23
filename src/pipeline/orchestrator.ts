@@ -11,6 +11,7 @@ import {
   PLAN_SYSTEM_PROMPT,
   IMPLEMENT_SYSTEM_PROMPT,
   PUSH_SYSTEM_PROMPT,
+  PR_FIXUP_SYSTEM_PROMPT,
   REVIEW_AGENT_CONFIGS,
 } from './prompts.js';
 import { parallelReview } from './reviewer.js';
@@ -71,7 +72,7 @@ export class PipelineOrchestrator {
 
     logger.info({ prompt: prompt.slice(0, 100), workingDir }, 'Pipeline started');
 
-    // 最大迭代保护：5 phases * 2 retries * 2 safety margin
+    // 最大迭代保护：6 phases * 2 retries * 2 safety margin
     const MAX_ITERATIONS = 20;
     let iterations = 0;
 
@@ -111,6 +112,9 @@ export class PipelineOrchestrator {
           break;
         case 'push':
           state = await this.doPush(state, callbacks);
+          break;
+        case 'pr_fixup':
+          state = await this.doPrFixup(state, callbacks);
           break;
       }
 
@@ -371,8 +375,47 @@ export class PipelineOrchestrator {
     return {
       ...state,
       totalCostUsd,
-      phase: 'done',
+      phase: 'pr_fixup',
       pushOutput: result.output,
+    };
+  }
+
+  // ============================================================
+  // Phase: PR Fixup — 等待 CI 并修复问题
+  // ============================================================
+
+  private async doPrFixup(
+    state: PipelineState,
+    callbacks: PipelineCallbacks,
+  ): Promise<PipelineState> {
+    const prompt = [
+      `PR 已创建，请调用 /pr-fixup 技能等待 CI checks 完成并修复问题。`,
+      ``,
+      `原始需求: ${state.userPrompt}`,
+      ``,
+      `推送结果: ${state.pushOutput?.slice(0, 1000) || '(无)'}`,
+    ].join('\n');
+
+    const result = await this.executeStep(
+      `pipeline-pr-fixup-${Date.now()}`,
+      prompt,
+      state.workingDir,
+      PR_FIXUP_SYSTEM_PROMPT,
+      undefined,
+      callbacks.onStreamUpdate,
+      600, // 10 分钟空闲超时，pr-fixup 需要轮询等待 CI
+    );
+
+    const totalCostUsd = state.totalCostUsd + (result.costUsd ?? 0);
+
+    // pr_fixup 无论成功失败都进入 done（best-effort，PR 已存在）
+    return {
+      ...state,
+      totalCostUsd,
+      phase: 'done',
+      prFixupOutput: result.success
+        ? result.output
+        : `CI 修复未能完全自动化: ${result.error || result.output}`,
     };
   }
 
@@ -390,6 +433,7 @@ export class PipelineOrchestrator {
     systemPrompt: string,
     historySummaries?: string,
     onStreamUpdate?: (text: string) => Promise<void>,
+    timeoutSeconds?: number,
   ): Promise<ClaudeResult> {
     this.currentSessionKey = sessionKey;
     return claudeExecutor.execute({
@@ -401,6 +445,7 @@ export class PipelineOrchestrator {
       onStreamUpdate,
       historySummaries,
       systemPromptOverride: systemPrompt,
+      ...(timeoutSeconds != null ? { timeoutSeconds } : {}),
     });
   }
 
@@ -452,6 +497,9 @@ export class PipelineOrchestrator {
     }
     if (state.pushOutput) {
       parts.push(`\n**推送:**\n${state.pushOutput.slice(0, 500)}`);
+    }
+    if (state.prFixupOutput) {
+      parts.push(`\n**CI 修复:**\n${state.prFixupOutput.slice(0, 500)}`);
     }
 
     return parts.join('\n');
