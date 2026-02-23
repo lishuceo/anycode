@@ -12,6 +12,7 @@ import {
   buildInterruptedCard,
   buildGreetingCardReady,
 } from '../feishu/message-builder.js';
+import { ensureThread } from '../feishu/thread-utils.js';
 
 // ============================================================
 // Pipeline Runner — 管道生命周期管理
@@ -33,9 +34,9 @@ export interface CreatePipelineParams {
   rootId?: string;
   prompt: string;
   workingDir: string;
+  /** 预创建的话题锚点消息 ID（由调用方 ensureThread 后传入，跳过内部的 ensureThread） */
+  threadRootMsgId?: string;
 }
-
-import { ensureThread } from '../feishu/thread-utils.js';
 
 /**
  * 创建待确认的管道（发送确认卡片，写入 store）
@@ -44,19 +45,25 @@ export async function createPendingPipeline(params: CreatePipelineParams): Promi
   const { chatId, userId, messageId, rootId, prompt, workingDir } = params;
   const pipelineId = generatePipelineId();
 
-  // 确保话题存在
-  const { threadRootMsgId, greetingMsgId } = await ensureThread(chatId, userId, messageId, rootId);
+  // 确保话题存在（如果调用方已提供 threadRootMsgId，跳过）
+  let threadRootMsgId: string | undefined;
+  if (params.threadRootMsgId) {
+    threadRootMsgId = params.threadRootMsgId;
+  } else {
+    const threadResult = await ensureThread(chatId, userId, messageId, rootId);
+    threadRootMsgId = threadResult.threadRootMsgId;
 
-  // 更新问候卡片：显示话题 ID 和工作目录
-  const session = sessionManager.getOrCreate(chatId, userId);
-  const threadId = session.threadId;
-  if (greetingMsgId && threadId) {
-    feishuClient.updateCard(
-      greetingMsgId,
-      buildGreetingCardReady(threadId, workingDir),
-    ).catch((err) => {
-      logger.warn({ err }, 'Failed to update greeting card in pipeline');
-    });
+    // 更新问候卡片：显示话题 ID 和工作目录
+    const session = sessionManager.getOrCreate(chatId, userId);
+    const threadId = session.threadId;
+    if (threadResult.greetingMsgId && threadId) {
+      feishuClient.updateCard(
+        threadResult.greetingMsgId,
+        buildGreetingCardReady(threadId, workingDir),
+      ).catch((err) => {
+        logger.warn({ err }, 'Failed to update greeting card in pipeline');
+      });
+    }
   }
 
   // 发送确认卡片
@@ -118,6 +125,18 @@ export async function startPipeline(pipelineId: string): Promise<void> {
     return;
   }
 
+  // 将 workingDir 绑定到 thread session，确保后续普通消息使用同一工作区
+  // 放在 tryAcquire 之后，避免锁获取失败时意外修改 thread session（setThreadWorkingDir 会清空 conversationId）
+  if (threadRootMsgId) {
+    const existingTs = sessionManager.getThreadSession(threadRootMsgId);
+    if (!existingTs) {
+      sessionManager.upsertThreadSession(threadRootMsgId, chatId, userId, workingDir);
+    } else if (existingTs.workingDir !== workingDir) {
+      sessionManager.setThreadWorkingDir(threadRootMsgId, workingDir);
+    }
+    sessionManager.markThreadRoutingCompleted(threadRootMsgId);
+  }
+
   const pipelineStartTime = Date.now();
 
   const orchestrator = new PipelineOrchestrator();
@@ -147,25 +166,36 @@ export async function startPipeline(pipelineId: string): Promise<void> {
 
           if (!progressMsgId) return;
           const elapsed = Math.floor((Date.now() - pipelineStartTime) / 1000);
-          await feishuClient.updateCard(
-            progressMsgId,
-            buildPipelineCard(
-              prompt, state.phase, currentPhaseIndex, TOTAL_PHASES,
-              elapsed, state.totalCostUsd || undefined, undefined, pipelineId,
+          const cardUpdateTimeout = new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 8_000));
+          const updated = await Promise.race([
+            feishuClient.updateCard(
+              progressMsgId,
+              buildPipelineCard(
+                prompt, state.phase, currentPhaseIndex, TOTAL_PHASES,
+                elapsed, state.totalCostUsd || undefined, undefined, pipelineId,
+              ),
             ),
-          );
+            cardUpdateTimeout,
+          ]);
+          if (!updated) {
+            logger.warn({ pipelineId, progressMsgId, phase: state.phase }, 'Pipeline card update failed/timed out');
+          }
         },
         onStreamUpdate: async (text: string) => {
           if (!progressMsgId) return;
           const elapsed = Math.floor((Date.now() - pipelineStartTime) / 1000);
           const tail = text.length > 2000 ? '...\n' + text.slice(-2000) : text;
-          await feishuClient.updateCard(
-            progressMsgId,
-            buildPipelineCard(
-              prompt, currentPipelinePhase, currentPhaseIndex, TOTAL_PHASES,
-              elapsed, undefined, tail, pipelineId,
+          const streamTimeout = new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 8_000));
+          await Promise.race([
+            feishuClient.updateCard(
+              progressMsgId,
+              buildPipelineCard(
+                prompt, currentPipelinePhase, currentPhaseIndex, TOTAL_PHASES,
+                elapsed, undefined, tail, pipelineId,
+              ),
             ),
-          );
+            streamTimeout,
+          ]);
         },
       },
     );
@@ -194,7 +224,21 @@ export async function startPipeline(pipelineId: string): Promise<void> {
     );
 
     if (progressMsgId) {
-      await feishuClient.updateCard(progressMsgId, finalCard);
+      // 给 updateCard 加超时保护，防止飞书 API 挂起导致卡片永远停在进度状态
+      const updateTimeout = new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 10_000));
+      const finalUpdated = await Promise.race([
+        feishuClient.updateCard(progressMsgId, finalCard),
+        updateTimeout,
+      ]);
+      if (!finalUpdated) {
+        logger.warn({ pipelineId, progressMsgId }, 'Final card update failed or timed out, sending result as new message');
+        // 回退：作为新消息发送最终卡片
+        if (threadRootMsgId) {
+          await feishuClient.replyCardInThread(threadRootMsgId, finalCard);
+        } else {
+          await feishuClient.sendCard(chatId, finalCard);
+        }
+      }
     } else if (threadRootMsgId) {
       await feishuClient.replyCardInThread(threadRootMsgId, finalCard);
     } else {
@@ -299,6 +343,7 @@ export async function retryPipeline(pipelineId: string): Promise<string | undefi
     rootId: record.threadRootMsgId,
     prompt: record.prompt,
     workingDir: record.workingDir,
+    threadRootMsgId: record.threadRootMsgId,
   });
 }
 

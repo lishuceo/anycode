@@ -49,6 +49,12 @@ vi.mock('../../session/manager.js', () => ({
     getRecentSummaries: vi.fn().mockReturnValue([]),
     saveSummary: vi.fn(),
     setWorkingDir: vi.fn(),
+    getThreadSession: vi.fn().mockReturnValue(null),
+    upsertThreadSession: vi.fn(),
+    setThreadWorkingDir: vi.fn(),
+    markThreadRoutingCompleted: vi.fn(),
+    setThreadPipelineContext: vi.fn(),
+    touchThreadSession: vi.fn(),
   },
 }));
 
@@ -90,6 +96,7 @@ const { createPendingPipeline, cancelPipeline } = await import('../runner.js');
 const storeModule = await import('../store.js') as typeof import('../store.js') & { __tempDir: string };
 const { pipelineStore } = storeModule;
 const { feishuClient } = await import('../../feishu/client.js');
+const { ensureThread } = await import('../../feishu/thread-utils.js');
 
 describe('Pipeline Runner', () => {
   afterEach(() => {
@@ -133,6 +140,84 @@ describe('Pipeline Runner', () => {
       });
 
       expect(feishuClient.replyCardInThread).toHaveBeenCalled();
+    });
+  });
+
+  describe('createPendingPipeline with pre-created thread', () => {
+    it('should skip ensureThread when threadRootMsgId is provided', async () => {
+      vi.mocked(ensureThread).mockClear();
+
+      await createPendingPipeline({
+        chatId: 'chat1',
+        userId: 'user1',
+        messageId: 'msg1',
+        rootId: 'root1',
+        prompt: 'task',
+        workingDir: '/tmp/isolated-workspace',
+        threadRootMsgId: 'pre-created-root',
+      });
+
+      expect(ensureThread).not.toHaveBeenCalled();
+    });
+
+    it('should call ensureThread when threadRootMsgId is not provided', async () => {
+      vi.mocked(ensureThread).mockClear();
+
+      await createPendingPipeline({
+        chatId: 'chat1',
+        userId: 'user1',
+        messageId: 'msg2',
+        prompt: 'task',
+        workingDir: '/tmp/work',
+      });
+
+      expect(ensureThread).toHaveBeenCalledWith('chat1', 'user1', 'msg2', undefined);
+    });
+
+    it('should store pre-created threadRootMsgId in pipeline record', async () => {
+      const pipelineId = await createPendingPipeline({
+        chatId: 'chat1',
+        userId: 'user1',
+        messageId: 'msg1',
+        prompt: 'task',
+        workingDir: '/tmp/isolated',
+        threadRootMsgId: 'my-thread-root',
+      });
+
+      const record = pipelineStore.get(pipelineId);
+      expect(record!.threadRootMsgId).toBe('my-thread-root');
+    });
+
+    it('should use pre-created threadRootMsgId for confirm card reply', async () => {
+      vi.mocked(feishuClient.replyCardInThread).mockClear();
+
+      await createPendingPipeline({
+        chatId: 'chat1',
+        userId: 'user1',
+        messageId: 'msg1',
+        prompt: 'task',
+        workingDir: '/tmp/isolated',
+        threadRootMsgId: 'my-thread-root',
+      });
+
+      expect(feishuClient.replyCardInThread).toHaveBeenCalledWith(
+        'my-thread-root',
+        expect.anything(),
+      );
+    });
+
+    it('should store routed workingDir in pipeline record', async () => {
+      const pipelineId = await createPendingPipeline({
+        chatId: 'chat1',
+        userId: 'user1',
+        messageId: 'msg1',
+        prompt: 'build feature',
+        workingDir: '/tmp/workspaces/my-repo-abc123',
+        threadRootMsgId: 'root1',
+      });
+
+      const record = pipelineStore.get(pipelineId);
+      expect(record!.workingDir).toBe('/tmp/workspaces/my-repo-abc123');
     });
   });
 
