@@ -183,7 +183,7 @@ export function buildStreamingCard(
 }
 
 /** 管道中的可执行阶段（排除 done/failed） */
-const PIPELINE_PHASES: PipelinePhase[] = ['plan', 'plan_review', 'implement', 'code_review', 'push'];
+const PIPELINE_PHASES: PipelinePhase[] = ['plan', 'plan_review', 'implement', 'code_review', 'push', 'pr_fixup'];
 
 /** 构建管道进度卡片 */
 export function buildPipelineCard(
@@ -374,8 +374,8 @@ export function buildPipelineConfirmCard(
           tag: 'lark_md',
           content: [
             `**工作目录:** ${workingDir}`,
-            `**预估查询数:** ~9 次 (最多 17 次，含重试)`,
-            `**流程:** 方案设计 → 方案审查 → 代码实现 → 代码审查 → 推送 PR`,
+            `**预估查询数:** ~10 次 (最多 18 次，含重试)`,
+            `**流程:** 方案设计 → 方案审查 → 代码实现 → 代码审查 → 推送 PR → CI 修复`,
           ].join('\n'),
         },
       },

@@ -1,12 +1,12 @@
 ---
 name: pr-fixup
-description: Wait for PR review action to complete, fix valid issues or resolve false positives, loop until PR is clean
+description: Wait for ALL CI checks and PR review to complete, fix CI failures and review issues, loop until PR is clean
 argument-hint: "[PR number, default: current branch's PR]"
 ---
 
-# PR Fixup: Review → Fix/Dispute → Re-review Loop
+# PR Fixup: CI + Review → Fix → Re-run Loop
 
-等待 PR review action 完成，分析 review 评论，修复真实问题或反驳误报，循环直到 PR 无阻塞问题。
+等待所有 CI checks 和 PR review 完成，修复 CI 构建/测试失败和 review 评论问题，循环直到 PR 全部通过。
 
 ## 前置信息收集
 
@@ -20,32 +20,90 @@ argument-hint: "[PR number, default: current branch's PR]"
 
 ## 主循环
 
-重复以下步骤，直到所有 review 问题解决。**最多 5 轮**，超过后提醒用户手动介入。
+重复以下步骤，直到所有 CI checks 通过且 review 问题解决。**最多 5 轮**，超过后提醒用户手动介入。
 
 ---
 
-### Step 1: 等待 Review Action 完成
+### Step 1: 等待所有 CI checks 完成
 
-先获取 PR 最新 commit SHA：
-
-```bash
-gh pr view PR_NUMBER --json headRefOid -q .headRefOid
-```
-
-然后轮询检查该 commit 对应的 pr-review workflow 运行状态：
+轮询 PR 的所有 status checks：
 
 ```bash
-gh run list --workflow=pr-review.yml -b BRANCH -L 5 --json status,conclusion,databaseId,headSha
+gh pr checks PR_NUMBER --json name,state,description,link
 ```
 
-从结果中筛选 `headSha` 匹配最新 commit 的运行。
+**注意**: 如果 `gh pr checks` 不支持 `--json`，改用：
 
-- 如果**没有匹配的运行**，等待 30 秒后重试（action 可能还没触发）
-- 如果 `status` 不是 `"completed"`，每 30 秒轮询一次，最多等待 20 分钟
-- 如果 `conclusion` 是 `"failure"`，用 `gh run view ID --log-failed` 查看失败原因，告知用户并停止
-- 如果 `conclusion` 是 `"success"`，继续下一步
+```bash
+gh pr checks PR_NUMBER
+```
 
-### Step 2: 获取未解决的 Review 评论
+输出格式为 `NAME\tSTATUS\tDURATION\tLINK`，其中 STATUS 为 pass/fail/pending。
+
+轮询逻辑：
+- 如果有任何 check 状态为 `pending`（或 `in_progress`），**等待 60 秒后重试**，最多等待 20 分钟
+- 当所有 checks 都完成后（无 pending），进入下一步判断
+
+**重要：轮询时不要使用 `sleep` 命令等待，改用 Bash 的 `timeout` 参数设置超时：**
+
+```bash
+# 错误：会导致空闲超时
+sleep 60
+
+# 正确：在单个命令中完成等待和检查
+for i in $(seq 1 20); do
+  result=$(gh pr checks PR_NUMBER 2>&1)
+  if echo "$result" | grep -q "pending"; then
+    echo "Attempt $i: still pending, waiting 60s..."
+    # 使用子命令内联等待，保持输出活跃
+    for j in $(seq 1 6); do sleep 10 && echo "  ...waiting ($((j*10))s)"; done
+  else
+    echo "$result"
+    break
+  fi
+done
+```
+
+### Step 2: 检查 CI 失败
+
+检查 Step 1 的结果，将 checks 分为三类：
+
+| 类别 | 处理方式 |
+|------|----------|
+| **CI 构建/测试失败** (如 build, test, lint, typecheck) | 获取失败日志 → 修复代码 |
+| **Review 失败** (如 review, pr-review) | 进入 Step 3 处理评论 |
+| **全部通过** | 进入 Step 3 检查评论（可能有 review 评论但 check 显示 pass） |
+
+**对于 CI 构建/测试失败：**
+
+1. 识别失败的 workflow run：
+
+```bash
+gh run list -b BRANCH -L 5 --json databaseId,name,conclusion,headSha,workflowName
+```
+
+找到 `conclusion` 为 `"failure"` 且 `headSha` 匹配最新 commit 的 run。
+
+2. 获取失败日志：
+
+```bash
+gh run view RUN_ID --log-failed 2>&1 | tail -100
+```
+
+如果日志太长，取最后 100 行，重点关注 error/Error/FAILED 等关键行。
+
+3. 分析日志，定位失败原因（编译错误、测试失败、lint 问题等）。
+
+4. **修复代码** — 根据错误日志修复问题，使用最小改动。
+
+5. 如果是**环境/平台问题**（如 macOS-only 依赖在 Linux CI 上不可用、系统库缺失等非代码问题），无法通过修改代码解决，向用户说明情况并建议：
+   - 修改 CI 配置跳过该平台
+   - 添加条件编译/构建
+   - 或手动处理
+
+6. `git add` 修改的文件，**不要立即 commit** — 在 Step 5 统一处理。
+
+### Step 3: 获取未解决的 Review 评论
 
 通过 GraphQL 获取所有 review threads：
 
@@ -77,9 +135,9 @@ gh api graphql -f query='{
 - `isResolved == false`（未解决）
 - 发起评论（第一条 comment）的 `author.login` 是 `claude[bot]`
 
-如果**没有未解决的 claude[bot] 评论** → 输出 "✅ PR review 通过，无阻塞问题" 并结束循环。
+如果没有 CI 失败（Step 2 已全部通过）且没有未解决的 `claude[bot]` 评论 → 输出 "✅ 所有 CI checks 通过，PR review 无阻塞问题" 并结束循环。
 
-### Step 3: 分析每个评论
+### Step 4: 分析并处理 Review 评论
 
 对于每个未解决的评论：
 
@@ -97,8 +155,6 @@ gh api graphql -f query='{
 **判断原则**：
 - 如果你不确定，**倾向于修复**而不是反驳——宁可多修一个不必要的问题，也不要放过一个真实 bug
 - 反驳误报时必须有**明确的理由**，能指出 reviewer 具体哪里判断错了
-
-### Step 4: 处理问题
 
 **对于真实问题：**
 - 修复代码，使用最小改动，不做不相关的重构
@@ -125,16 +181,19 @@ gh api graphql -f query='mutation {
 
 ### Step 5: 提交推送或结束
 
-统计本轮处理结果。
+统计本轮处理结果（CI 修复数 + review 修复数 + 误报反驳数）。
 
-**如果有代码修复：**
-- `git commit`，message 遵循项目风格: `fix: address PR review feedback`（如果能更具体则写具体内容，如 `fix: 修复 session cleanup 竞态条件`）
+**如果有代码修复（CI 修复或 review 修复）：**
+- `git commit`，message 遵循项目风格，如：
+  - `fix: 修复 CI 构建错误` (CI 问题)
+  - `fix: address PR review feedback` (review 问题)
+  - `fix: 修复 CI 构建错误并处理 review 反馈` (两者都有)
 - `git push`
-- 输出 "🔄 第 N 轮：修复 X 个问题，反驳 Y 个误报，等待新一轮 review..."
+- 输出 "🔄 第 N 轮：修复 X 个 CI 问题 + Y 个 review 问题，反驳 Z 个误报，等待新一轮 checks..."
 - 回到 Step 1
 
-**如果只有误报被 resolve（无代码修复）：**
-- 输出 "✅ 第 N 轮：反驳 Y 个误报并 resolve，PR review 通过"
+**如果只有误报被 resolve（无代码修复）且 CI 全部通过：**
+- 输出 "✅ 第 N 轮：反驳 Y 个误报并 resolve，所有 CI checks 通过"
 - 结束循环
 
 ---
@@ -147,9 +206,10 @@ gh api graphql -f query='mutation {
 ## 📋 PR Fixup 完成
 
 - **总轮数**: N
-- **修复问题**: X 个
-- **反驳误报**: Y 个
-- **PR 状态**: ✅ 无阻塞问题
+- **CI 修复**: X 个
+- **Review 修复**: Y 个
+- **反驳误报**: Z 个
+- **PR 状态**: ✅ 所有 checks 通过，无阻塞问题
 ```
 
 ## 注意事项
@@ -158,3 +218,5 @@ gh api graphql -f query='mutation {
 - 反驳评论时给出**具体、有理据的解释**，引用代码上下文，不要笼统地说"这没问题"
 - commit message 遵循项目风格: `fix: <中文描述>`
 - 如果同一个问题反复出现（修了又被报），在第 3 轮后停下来让用户介入
+- **不要使用裸 `sleep` 命令** — 长时间 sleep 会导致 SDK 空闲超时。轮询等待时在循环中保持输出活跃
+- 如果 CI 失败是环境/平台问题（非代码可修复），明确告知用户而不是反复重试

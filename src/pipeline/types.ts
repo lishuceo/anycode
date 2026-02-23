@@ -9,6 +9,7 @@ export type PipelinePhase =
   | 'implement'
   | 'code_review'
   | 'push'
+  | 'pr_fixup'
   | 'done'
   | 'failed';
 
@@ -29,11 +30,12 @@ export const PHASE_META: Record<PipelinePhase, { label: string; index: number }>
   implement:   { label: '代码实现', index: 3 },
   code_review: { label: '代码审查', index: 4 },
   push:        { label: '推送 & PR', index: 5 },
-  done:        { label: '完成', index: 6 },
-  failed:      { label: '失败', index: 6 },
+  pr_fixup:    { label: 'CI 修复', index: 6 },
+  done:        { label: '完成', index: 7 },
+  failed:      { label: '失败', index: 7 },
 };
 
-export const TOTAL_PHASES = 5;
+export const TOTAL_PHASES = 6;
 
 /** Review agent 角色配置 */
 export interface ReviewAgentConfig {
@@ -75,6 +77,8 @@ export interface PipelineState {
   codeReviewResult?: ReviewResult;
   /** Step 5 输出：推送/PR 结果 */
   pushOutput?: string;
+  /** Step 6 输出：PR fixup 结果 */
+  prFixupOutput?: string;
   /** 各阶段重试计数 */
   retries: Record<string, number>;
   /** 各阶段耗时 (ms) */

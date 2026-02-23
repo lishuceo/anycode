@@ -68,13 +68,14 @@ describe('PipelineOrchestrator', () => {
   // ============================================================
 
   describe('happy path', () => {
-    it('should complete full pipeline: plan → review → implement → review → push → done', async () => {
-      // 3 executor calls: plan, implement, push
+    it('should complete full pipeline: plan → review → implement → review → push → pr_fixup → done', async () => {
+      // 4 executor calls: plan, implement, push, pr_fixup
       // 2 parallelReview calls: plan_review, code_review
       mockExecute
         .mockResolvedValueOnce(makeResult({ output: '## 需求理解\nTest plan' }))      // plan
         .mockResolvedValueOnce(makeResult({ output: '## 实现摘要\n修改了 foo.ts' }))   // implement
-        .mockResolvedValueOnce(makeResult({ output: '## 推送结果\nPR: #123' }));       // push
+        .mockResolvedValueOnce(makeResult({ output: '## 推送结果\nPR: #123' }))        // push
+        .mockResolvedValueOnce(makeResult({ output: '## CI 修复结果\n全部通过' }));     // pr_fixup
 
       mockParallelReview
         .mockResolvedValueOnce(makeReviewResult())   // plan_review
@@ -84,17 +85,18 @@ describe('PipelineOrchestrator', () => {
 
       expect(result.success).toBe(true);
       expect(result.state.phase).toBe('done');
-      expect(mockExecute).toHaveBeenCalledTimes(3);
+      expect(mockExecute).toHaveBeenCalledTimes(4);
       expect(mockParallelReview).toHaveBeenCalledTimes(2);
-      // Cost: 3 executor calls * 0.01 + 2 review results * (0.05 + 0.04 + 0.03)
-      expect(result.totalCostUsd).toBeCloseTo(0.03 + 0.12 + 0.12);
+      // Cost: 4 executor calls * 0.01 + 2 review results * (0.05 + 0.04 + 0.03)
+      expect(result.totalCostUsd).toBeCloseTo(0.04 + 0.12 + 0.12);
     });
 
     it('should pass historySummaries only to the plan step', async () => {
       mockExecute
         .mockResolvedValueOnce(makeResult({ output: 'plan' }))
         .mockResolvedValueOnce(makeResult({ output: 'implemented' }))
-        .mockResolvedValueOnce(makeResult({ output: 'pushed' }));
+        .mockResolvedValueOnce(makeResult({ output: 'pushed' }))
+        .mockResolvedValueOnce(makeResult({ output: 'fixup done' }));
 
       mockParallelReview
         .mockResolvedValueOnce(makeReviewResult())
@@ -116,7 +118,8 @@ describe('PipelineOrchestrator', () => {
       mockExecute
         .mockResolvedValueOnce(makeResult({ output: 'plan' }))
         .mockResolvedValueOnce(makeResult({ output: 'implemented' }))
-        .mockResolvedValueOnce(makeResult({ output: 'pushed' }));
+        .mockResolvedValueOnce(makeResult({ output: 'pushed' }))
+        .mockResolvedValueOnce(makeResult({ output: 'fixup done' }));
 
       mockParallelReview
         .mockResolvedValueOnce(makeReviewResult())
@@ -134,7 +137,8 @@ describe('PipelineOrchestrator', () => {
       mockExecute
         .mockResolvedValueOnce(makeResult({ output: 'plan' }))
         .mockResolvedValueOnce(makeResult({ output: 'impl' }))
-        .mockResolvedValueOnce(makeResult({ output: 'pushed' }));
+        .mockResolvedValueOnce(makeResult({ output: 'pushed' }))
+        .mockResolvedValueOnce(makeResult({ output: 'fixup done' }));
 
       mockParallelReview
         .mockResolvedValueOnce(makeReviewResult())
@@ -143,18 +147,19 @@ describe('PipelineOrchestrator', () => {
       const onPhaseChange = vi.fn();
       await orchestrator.run('task', '/tmp', { onPhaseChange });
 
-      // 5 phases in loop + 1 final notify = 6
-      expect(onPhaseChange).toHaveBeenCalledTimes(6);
+      // 6 phases in loop + 1 final notify = 7
+      expect(onPhaseChange).toHaveBeenCalledTimes(7);
 
       const phases = onPhaseChange.mock.calls.map((c: unknown[]) => (c[0] as { phase: string }).phase);
-      expect(phases).toEqual(['plan', 'plan_review', 'implement', 'code_review', 'push', 'done']);
+      expect(phases).toEqual(['plan', 'plan_review', 'implement', 'code_review', 'push', 'pr_fixup', 'done']);
     });
 
     it('should pass reviewType plan to parallelReview for plan_review phase', async () => {
       mockExecute
         .mockResolvedValueOnce(makeResult({ output: 'plan' }))
         .mockResolvedValueOnce(makeResult({ output: 'impl' }))
-        .mockResolvedValueOnce(makeResult({ output: 'pushed' }));
+        .mockResolvedValueOnce(makeResult({ output: 'pushed' }))
+        .mockResolvedValueOnce(makeResult({ output: 'fixup done' }));
 
       mockParallelReview
         .mockResolvedValueOnce(makeReviewResult())
@@ -205,7 +210,8 @@ describe('PipelineOrchestrator', () => {
         .mockResolvedValueOnce(makeResult({ output: 'plan v1' }))                       // plan
         .mockResolvedValueOnce(makeResult({ output: 'plan v2 (improved)' }))             // plan (retry)
         .mockResolvedValueOnce(makeResult({ output: 'implemented' }))                    // implement
-        .mockResolvedValueOnce(makeResult({ output: 'pushed' }));                        // push
+        .mockResolvedValueOnce(makeResult({ output: 'pushed' }))                         // push
+        .mockResolvedValueOnce(makeResult({ output: 'fixup done' }));                    // pr_fixup
 
       mockParallelReview
         .mockResolvedValueOnce(makeReviewResult({                                        // plan_review → REJECTED
@@ -224,7 +230,7 @@ describe('PipelineOrchestrator', () => {
 
       expect(result.success).toBe(true);
       expect(result.state.phase).toBe('done');
-      expect(mockExecute).toHaveBeenCalledTimes(4);
+      expect(mockExecute).toHaveBeenCalledTimes(5);
       expect(mockParallelReview).toHaveBeenCalledTimes(3);
 
       // Verify retry prompt includes review feedback
@@ -290,7 +296,8 @@ describe('PipelineOrchestrator', () => {
         .mockResolvedValueOnce(makeResult({ output: 'plan' }))
         .mockResolvedValueOnce(makeResult({ output: 'impl v1' }))                     // implement
         .mockResolvedValueOnce(makeResult({ output: 'impl v2 (fixed)' }))              // implement (retry)
-        .mockResolvedValueOnce(makeResult({ output: 'pushed' }));                      // push
+        .mockResolvedValueOnce(makeResult({ output: 'pushed' }))                       // push
+        .mockResolvedValueOnce(makeResult({ output: 'fixup done' }));                  // pr_fixup
 
       mockParallelReview
         .mockResolvedValueOnce(makeReviewResult())                                     // plan_review → APPROVED
@@ -308,7 +315,7 @@ describe('PipelineOrchestrator', () => {
       const result = await orchestrator.run('task', '/tmp', noopCallbacks);
 
       expect(result.success).toBe(true);
-      expect(mockExecute).toHaveBeenCalledTimes(4);
+      expect(mockExecute).toHaveBeenCalledTimes(5);
       expect(mockParallelReview).toHaveBeenCalledTimes(3);
 
       // Verify retry prompt includes code review feedback
@@ -360,6 +367,31 @@ describe('PipelineOrchestrator', () => {
   });
 
   // ============================================================
+  // PR Fixup 失败 — 不算管道失败
+  // ============================================================
+
+  describe('pr_fixup failure', () => {
+    it('should mark done (not failed) when pr_fixup fails — PR already exists', async () => {
+      mockExecute
+        .mockResolvedValueOnce(makeResult({ output: 'plan' }))
+        .mockResolvedValueOnce(makeResult({ output: 'implemented' }))
+        .mockResolvedValueOnce(makeResult({ output: 'PR #123' }))
+        .mockResolvedValueOnce(makeResult({ success: false, error: 'CI timed out' }));
+
+      mockParallelReview
+        .mockResolvedValueOnce(makeReviewResult())
+        .mockResolvedValueOnce(makeReviewResult());
+
+      const result = await orchestrator.run('task', '/tmp', noopCallbacks);
+
+      expect(result.success).toBe(true);
+      expect(result.state.phase).toBe('done');
+      expect(result.state.prFixupOutput).toContain('CI 修复未能完全自动化');
+      expect(result.state.prFixupOutput).toContain('CI timed out');
+    });
+  });
+
+  // ============================================================
   // 成本累计 — 包括 review verdicts
   // ============================================================
 
@@ -368,7 +400,8 @@ describe('PipelineOrchestrator', () => {
       mockExecute
         .mockResolvedValueOnce(makeResult({ output: 'plan', costUsd: 0.10 }))
         .mockResolvedValueOnce(makeResult({ output: 'impl', costUsd: 0.50 }))
-        .mockResolvedValueOnce(makeResult({ output: 'pushed', costUsd: 0.02 }));
+        .mockResolvedValueOnce(makeResult({ output: 'pushed', costUsd: 0.02 }))
+        .mockResolvedValueOnce(makeResult({ output: 'fixup done', costUsd: 0.03 }));
 
       mockParallelReview
         .mockResolvedValueOnce(makeReviewResult({
@@ -388,18 +421,19 @@ describe('PipelineOrchestrator', () => {
 
       const result = await orchestrator.run('task', '/tmp', noopCallbacks);
 
-      // executor: 0.10 + 0.50 + 0.02 = 0.62
+      // executor: 0.10 + 0.50 + 0.02 + 0.03 = 0.65
       // review1: 0.10 + 0.08 + 0.05 = 0.23
       // review2: 0.06 + 0.04 + 0.03 = 0.13
-      // total: 0.98
-      expect(result.totalCostUsd).toBeCloseTo(0.98);
+      // total: 1.01
+      expect(result.totalCostUsd).toBeCloseTo(1.01);
     });
 
     it('should handle undefined costUsd gracefully', async () => {
       mockExecute
         .mockResolvedValueOnce(makeResult({ output: 'plan', costUsd: undefined }))
         .mockResolvedValueOnce(makeResult({ output: 'impl', costUsd: 0.50 }))
-        .mockResolvedValueOnce(makeResult({ output: 'pushed', costUsd: undefined }));
+        .mockResolvedValueOnce(makeResult({ output: 'pushed', costUsd: undefined }))
+        .mockResolvedValueOnce(makeResult({ output: 'fixup done', costUsd: undefined }));
 
       mockParallelReview
         .mockResolvedValueOnce(makeReviewResult())
@@ -407,7 +441,7 @@ describe('PipelineOrchestrator', () => {
 
       const result = await orchestrator.run('task', '/tmp', noopCallbacks);
 
-      // executor: 0 + 0.50 + 0 = 0.50
+      // executor: 0 + 0.50 + 0 + 0 = 0.50
       // review costs from default makeReviewResult: 2 * (0.05 + 0.04 + 0.03) = 0.24
       expect(result.totalCostUsd).toBeCloseTo(0.74);
     });
@@ -418,11 +452,12 @@ describe('PipelineOrchestrator', () => {
   // ============================================================
 
   describe('summary generation', () => {
-    it('should include plan, implement, push output and review results in success summary', async () => {
+    it('should include plan, implement, push, pr_fixup output and review results in success summary', async () => {
       mockExecute
         .mockResolvedValueOnce(makeResult({ output: 'my plan details' }))
         .mockResolvedValueOnce(makeResult({ output: 'implementation report' }))
-        .mockResolvedValueOnce(makeResult({ output: 'PR #42 created' }));
+        .mockResolvedValueOnce(makeResult({ output: 'PR #42 created' }))
+        .mockResolvedValueOnce(makeResult({ output: 'CI all passed' }));
 
       mockParallelReview
         .mockResolvedValueOnce(makeReviewResult())
@@ -434,6 +469,7 @@ describe('PipelineOrchestrator', () => {
       expect(result.summary).toContain('my plan details');
       expect(result.summary).toContain('implementation report');
       expect(result.summary).toContain('PR #42 created');
+      expect(result.summary).toContain('CI all passed');
       expect(result.summary).toContain('方案审查');
       expect(result.summary).toContain('代码审查');
       expect(result.summary).toContain('✅ 通过');
@@ -484,7 +520,8 @@ describe('PipelineOrchestrator', () => {
       mockExecute
         .mockResolvedValueOnce(makeResult({ output: 'plan' }))
         .mockResolvedValueOnce(makeResult({ output: 'impl' }))
-        .mockResolvedValueOnce(makeResult({ output: 'pushed' }));
+        .mockResolvedValueOnce(makeResult({ output: 'pushed' }))
+        .mockResolvedValueOnce(makeResult({ output: 'fixup done' }));
 
       mockParallelReview
         .mockResolvedValueOnce(makeReviewResult())
@@ -641,7 +678,8 @@ describe('PipelineOrchestrator', () => {
       mockExecute
         .mockResolvedValueOnce(makeResult({ output: 'plan' }))
         .mockResolvedValueOnce(makeResult({ output: 'impl' }))
-        .mockResolvedValueOnce(makeResult({ output: 'pushed' }));
+        .mockResolvedValueOnce(makeResult({ output: 'pushed' }))
+        .mockResolvedValueOnce(makeResult({ output: 'fixup done' }));
 
       const orchestrator = new PipelineOrchestrator();
       await orchestrator.run('task', '/tmp', noopCallbacks);
@@ -683,7 +721,8 @@ describe('PipelineOrchestrator', () => {
       mockExecute
         .mockResolvedValueOnce(makeResult({ output: 'plan' }))
         .mockResolvedValueOnce(makeResult({ output: 'impl' }))
-        .mockResolvedValueOnce(makeResult({ output: 'pushed' }));
+        .mockResolvedValueOnce(makeResult({ output: 'pushed' }))
+        .mockResolvedValueOnce(makeResult({ output: 'fixup done' }));
 
       mockParallelReview
         .mockResolvedValueOnce(makeReviewResult())
@@ -704,7 +743,8 @@ describe('PipelineOrchestrator', () => {
       mockExecute
         .mockResolvedValueOnce(makeResult({ output: 'plan' }))
         .mockResolvedValueOnce(makeResult({ output: 'impl' }))
-        .mockResolvedValueOnce(makeResult({ output: 'pushed' }));
+        .mockResolvedValueOnce(makeResult({ output: 'pushed' }))
+        .mockResolvedValueOnce(makeResult({ output: 'fixup done' }));
 
       mockParallelReview
         .mockResolvedValueOnce(makeReviewResult())
@@ -713,7 +753,7 @@ describe('PipelineOrchestrator', () => {
       let callCount = 0;
       const onPhaseChange = vi.fn().mockImplementation(async () => {
         callCount++;
-        if (callCount === 6) throw new Error('final callback error');
+        if (callCount === 7) throw new Error('final callback error');
       });
 
       const result = await orchestrator.run('task', '/tmp', { onPhaseChange });
