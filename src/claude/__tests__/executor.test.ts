@@ -15,6 +15,7 @@ vi.mock('../../config.js', () => ({
     claude: { defaultWorkDir: '/tmp/work', timeoutSeconds: 300, model: 'claude-opus-4-6', thinking: 'adaptive', effort: 'max', maxTurns: 500, maxBudgetUsd: 50 },
     repoCache: { dir: '/repos/cache' },
     workspace: { baseDir: '/tmp/workspaces' },
+    feishu: { tools: { enabled: false, doc: true, wiki: true, drive: true, bitable: true } },
   },
 }));
 
@@ -31,6 +32,12 @@ vi.mock('../../utils/logger.js', () => ({
 const mockCreateWorkspaceMcpServer = vi.fn(() => ({ type: 'mock-mcp-server' }));
 vi.mock('../../workspace/tool.js', () => ({
   createWorkspaceMcpServer: (...args: unknown[]) => mockCreateWorkspaceMcpServer(...args),
+}));
+
+// Mock the feishu tools module
+const mockCreateFeishuToolsMcpServer = vi.fn(() => undefined);
+vi.mock('../../feishu/tools/index.js', () => ({
+  createFeishuToolsMcpServer: (...args: unknown[]) => mockCreateFeishuToolsMcpServer(...args),
 }));
 
 // Mock workspace isolation utility
@@ -308,6 +315,79 @@ describe('ClaudeExecutor', () => {
       const passedCb = mockCreateWorkspaceMcpServer.mock.calls[0][0];
       expect(passedCb).toBeDefined();
       expect(passedCb).not.toBe(cb); // It's a wrapper
+    });
+  });
+
+  describe('canUseTool — read-only MCP feishu-tools allow-list', () => {
+    /** Extract the canUseTool callback from the last mockQuery call */
+    function getCanUseTool() {
+      const opts = mockQuery.mock.calls[0][0].options;
+      return opts.canUseTool as (name: string, input: Record<string, unknown>) => Promise<{ behavior: string; updatedInput?: unknown; message?: string }>;
+    }
+
+    it('should allow read-only feishu action in read-only mode', async () => {
+      await executor.execute(makeInput({ readOnly: true }));
+      const canUseTool = getCanUseTool();
+
+      const result = await canUseTool('mcp__feishu-tools__feishu_doc', { action: 'read', doc_token: 'ABC' });
+      expect(result.behavior).toBe('allow');
+      expect(result.updatedInput).toEqual({ action: 'read', doc_token: 'ABC' });
+    });
+
+    it('should allow list_blocks feishu action in read-only mode', async () => {
+      await executor.execute(makeInput({ readOnly: true }));
+      const canUseTool = getCanUseTool();
+
+      const result = await canUseTool('mcp__feishu-tools__feishu_doc', { action: 'list_blocks', doc_token: 'ABC' });
+      expect(result.behavior).toBe('allow');
+    });
+
+    it('should allow bitable list_records in read-only mode', async () => {
+      await executor.execute(makeInput({ readOnly: true }));
+      const canUseTool = getCanUseTool();
+
+      const result = await canUseTool('mcp__feishu-tools__feishu_bitable', { action: 'list_records', app_token: 'APP1' });
+      expect(result.behavior).toBe('allow');
+    });
+
+    it('should deny write feishu action in read-only mode', async () => {
+      await executor.execute(makeInput({ readOnly: true }));
+      const canUseTool = getCanUseTool();
+
+      const result = await canUseTool('mcp__feishu-tools__feishu_doc', { action: 'write', doc_token: 'ABC' });
+      expect(result.behavior).toBe('deny');
+    });
+
+    it('should deny create feishu action in read-only mode', async () => {
+      await executor.execute(makeInput({ readOnly: true }));
+      const canUseTool = getCanUseTool();
+
+      const result = await canUseTool('mcp__feishu-tools__feishu_bitable', { action: 'create_record', app_token: 'APP1' });
+      expect(result.behavior).toBe('deny');
+    });
+
+    it('should deny delete feishu action in read-only mode', async () => {
+      await executor.execute(makeInput({ readOnly: true }));
+      const canUseTool = getCanUseTool();
+
+      const result = await canUseTool('mcp__feishu-tools__feishu_bitable', { action: 'delete_record', app_token: 'APP1' });
+      expect(result.behavior).toBe('deny');
+    });
+
+    it('should deny non-feishu MCP tools in read-only mode', async () => {
+      await executor.execute(makeInput({ readOnly: true }));
+      const canUseTool = getCanUseTool();
+
+      const result = await canUseTool('mcp__workspace-manager__setup_workspace', { mode: 'writable' });
+      expect(result.behavior).toBe('deny');
+    });
+
+    it('should allow all feishu actions when not in read-only mode', async () => {
+      await executor.execute(makeInput({ readOnly: false }));
+      const canUseTool = getCanUseTool();
+
+      const result = await canUseTool('mcp__feishu-tools__feishu_doc', { action: 'write', doc_token: 'ABC' });
+      expect(result.behavior).toBe('allow');
     });
   });
 });
