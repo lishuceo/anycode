@@ -10,6 +10,19 @@ export const config = {
     verifyToken: process.env.FEISHU_VERIFY_TOKEN || '',
     /** 事件接收模式: 'webhook' (HTTP 回调，需要公网) | 'websocket' (长连接，无需公网) */
     eventMode: (process.env.FEISHU_EVENT_MODE || 'websocket') as 'webhook' | 'websocket',
+    /** 飞书文档/知识库/云空间/多维表格 MCP 工具配置 */
+    tools: {
+      /** 飞书工具总开关 (默认关闭，需显式开启) */
+      enabled: process.env.FEISHU_TOOLS_ENABLED === 'true',
+      /** 文档工具 */
+      doc: process.env.FEISHU_TOOLS_DOC !== 'false',
+      /** 知识库工具 */
+      wiki: process.env.FEISHU_TOOLS_WIKI !== 'false',
+      /** 云空间工具 */
+      drive: process.env.FEISHU_TOOLS_DRIVE !== 'false',
+      /** 多维表格工具 */
+      bitable: process.env.FEISHU_TOOLS_BITABLE !== 'false',
+    },
   },
 
   // 安全配置

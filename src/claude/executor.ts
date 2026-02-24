@@ -4,6 +4,7 @@ import { mkdirSync, existsSync } from 'node:fs';
 import { config } from '../config.js';
 import { logger } from '../utils/logger.js';
 import { createWorkspaceMcpServer } from '../workspace/tool.js';
+import { createFeishuToolsMcpServer } from '../feishu/tools/index.js';
 import { isAutoWorkspacePath } from '../workspace/isolation.js';
 import type { ClaudeResult, ExecuteOptions, ProgressCallback, TurnInfo, ToolCallInfo } from './types.js';
 
@@ -43,7 +44,7 @@ function buildWorkspaceSystemPrompt(): string {
   const cacheDir = config.repoCache.dir;
   const workspacesDir = config.workspace.baseDir;
 
-  return `你正在通过飞书消息与用户交互。请保持回复简洁，适合在聊天消息中阅读。
+  const basePrompt = `你正在通过飞书消息与用户交互。请保持回复简洁，适合在聊天消息中阅读。
 
 ## 目录结构
 
@@ -94,6 +95,25 @@ function buildWorkspaceSystemPrompt(): string {
 - 不要提交 .env、credentials 等敏感文件
 - 如果某步骤失败且无法自动修复，停下来向用户说明情况
 - 如果用户只是提问、审查代码或做探索性修改，不需要走这个流程。不确定时问用户："需要我提交这些改动并创建 PR 吗？"`;
+
+  const feishuToolsGuide = config.feishu.tools.enabled ? `
+
+## 飞书文档工具
+
+你有以下飞书工具可用 (通过 mcp__feishu-tools__feishu_xxx 调用):
+
+- **feishu_doc**: 读写飞书文档。用户消息中的文档链接 (如 https://xxx.feishu.cn/docx/TOKEN) 中提取 doc_token。
+- **feishu_wiki**: 浏览知识库。链接格式: https://xxx.feishu.cn/wiki/TOKEN
+- **feishu_drive**: 浏览云空间文件。
+- **feishu_bitable**: 读写多维表格。链接格式: https://xxx.feishu.cn/base/TOKEN
+
+URL Token 提取规则:
+- /docx/ABC123 → doc_token: ABC123
+- /wiki/ABC123 → node_token: ABC123
+- /drive/folder/ABC123 → folder_token: ABC123
+- /base/ABC123 → app_token: ABC123` : '';
+
+  return basePrompt + feishuToolsGuide;
 }
 
 export class ClaudeExecutor {
@@ -166,9 +186,16 @@ export class ClaudeExecutor {
     // 每次 query 创建独立的 MCP 服务器实例，通过闭包绑定当前 session 的回调
     // 确保多 chat 并发执行时互不干扰
     // restart 时通过 disableWorkspaceTool 完全移除 setup_workspace，防止无限循环
-    const mcpServers = disableWorkspaceTool
-      ? undefined
-      : { 'workspace-manager': createWorkspaceMcpServer(onWorkspaceChangedWrapped) };
+    const mcpServers: Record<string, ReturnType<typeof createWorkspaceMcpServer>> = {};
+    if (!disableWorkspaceTool) {
+      mcpServers['workspace-manager'] = createWorkspaceMcpServer(onWorkspaceChangedWrapped);
+    }
+    if (config.feishu.tools.enabled) {
+      const feishuMcp = createFeishuToolsMcpServer();
+      if (feishuMcp) {
+        mcpServers['feishu-tools'] = feishuMcp;
+      }
+    }
 
     // 构建 systemPrompt.append 内容
     // pipeline 模式使用独立的 system prompt，不需要工作区管理指引
@@ -209,10 +236,25 @@ export class ClaudeExecutor {
             logger.info({ toolName, readOnly }, 'canUseTool denied — read-only mode');
             return { behavior: 'deny' as const, message: '当前用户处于只读模式，无法使用此工具。需要管理员权限才能修改文件或执行命令。' };
           }
-          // MCP tool 名带前缀 (mcp__workspace-manager__setup_workspace)，也拦截
+          // 只读模式 MCP 工具权限：deny-by-default，仅放行已知只读 action
           if (readOnly && toolName.startsWith('mcp__')) {
+            // 飞书工具：仅放行已知的只读 action
+            if (toolName.includes('feishu-tools')) {
+              const action = inputObj.action as string;
+              const readOnlyActions = new Set([
+                'read', 'list_blocks',                              // doc
+                'list_spaces', 'list_nodes', 'get_node',            // wiki
+                'list', 'info',                                     // drive
+                'list_tables', 'list_fields', 'list_records', 'get_record', // bitable
+              ]);
+              if (readOnlyActions.has(action)) {
+                logger.info({ toolName, action, readOnly }, 'canUseTool allowed — read-only feishu action');
+                return { behavior: 'allow' as const, updatedInput: inputObj };
+              }
+            }
+            // 所有其他 MCP 工具（含 workspace-manager、未来新增）以及不在 allow-list 的 feishu action：deny
             logger.info({ toolName, readOnly }, 'canUseTool denied — read-only mode (MCP tool)');
-            return { behavior: 'deny' as const, message: '当前用户处于只读模式，无法使用此工具。需要管理员权限才能修改文件或执行命令。' };
+            return { behavior: 'deny' as const, message: '当前用户处于只读模式，无法使用此工具。' };
           }
           logger.info({ toolName, inputKeys: Object.keys(inputObj) }, 'canUseTool called — auto allowing');
           // updatedInput 必须显式传回，否则 SDK 内部 Zod 校验会因 undefined 报错
@@ -243,8 +285,8 @@ export class ClaudeExecutor {
         // 加载项目设置 (CLAUDE.md 等)；路由 agent 传 [] 避免加载
         settingSources: settingSourcesOverride ?? ['user', 'project'],
 
-        // MCP 服务器：工作区管理工具 (restart 时为空对象，不注入 setup_workspace)
-        mcpServers,
+        // MCP 服务器：工作区管理工具 + 飞书工具 (空对象等同于无 MCP 服务器)
+        mcpServers: Object.keys(mcpServers).length > 0 ? mcpServers : undefined,
       },
     });
 
