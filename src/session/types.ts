@@ -84,6 +84,8 @@ export interface QueueTask {
   rootId?: string;
   /** 飞书话题 ID (message.thread_id)，用于话题标识 */
   threadId?: string;
+  /** 图片附件列表 (用户发送图片消息时) */
+  images?: import('../claude/types.js').ImageAttachment[];
   resolve: (result: string) => void;
   reject: (error: Error) => void;
   createdAt: Date;

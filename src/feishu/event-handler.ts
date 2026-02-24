@@ -4,7 +4,8 @@ import { isUserAllowed, containsDangerousCommand, isOwner } from '../utils/secur
 import { sessionManager } from '../session/manager.js';
 import { taskQueue } from '../session/queue.js';
 import { claudeExecutor } from '../claude/executor.js';
-import type { TurnInfo, ToolCallInfo } from '../claude/types.js';
+import { DEFAULT_IMAGE_PROMPT } from '../claude/types.js';
+import type { TurnInfo, ToolCallInfo, ImageAttachment } from '../claude/types.js';
 import { buildResultCard, buildStatusCard, buildCancelledCard, buildPipelineCard, buildPipelineConfirmCard, buildProgressCard, buildToolProgressCard, buildSimpleResultCard } from './message-builder.js';
 import { feishuClient } from './client.js';
 import { config } from '../config.js';
@@ -227,7 +228,7 @@ function processQueue(queueKey: string): void {
   const task = taskQueue.dequeue(queueKey);
   if (!task) return;
 
-  executeClaudeTask(task.message, task.chatId, task.userId, task.messageId, task.rootId, task.threadId)
+  executeClaudeTask(task.message, task.chatId, task.userId, task.messageId, task.rootId, task.threadId, task.images)
     .then(() => task.resolve('done'))
     .catch((err) => task.reject(err instanceof Error ? err : new Error(String(err))))
     .finally(() => {
@@ -346,24 +347,26 @@ interface ParsedMessage {
   rootId?: string;
   /** message.thread_id — 飞书话题 ID（可靠的话题标识） */
   threadId?: string;
+  /** 图片附件列表 (用户发送图片消息时) */
+  images?: ImageAttachment[];
 }
 
 /**
  * 处理消息事件 (由 EventDispatcher 回调)
  */
 async function handleMessageEvent(data: MessageEventData): Promise<void> {
-  const parsed = parseMessage(data);
-  if (!parsed) return;
-
-  // 消息去重：飞书可能在未及时收到响应时重试推送
-  if (isDuplicate(parsed.messageId)) {
-    logger.debug({ messageId: parsed.messageId }, 'Duplicate message ignored');
+  // 消息去重：飞书可能在未及时收到响应时重试推送（移到 parseMessage 之前，避免图片重复下载）
+  if (isDuplicate(data.message.message_id)) {
+    logger.debug({ messageId: data.message.message_id }, 'Duplicate message ignored');
     return;
   }
 
-  const { text, messageId, userId, chatId, chatType, mentionedBot, rootId, threadId } = parsed;
+  const parsed = await parseMessage(data);
+  if (!parsed) return;
 
-  logger.info({ userId, chatId, chatType, rootId, threadId, text: text.slice(0, 100) }, 'Received message');
+  const { text, messageId, userId, chatId, chatType, mentionedBot, rootId, threadId, images } = parsed;
+
+  logger.info({ userId, chatId, chatType, rootId, threadId, text: text.slice(0, 100), hasImages: !!images?.length }, 'Received message');
 
   // 话题内消息必须有 thread_id：有 root_id 说明是话题内回复，
   // 飞书应始终返回 thread_id。如果缺失，说明 API 行为异常，中断并报错以暴露问题。
@@ -377,8 +380,13 @@ async function handleMessageEvent(data: MessageEventData): Promise<void> {
   const effectiveThreadId = threadId;
 
   // 群聊中需要 @机器人 才响应
+  // 例外：图片消息无法携带 @mention，在已有活跃话题（bot 已参与交互）中放行
   if (chatType === 'group' && !mentionedBot) {
-    return;
+    const allowImageInThread = images?.length && threadId && sessionManager.getThreadSession(threadId);
+    if (!allowImageInThread) {
+      return;
+    }
+    logger.debug({ messageId, threadId }, 'Image message allowed in group chat: active thread session exists');
   }
 
   // 用户权限检查
@@ -388,16 +396,19 @@ async function handleMessageEvent(data: MessageEventData): Promise<void> {
     return;
   }
 
-  // 处理斜杠命令
-  const commandResult = await handleSlashCommand(text, chatId, userId, messageId, rootId, effectiveThreadId);
-  if (commandResult) return;
+  // 斜杠命令、管道确认、审批命令仅对文本消息有效
+  if (text) {
+    // 处理斜杠命令
+    const commandResult = await handleSlashCommand(text, chatId, userId, messageId, rootId, effectiveThreadId);
+    if (commandResult) return;
 
-  // 处理管道消息确认（卡片按钮的文本 fallback）
-  const pipelineHandled = await handlePipelineTextConfirm(text, chatId, userId);
-  if (pipelineHandled) return;
+    // 处理管道消息确认（卡片按钮的文本 fallback）
+    const pipelineHandled = await handlePipelineTextConfirm(text, chatId, userId);
+    if (pipelineHandled) return;
 
-  // 处理审批文本命令（owner 回复 "允许"/"拒绝"）
-  if (handleApprovalTextCommand(text, userId, chatId, effectiveThreadId)) return;
+    // 处理审批文本命令（owner 回复 "允许"/"拒绝"）
+    if (handleApprovalTextCommand(text, userId, chatId, effectiveThreadId)) return;
+  }
 
   // 非 owner 用户审批检查（per-thread：首条消息需审批，审批后同 thread 自动放行）
   const session = sessionManager.get(chatId, userId);
@@ -408,16 +419,19 @@ async function handleMessageEvent(data: MessageEventData): Promise<void> {
   );
   if (!approved) return;
 
-  // 安全检查
-  if (containsDangerousCommand(text)) {
+  // 安全检查（图片消息无文本，跳过）
+  if (text && containsDangerousCommand(text)) {
     await feishuClient.replyText(messageId, '⚠️ 检测到危险命令，已拒绝执行');
     return;
   }
 
+  // 图片消息无文字时使用默认 prompt
+  const effectiveText = text || (images?.length ? DEFAULT_IMAGE_PROMPT : '');
+
   // 通过 taskQueue 串行化执行：同一 thread 内串行，不同 thread 可并行
   // enqueue 返回的 Promise 的错误处理在 processQueue/executeClaudeTask 中完成
   const queueKey = makeQueueKey(chatId, effectiveThreadId);
-  taskQueue.enqueue(queueKey, chatId, userId, text, messageId, rootId, effectiveThreadId).catch(() => {});
+  taskQueue.enqueue(queueKey, chatId, userId, effectiveText, messageId, rootId, effectiveThreadId, images).catch(() => {});
   processQueue(queueKey);
 }
 
@@ -646,6 +660,7 @@ async function executeClaudeTask(
   messageId: string,
   rootId?: string,
   eventThreadId?: string,
+  images?: ImageAttachment[],
 ): Promise<void> {
   // 1. 解析话题上下文（thread + 路由 + 工作区隔离 + greeting）
   const resolved = await resolveThreadContext({
@@ -755,6 +770,12 @@ async function executeClaudeTask(
         'Skipping resume: cwd mismatch (workspace switched), starting fresh session',
       );
     }
+    if (images?.length && canResume) {
+      logger.info(
+        { sessionKey, threadId, imageCount: images.length },
+        'Skipping resume: image message uses AsyncIterable prompt (incompatible with resume)',
+      );
+    }
 
     const readOnly = !isOwner(userId);
 
@@ -763,11 +784,13 @@ async function executeClaudeTask(
       prompt,
       workingDir,
       readOnly,
-      resumeSessionId: canResume ? activeConversationId : undefined,
+      // 有图片时不 resume（AsyncIterable prompt 模式与 resume 不兼容）
+      resumeSessionId: images?.length ? undefined : (canResume ? activeConversationId : undefined),
       onProgress,
       onWorkspaceChanged,
       onTurn,
       historySummaries,
+      images,
     });
 
     // 检测是否需要 restart（workspace 变更后重新执行以加载 CLAUDE.md）
@@ -855,7 +878,9 @@ async function executeClaudeTask(
     // 用 !result.output 区分 resume 失败和正常 query 失败：
     //   - resume 失败：子进程秒退，无 output
     //   - 正常失败（超时、预算等）：有 output，应走 sendResultCard 展示部分结果
-    if (!result.success && canResume && !result.output) {
+    // 图片消息强制跳过 resume，不触发此检查
+    const actuallyResumed = canResume && !images?.length;
+    if (!result.success && actuallyResumed && !result.output) {
       logger.error(
         { sessionKey, threadId, error: result.error, sessionId: activeConversationId, durationMs: result.durationMs },
         'Resume failed — session ID preserved for user to decide',
@@ -1032,26 +1057,72 @@ async function executePipelineTask(
   }
 }
 
+/** 图片大小限制：15MB（base64 编码后约 20MB，接近 Anthropic API 限制） */
+const MAX_IMAGE_SIZE_BYTES = 15 * 1024 * 1024;
+
+/**
+ * 根据 Buffer 前几个字节推断图片 MIME 类型
+ */
+function detectImageMediaType(buf: Buffer): ImageAttachment['mediaType'] {
+  if (buf[0] === 0xFF && buf[1] === 0xD8) return 'image/jpeg';
+  if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4E && buf[3] === 0x47) return 'image/png';
+  if (buf[0] === 0x47 && buf[1] === 0x49 && buf[2] === 0x46) return 'image/gif';
+  if (buf[0] === 0x52 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x46
+    && buf[8] === 0x57 && buf[9] === 0x45 && buf[10] === 0x42 && buf[11] === 0x50) return 'image/webp';
+  return 'image/png'; // 默认 fallback
+}
+
 /**
  * 解析飞书消息 (使用 SDK 类型化的事件数据)
+ * 异步：图片消息需要下载图片
  */
-function parseMessage(data: MessageEventData): ParsedMessage | null {
+async function parseMessage(data: MessageEventData): Promise<ParsedMessage | null> {
   const { message, sender } = data;
 
-  // 只处理文本消息
-  if (message.message_type !== 'text') {
-    logger.debug({ messageType: message.message_type }, 'Ignoring non-text message');
+  // 只处理文本和图片消息
+  if (message.message_type !== 'text' && message.message_type !== 'image') {
+    logger.debug({ messageType: message.message_type }, 'Ignoring unsupported message type');
     return null;
   }
 
-  // 解析消息内容
-  let text: string;
-  try {
-    const content = JSON.parse(message.content);
-    text = content.text || '';
-  } catch {
-    logger.error({ content: message.content }, 'Failed to parse message content');
-    return null;
+  let text = '';
+  let images: ImageAttachment[] | undefined;
+
+  if (message.message_type === 'image') {
+    // 图片消息：解析 image_key 并下载
+    try {
+      const content = JSON.parse(message.content);
+      const imageKey = content.image_key as string | undefined;
+      if (!imageKey) {
+        logger.error({ content: message.content }, 'Image message missing image_key');
+        return null;
+      }
+
+      const buf = await feishuClient.downloadMessageImage(message.message_id, imageKey);
+
+      // 大小检查
+      if (buf.length > MAX_IMAGE_SIZE_BYTES) {
+        logger.warn({ messageId: message.message_id, sizeBytes: buf.length }, 'Image too large, skipping');
+        await feishuClient.replyText(message.message_id, `⚠️ 图片太大（${(buf.length / 1024 / 1024).toFixed(1)}MB），请压缩到 15MB 以内后重试`);
+        return null;
+      }
+
+      const mediaType = detectImageMediaType(buf);
+      images = [{ data: buf.toString('base64'), mediaType }];
+    } catch (err) {
+      logger.error({ err, messageId: message.message_id }, 'Failed to process image message');
+      await feishuClient.replyText(message.message_id, '⚠️ 图片下载失败，请稍后重试');
+      return null;
+    }
+  } else {
+    // 文本消息：解析 text 字段
+    try {
+      const content = JSON.parse(message.content);
+      text = content.text || '';
+    } catch {
+      logger.error({ content: message.content }, 'Failed to parse message content');
+      return null;
+    }
   }
 
   // 清理 @mention 标记，检测是否 @了机器人
@@ -1070,7 +1141,8 @@ function parseMessage(data: MessageEventData): ParsedMessage | null {
     }
   }
 
-  if (!text.trim()) return null;
+  // 纯文本消息需要有文字内容；图片消息允许 text 为空
+  if (!text.trim() && !images?.length) return null;
 
   return {
     text: text.trim(),
@@ -1081,6 +1153,7 @@ function parseMessage(data: MessageEventData): ParsedMessage | null {
     mentionedBot,
     rootId: message.root_id || undefined,
     threadId: message.thread_id || undefined,
+    images,
   };
 }
 
