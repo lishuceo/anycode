@@ -138,7 +138,7 @@ export async function resolveThreadContext(params: ResolveParams): Promise<Resol
 
       workingDir = decision.workdir || config.claude.defaultWorkDir;
       try {
-        const isolationMode = isOwner(userId) ? 'writable' : (decision.mode || 'writable');
+        const isolationMode = isOwner(userId) ? 'writable' : (decision.mode || 'readonly');
         workingDir = ensureIsolatedWorkspace(workingDir, isolationMode);
       } catch (err) {
         const errorMsg = `❌ 无法创建隔离工作区: ${(err as Error).message}`;
@@ -180,7 +180,7 @@ export async function resolveThreadContext(params: ResolveParams): Promise<Resol
 
     workingDir = decision.workdir || config.claude.defaultWorkDir;
     try {
-      const isolationMode = isOwner(userId) ? 'writable' : (decision.mode || 'writable');
+      const isolationMode = isOwner(userId) ? 'writable' : (decision.mode || 'readonly');
       workingDir = ensureIsolatedWorkspace(workingDir, isolationMode);
     } catch (err) {
       const errorMsg = `❌ 无法创建隔离工作区: ${(err as Error).message}`;

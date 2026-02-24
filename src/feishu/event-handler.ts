@@ -847,6 +847,11 @@ async function executeClaudeTask(
           sessionManager.setThreadConversationId(threadId, restartResult.sessionId, result.newWorkingDir);
         }
         sessionManager.setConversationId(chatId, userId, restartResult.sessionId, result.newWorkingDir);
+      } else {
+        logger.warn(
+          { chatId, userId, threadId },
+          'Restart query produced no sessionId — next message will start fresh',
+        );
       }
 
       // 合并两次 query 的耗时和花费

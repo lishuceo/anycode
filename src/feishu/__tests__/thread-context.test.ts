@@ -104,6 +104,7 @@ const mockIsOwner = vi.mocked(isOwner);
 describe('resolveThreadContext', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockIsOwner.mockReturnValue(false); // 默认非 owner，确保既有测试验证的是 router mode
     mockSessionGetOrCreate.mockReturnValue({
       chatId: 'chat1', userId: 'user1', workingDir: '/tmp/work', status: 'idle',
       threadId: 'omt_thread_1',
