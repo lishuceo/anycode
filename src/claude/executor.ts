@@ -59,15 +59,11 @@ function buildWorkspaceSystemPrompt(): string {
 
 你当前的工作目录已经由系统预先设定好。**大多数情况下直接在当前目录工作即可**。
 
-你有一个 setup_workspace 工具可用，但仅在以下情况使用：
-- 用户**明确要求**切换到另一个仓库
-- 用户提供了新的仓库 URL 要求 clone
+你有一个 setup_workspace 工具可用，但**仅在用户明确要求切换到另一个仓库或提供新的仓库 URL 时使用**。
 
-**不要主动使用 setup_workspace**，除非用户明确要求。当前工作目录通常就是正确的工作区。
+**绝对不要用 setup_workspace 来切换当前工作区的模式（如从 readonly 切换到 writable）。** 当前工作区已经配置好了正确的权限，直接在当前目录工作即可。
 
-模式选择 (mode 参数)：
-- mode="readonly": 只读分析代码
-- mode="writable": 修改代码、提交变更
+调用 setup_workspace 时使用 mode="writable"。
 
 **重要：调用 setup_workspace 后，系统将自动重启以加载项目配置（CLAUDE.md 等）。
 请在调用后仅输出简短确认（如"工作区已就绪，正在重新加载项目配置..."），不要继续执行后续任务。**
