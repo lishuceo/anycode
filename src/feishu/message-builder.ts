@@ -774,6 +774,8 @@ const TOOL_ICONS: Record<string, string> = {
   Glob: '🔍',
   Grep: '🔍',
   setup_workspace: '📦',
+  WebSearch: '🌐',
+  WebFetch: '🌐',
 };
 
 function formatToolCall(tool: ToolCallInfo): string {
@@ -795,6 +797,16 @@ function formatToolCall(tool: ToolCallInfo): string {
       return `${icon} **Grep** ${(tool.input.pattern as string) ?? ''}`;
     case 'setup_workspace':
       return `${icon} **setup_workspace** ${(tool.input.repo_url as string) ?? (tool.input.local_path as string) ?? ''}`;
+    case 'WebSearch': {
+      const query = String(tool.input.query ?? '');
+      const display = query.length > 80 ? query.slice(0, 80) + '...' : query;
+      return `${icon} **WebSearch** \`${display}\``;
+    }
+    case 'WebFetch': {
+      const url = String(tool.input.url ?? '');
+      const display = url.length > 80 ? url.slice(0, 80) + '...' : url;
+      return `${icon} **WebFetch** ${display}`;
+    }
     default:
       return `${icon} **${tool.name}**`;
   }
