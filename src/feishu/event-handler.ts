@@ -355,14 +355,14 @@ interface ParsedMessage {
  * 处理消息事件 (由 EventDispatcher 回调)
  */
 async function handleMessageEvent(data: MessageEventData): Promise<void> {
-  const parsed = await parseMessage(data);
-  if (!parsed) return;
-
-  // 消息去重：飞书可能在未及时收到响应时重试推送
-  if (isDuplicate(parsed.messageId)) {
-    logger.debug({ messageId: parsed.messageId }, 'Duplicate message ignored');
+  // 消息去重：飞书可能在未及时收到响应时重试推送（移到 parseMessage 之前，避免图片重复下载）
+  if (isDuplicate(data.message.message_id)) {
+    logger.debug({ messageId: data.message.message_id }, 'Duplicate message ignored');
     return;
   }
+
+  const parsed = await parseMessage(data);
+  if (!parsed) return;
 
   const { text, messageId, userId, chatId, chatType, mentionedBot, rootId, threadId, images } = parsed;
 
