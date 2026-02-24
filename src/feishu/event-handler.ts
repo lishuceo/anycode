@@ -1079,8 +1079,8 @@ function detectImageMediaType(buf: Buffer): ImageAttachment['mediaType'] {
 async function parseMessage(data: MessageEventData): Promise<ParsedMessage | null> {
   const { message, sender } = data;
 
-  // 只处理文本和图片消息
-  if (message.message_type !== 'text' && message.message_type !== 'image') {
+  // 只处理文本、图片和富文本（post）消息
+  if (message.message_type !== 'text' && message.message_type !== 'image' && message.message_type !== 'post') {
     logger.debug({ messageType: message.message_type }, 'Ignoring unsupported message type');
     return null;
   }
@@ -1088,7 +1088,67 @@ async function parseMessage(data: MessageEventData): Promise<ParsedMessage | nul
   let text = '';
   let images: ImageAttachment[] | undefined;
 
-  if (message.message_type === 'image') {
+  if (message.message_type === 'post') {
+    // 富文本消息：解析 content 中的 text 和 img 元素
+    try {
+      const content = JSON.parse(message.content);
+      // post 内容结构有两种形式:
+      //   1. 直接: { "title": "...", "content": [[elements]] }
+      //   2. 带语言键: { "zh_cn": { "title": "...", "content": [[elements]] } }
+      let postBody: Record<string, unknown> | undefined;
+      if (Array.isArray(content.content)) {
+        postBody = content;
+      } else {
+        postBody = (content.zh_cn || content.en_us || content.ja_jp || Object.values(content)[0]) as Record<string, unknown> | undefined;
+      }
+      const paragraphs = postBody?.content as Array<Array<Record<string, unknown>>> | undefined;
+
+      if (!paragraphs) {
+        logger.error({ content: message.content }, 'Post message missing content paragraphs');
+        return null;
+      }
+
+      const textParts: string[] = [];
+      const imageKeys: string[] = [];
+
+      for (const paragraph of paragraphs) {
+        for (const element of paragraph) {
+          if (element.tag === 'text') {
+            textParts.push(element.text as string || '');
+          } else if (element.tag === 'img') {
+            const imageKey = element.image_key as string | undefined;
+            if (imageKey) imageKeys.push(imageKey);
+          }
+          // at/a/emotion 等标签忽略（@mention 通过 message.mentions 处理）
+        }
+      }
+
+      text = textParts.join('').trim();
+
+      // 下载所有图片
+      if (imageKeys.length) {
+        images = [];
+        for (const imageKey of imageKeys) {
+          try {
+            const buf = await feishuClient.downloadMessageImage(message.message_id, imageKey);
+            if (buf.length > MAX_IMAGE_SIZE_BYTES) {
+              logger.warn({ messageId: message.message_id, imageKey, sizeBytes: buf.length }, 'Post image too large, skipping');
+              await feishuClient.replyText(message.message_id, `⚠️ 图片太大（${(buf.length / 1024 / 1024).toFixed(1)}MB），请压缩到 15MB 以内后重试`);
+              continue;
+            }
+            const mediaType = detectImageMediaType(buf);
+            images.push({ data: buf.toString('base64'), mediaType });
+          } catch (err) {
+            logger.error({ err, messageId: message.message_id, imageKey }, 'Failed to download post image');
+          }
+        }
+        if (!images.length) images = undefined;
+      }
+    } catch (err) {
+      logger.error({ err, content: message.content }, 'Failed to parse post message');
+      return null;
+    }
+  } else if (message.message_type === 'image') {
     // 图片消息：解析 image_key 并下载
     try {
       const content = JSON.parse(message.content);
