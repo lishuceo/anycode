@@ -3,14 +3,14 @@ import { z } from 'zod';
 import { feishuClient } from '../client.js';
 import { logger } from '../../utils/logger.js';
 import { validateToken } from './validation.js';
-import { grantOwnerPermission } from './permissions.js';
+import { grantOwnerPermission, grantChatMembersPermission } from './permissions.js';
 
 /**
  * 飞书云空间 MCP 工具
  *
  * 支持操作: list / info / create_folder
  */
-export function feishuDriveTool() {
+export function feishuDriveTool(chatId?: string) {
   return tool(
     'feishu_drive',
     [
@@ -87,6 +87,7 @@ export function feishuDriveTool() {
             if (resp.code !== 0) throw new Error(`创建文件夹失败 (${resp.code}): ${resp.msg}`);
             if (resp.data?.token) {
               await grantOwnerPermission(resp.data.token, 'folder');
+              await grantChatMembersPermission(resp.data.token, 'folder', chatId);
             }
             return {
               content: [{
