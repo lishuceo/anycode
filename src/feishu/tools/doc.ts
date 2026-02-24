@@ -3,14 +3,14 @@ import { z } from 'zod';
 import { feishuClient } from '../client.js';
 import { logger } from '../../utils/logger.js';
 import { validateToken } from './validation.js';
-import { grantOwnerPermission } from './permissions.js';
+import { grantOwnerPermission, grantChatMembersPermission } from './permissions.js';
 
 /**
  * 飞书文档 MCP 工具
  *
  * 支持操作: read / write / append / create / list_blocks
  */
-export function feishuDocTool() {
+export function feishuDocTool(chatId?: string) {
   return tool(
     'feishu_doc',
     [
@@ -131,6 +131,7 @@ export function feishuDocTool() {
             const doc = createResp.data?.document;
             if (doc?.document_id) {
               await grantOwnerPermission(doc.document_id, 'docx');
+              await grantChatMembersPermission(doc.document_id, 'docx', chatId);
             }
             return {
               content: [{
