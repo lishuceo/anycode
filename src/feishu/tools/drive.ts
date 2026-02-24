@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { feishuClient } from '../client.js';
 import { logger } from '../../utils/logger.js';
 import { validateToken } from './validation.js';
+import { grantOwnerPermission } from './permissions.js';
 
 /**
  * 飞书云空间 MCP 工具
@@ -84,6 +85,9 @@ export function feishuDriveTool() {
               },
             });
             if (resp.code !== 0) throw new Error(`创建文件夹失败 (${resp.code}): ${resp.msg}`);
+            if (resp.data?.token) {
+              await grantOwnerPermission(resp.data.token, 'folder');
+            }
             return {
               content: [{
                 type: 'text' as const,

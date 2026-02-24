@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { feishuClient } from '../client.js';
 import { logger } from '../../utils/logger.js';
 import { validateToken } from './validation.js';
+import { grantOwnerPermission } from './permissions.js';
 
 /**
  * 飞书文档 MCP 工具
@@ -128,6 +129,9 @@ export function feishuDocTool() {
             });
             if (createResp.code !== 0) throw new Error(`创建文档失败 (${createResp.code}): ${createResp.msg}`);
             const doc = createResp.data?.document;
+            if (doc?.document_id) {
+              await grantOwnerPermission(doc.document_id, 'docx');
+            }
             return {
               content: [{
                 type: 'text' as const,
