@@ -235,19 +235,21 @@ export class ClaudeExecutor {
     // 构建 systemPrompt.append 内容
     // pipeline 模式使用独立的 system prompt，不需要工作区管理指引
     const baseAppend = systemPromptOverride ?? buildWorkspaceSystemPrompt();
-    const readOnlyNotice = readOnly
-      ? `\n\n## 权限限制\n当前用户处于只读模式。你可以阅读和分析代码、回答问题，但不能修改文件或执行命令。不要尝试使用 Edit、Write、Bash 等工具。如果用户请求代码修改，告知他们需要管理员权限。`
-      : '';
-    const baseAppendWithHistory = historySummaries
+    const promptAppend = historySummaries
       ? baseAppend + `\n\n## 历史会话摘要\n以下是该用户之前的会话记录，帮助你了解项目上下文：\n${historySummaries}`
       : baseAppend;
-    const promptAppend = baseAppendWithHistory + readOnlyNotice;
+
+    // 只读提示放入 user prompt（而非 system prompt），避免 per-user 差异导致 cache miss
+    const readOnlyPrefix = readOnly
+      ? '[系统提示：当前用户处于只读模式。你可以阅读和分析代码、回答问题，但不能修改文件或执行命令。不要尝试使用 Edit、Write、Bash 等工具。如果用户请求代码修改，告知他们需要管理员权限。]\n\n'
+      : '';
+    const effectivePrompt = readOnlyPrefix + prompt;
 
     // 构建 SDK query
     // 有图片时使用 AsyncIterable<SDKUserMessage> 多模态格式
     const promptInput = images?.length
-      ? buildMultimodalPrompt(prompt, images)
-      : prompt;
+      ? buildMultimodalPrompt(effectivePrompt, images)
+      : effectivePrompt;
 
     const q = query({
       prompt: promptInput,
