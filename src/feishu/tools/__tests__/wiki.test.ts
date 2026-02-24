@@ -89,10 +89,10 @@ describe('feishu_wiki tool', () => {
       expect(result.content[0].text).toContain('n1');
     });
 
-    it('should require space_id and node_token', async () => {
+    it('should require node_token', async () => {
       const result = await capturedHandler({ action: 'get_node' });
       expect(result.isError).toBe(true);
-      expect(result.content[0].text).toContain('space_id');
+      expect(result.content[0].text).toContain('node_token');
     });
   });
 

@@ -113,7 +113,6 @@ export function feishuDocTool() {
                     elements: [{ text_run: { content: args.content } }],
                   },
                 }],
-                index: -1, // 末尾追加
               },
             });
             return { content: [{ type: 'text' as const, text: '内容已追加' }] };

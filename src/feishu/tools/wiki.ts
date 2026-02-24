@@ -25,7 +25,7 @@ export function feishuWikiTool() {
     ].join('\n'),
     {
       action: z.enum(['list_spaces', 'list_nodes', 'get_node', 'create_node']).describe('操作类型'),
-      space_id: z.string().optional().describe('知识库空间 ID (list_nodes/get_node/create_node 时必填)'),
+      space_id: z.string().optional().describe('知识库空间 ID (list_nodes/create_node 时必填)'),
       node_token: z.string().optional().describe('节点 token (get_node 时必填)'),
       title: z.string().optional().describe('新节点标题 (create_node 时必填)'),
       parent_node_token: z.string().optional().describe('父节点 token (list_nodes/create_node 时可选)'),
@@ -70,7 +70,6 @@ export function feishuWikiTool() {
           }
 
           case 'get_node': {
-            if (!args.space_id) throw new Error('get_node 操作需要 space_id');
             if (!args.node_token) throw new Error('get_node 操作需要 node_token');
             const resp = await client.wiki.space.getNode({
               params: { token: args.node_token },
