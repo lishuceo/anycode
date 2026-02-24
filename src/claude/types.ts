@@ -71,3 +71,34 @@ export interface TurnInfo {
 
 /** 执行进度回调 — 接收 SDK 的 SDKMessage */
 export type ProgressCallback = (message: import('@anthropic-ai/claude-agent-sdk').SDKMessage) => void;
+
+/** 图片附件 (从飞书消息下载) */
+export interface ImageAttachment {
+  /** base64 编码的图片数据 */
+  data: string;
+  /** MIME 类型 */
+  mediaType: 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp';
+}
+
+/** 图片消息的默认 prompt（用户发送纯图片时） */
+export const DEFAULT_IMAGE_PROMPT = '请分析这张图片';
+
+/**
+ * 多模态 content block 类型（匹配 Anthropic API MessageParam.content 结构）
+ * @anthropic-ai/sdk 的 MessageParam 未被 agent SDK 导出，故定义兼容类型
+ */
+export interface TextContentBlock {
+  type: 'text';
+  text: string;
+}
+
+export interface ImageContentBlock {
+  type: 'image';
+  source: {
+    type: 'base64';
+    media_type: ImageAttachment['mediaType'];
+    data: string;
+  };
+}
+
+export type MultimodalContentBlock = TextContentBlock | ImageContentBlock;
