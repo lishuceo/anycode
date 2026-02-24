@@ -274,6 +274,58 @@ describe('buildTurnCard', () => {
     const body = card.elements[0].text.content as string;
     expect(body).toContain('🔧 **CustomTool**');
   });
+
+  it('should format WebSearch with query parameter', () => {
+    const turn: TurnInfo = {
+      turnIndex: 1,
+      textContent: '',
+      toolCalls: [{ name: 'WebSearch', input: { query: 'TypeScript generics tutorial' } }],
+    };
+    const card = buildTurnCard(turn) as any;
+    const body = card.elements[0].text.content as string;
+    expect(body).toContain('🌐 **WebSearch** `TypeScript generics tutorial`');
+  });
+
+  it('should format WebFetch with url parameter', () => {
+    const turn: TurnInfo = {
+      turnIndex: 1,
+      textContent: '',
+      toolCalls: [{ name: 'WebFetch', input: { url: 'https://example.com/docs' } }],
+    };
+    const card = buildTurnCard(turn) as any;
+    const body = card.elements[0].text.content as string;
+    expect(body).toContain('🌐 **WebFetch** https://example.com/docs');
+  });
+
+  it('should truncate long WebSearch query at 80 chars', () => {
+    const longQuery = 'a'.repeat(100);
+    const turn: TurnInfo = {
+      turnIndex: 1,
+      textContent: '',
+      toolCalls: [{ name: 'WebSearch', input: { query: longQuery } }],
+    };
+    const card = buildTurnCard(turn) as any;
+    const body = card.elements[0].text.content as string;
+    expect(body).toContain('🌐 **WebSearch**');
+    expect(body).toContain('...');
+    // Should contain exactly 80 'a' chars before '...'
+    expect(body).toContain('a'.repeat(80) + '...');
+    expect(body).not.toContain('a'.repeat(81));
+  });
+
+  it('should truncate long WebFetch url at 80 chars', () => {
+    const longUrl = 'https://example.com/' + 'x'.repeat(100);
+    const turn: TurnInfo = {
+      turnIndex: 1,
+      textContent: '',
+      toolCalls: [{ name: 'WebFetch', input: { url: longUrl } }],
+    };
+    const card = buildTurnCard(turn) as any;
+    const body = card.elements[0].text.content as string;
+    expect(body).toContain('🌐 **WebFetch**');
+    expect(body).toContain('...');
+    expect(body.length).toBeLessThan(longUrl.length + 30);
+  });
 });
 
 describe('buildOverviewCard', () => {
