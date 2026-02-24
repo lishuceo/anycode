@@ -228,7 +228,9 @@ export class ClaudeExecutor {
       mcpServers['workspace-manager'] = createWorkspaceMcpServer(onWorkspaceChangedWrapped);
     }
     if (config.feishu.tools.enabled) {
-      const feishuMcp = createFeishuToolsMcpServer();
+      // sessionKey 格式为 "chatId:userId"，提取 chatId 用于创建文档后自动授权群成员
+      const chatId = sessionKey.split(':')[0] || undefined;
+      const feishuMcp = createFeishuToolsMcpServer(chatId);
       if (feishuMcp) {
         mcpServers['feishu-tools'] = feishuMcp;
       }
