@@ -5,7 +5,7 @@ import { config } from '../config.js';
 import { logger } from '../utils/logger.js';
 import { createWorkspaceMcpServer } from '../workspace/tool.js';
 import { isAutoWorkspacePath } from '../workspace/isolation.js';
-import type { ClaudeResult, ExecuteOptions, ProgressCallback, TurnInfo, ToolCallInfo } from './types.js';
+import type { ClaudeResult, ExecuteOptions, ProgressCallback, TurnInfo, ToolCallInfo, ImageAttachment, MultimodalContentBlock } from './types.js';
 
 // ============================================================
 // Claude Agent SDK 执行器
@@ -35,6 +35,8 @@ export interface ExecuteInput extends ExecuteOptions {
   systemPromptOverride?: string;
   /** 覆盖单步空闲超时秒数 (默认使用 CLAUDE_TIMEOUT 配置)。每收到一条 SDK 消息就重置，不限制总时长 */
   timeoutSeconds?: number;
+  /** 图片附件（多模态输入） */
+  images?: ImageAttachment[];
 }
 
 /** 构建工作区管理系统提示词（注入实际目录路径） */
@@ -96,6 +98,41 @@ function buildWorkspaceSystemPrompt(): string {
 - 如果用户只是提问、审查代码或做探索性修改，不需要走这个流程。不确定时问用户："需要我提交这些改动并创建 PR 吗？"`;
 }
 
+/**
+ * 构建多模态 prompt（包含图片和文本的 AsyncIterable<SDKUserMessage>）
+ * Agent SDK 的 query() 支持 `prompt: string | AsyncIterable<SDKUserMessage>`
+ */
+async function* buildMultimodalPrompt(
+  text: string,
+  images: ImageAttachment[],
+): AsyncIterable<import('@anthropic-ai/claude-agent-sdk').SDKUserMessage> {
+  // 构造 content blocks: 图片在前，文本在后
+  const contentBlocks: MultimodalContentBlock[] = images.map(
+    (img): MultimodalContentBlock => ({
+      type: 'image',
+      source: {
+        type: 'base64',
+        media_type: img.mediaType,
+        data: img.data,
+      },
+    }),
+  );
+
+  contentBlocks.push({ type: 'text', text });
+
+  // SDKUserMessage.message 为 MessageParam（来自 @anthropic-ai/sdk，未被 agent SDK 导出）
+  // content 的运行时结构与 Anthropic API 规范一致，Zod 校验可通过
+  yield {
+    type: 'user' as const,
+    message: {
+      role: 'user' as const,
+      content: contentBlocks,
+    },
+    parent_tool_use_id: null,
+    session_id: '',
+  } as import('@anthropic-ai/claude-agent-sdk').SDKUserMessage;
+}
+
 export class ClaudeExecutor {
   /** 运行中的 query 实例 (用于 abort) */
   private runningQueries = new Map<string, Query>();
@@ -109,7 +146,7 @@ export class ClaudeExecutor {
       onProgress, onWorkspaceChanged, onStreamUpdate, onTurn, historySummaries,
       systemPromptOverride, disableWorkspaceTool, maxTurns, maxBudgetUsd,
       model: modelOverride, settingSources: settingSourcesOverride,
-      readOnly,
+      readOnly, images,
     } = input;
 
     const startTime = Date.now();
@@ -143,7 +180,7 @@ export class ClaudeExecutor {
     }
 
     logger.info(
-      { sessionKey, workingDir, promptLength: prompt.length, resume: !!resumeSessionId },
+      { sessionKey, workingDir, promptLength: prompt.length, resume: !!resumeSessionId, imageCount: images?.length ?? 0 },
       'Executing Claude Agent SDK query',
     );
 
@@ -182,8 +219,13 @@ export class ClaudeExecutor {
     const promptAppend = baseAppendWithHistory + readOnlyNotice;
 
     // 构建 SDK query
+    // 有图片时使用 AsyncIterable<SDKUserMessage> 多模态格式
+    const promptInput = images?.length
+      ? buildMultimodalPrompt(prompt, images)
+      : prompt;
+
     const q = query({
-      prompt,
+      prompt: promptInput,
       options: {
         cwd: workingDir,
         abortController,

@@ -361,6 +361,29 @@ export class FeishuClient {
     return undefined;
   }
 
+  /**
+   * 下载消息中的图片资源
+   * 使用 im.messageResource.get API（支持下载用户发送的图片）
+   */
+  async downloadMessageImage(messageId: string, imageKey: string): Promise<Buffer> {
+    try {
+      const resp = await this.client.im.messageResource.get({
+        params: { type: 'image' },
+        path: { message_id: messageId, file_key: imageKey },
+      });
+
+      const stream = resp.getReadableStream();
+      const chunks: Buffer[] = [];
+      for await (const chunk of stream) {
+        chunks.push(Buffer.from(chunk));
+      }
+      return Buffer.concat(chunks);
+    } catch (err) {
+      logger.error({ err, messageId, imageKey }, 'Failed to download message image');
+      throw err;
+    }
+  }
+
   /** 获取原始 client 以便直接使用 */
   get raw(): lark.Client {
     return this.client;
