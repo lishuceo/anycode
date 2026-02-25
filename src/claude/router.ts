@@ -24,6 +24,8 @@ export interface RoutingDecision {
   mode?: 'readonly' | 'writable';
   branch?: string;
   question?: string;
+  /** clone 失败时携带错误信息，供调用方提示用户 */
+  cloneError?: string;
 }
 
 /** 构建路由 system prompt（注入实际目录路径） */
@@ -35,10 +37,10 @@ function buildRoutingSystemPrompt(): string {
   return `你是一个工作区路由助手。你的唯一任务是决定用户的请求应该在哪个代码仓库/目录下执行。
 
 ## 你能做的事
-- 运行 \`ls ${cacheDir}\` 查看本地已缓存的仓库
+- 运行 \`find ${cacheDir} -maxdepth 3 -name "*.git" -type d\` 查看本地已缓存的仓库
 - 运行 \`ls ${projectsDir}\` 查看项目目录下的仓库
 - 运行 \`ls <path>\` 验证本地路径是否存在
-- 运行 \`gh repo list --json name,url,updatedAt --limit 50\` 查看 GitHub 账号下的仓库
+- 运行 \`gh search repos <关键词> --json fullName,url --limit 20\` 搜索用户有权访问的所有仓库（含组织仓库）
 - 如果信息不足，向用户提问（保持简短）
 
 ## 你不能做的事
@@ -48,14 +50,15 @@ function buildRoutingSystemPrompt(): string {
 
 ## 查找顺序
 
-当用户提到某个仓库或项目名时，按以下顺序查找：
+当用户提到某个仓库或项目名时，**严格按以下顺序查找，不能跳过任何步骤**：
 
-1. **本地缓存** — \`ls -R ${cacheDir}\`，看有没有匹配的 bare clone（目录名以 .git 结尾）。如果找到，从缓存路径推导 URL（如 \`${cacheDir}/github.com/user/repo.git\` → \`https://github.com/user/repo\`），返回 **clone_remote**
+1. **本地缓存（必须执行）** — 运行 \`find ${cacheDir} -maxdepth 3 -name "*.git" -type d\`，在输出结果中查找名称匹配的 bare clone。如果找到，从缓存路径推导 URL（如 \`${cacheDir}/github.com/org/repo.git\` → \`https://github.com/org/repo\`），返回 **clone_remote**。**绝对不要跳过这一步，也不要凭猜测构造 URL。**
 2. **项目目录** — \`ls ${projectsDir}\`，看有没有匹配的目录（非 bare clone），返回 **use_existing**
-3. **GitHub 账号** — \`gh repo list --json name,url --limit 50\`，在用户的 GitHub 仓库中搜索匹配，返回 **clone_remote**
+3. **GitHub 搜索** — \`gh search repos <关键词> --json fullName,url --limit 20\`，搜索用户有权访问的所有仓库（包括个人仓库和组织仓库）。**不要用 \`gh repo list\`，它只能列出个人仓库，无法搜索组织仓库。**
 4. 以上都找不到 → 如果用户给了 URL 则用 URL；否则向用户提问
 
 **重要：缓存目录中的 bare clone 不能直接用作工作目录（它们没有工作树），必须通过 clone_remote 让系统创建隔离工作区。**
+**重要：绝对不要凭猜测构造仓库 URL。必须从缓存路径推导或从 GitHub 搜索结果中获取确切的 URL。**
 
 ## 输出格式
 
@@ -235,9 +238,9 @@ export async function routeWorkspace(
       }
       return { ...decision, workdir: workspace.workspacePath };
     } catch (err) {
-      logger.error({ err, chatId, userId, repoUrl: decision.repo_url }, 'Failed to setup workspace from routing decision');
-      const fallbackDir = getFallbackWorkdir();
-      return { decision: 'use_default', workdir: fallbackDir };
+      const errMsg = err instanceof Error ? err.message : String(err);
+      logger.error({ err: errMsg, chatId, userId, repoUrl: decision.repo_url }, 'Failed to setup workspace from routing decision');
+      return { decision: 'use_default', workdir: getFallbackWorkdir(), cloneError: `仓库 clone 失败 (${decision.repo_url}): ${errMsg}` };
     }
   }
 

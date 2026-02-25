@@ -138,6 +138,17 @@ export async function resolveThreadContext(params: ResolveParams): Promise<Resol
         return { status: 'pending' };
       }
 
+      // clone 失败时通知用户，不静默回退
+      if (decision.cloneError) {
+        const errorMsg = `❌ ${decision.cloneError}`;
+        if (threadRootMsgId) {
+          await feishuClient.replyTextInThread(threadRootMsgId, errorMsg);
+        } else {
+          await feishuClient.replyText(messageId, errorMsg);
+        }
+        return { status: 'error' };
+      }
+
       workingDir = decision.workdir || config.claude.defaultWorkDir;
       try {
         const isolationMode = isOwner(userId) ? 'writable' : (decision.mode || 'readonly');
@@ -178,6 +189,17 @@ export async function resolveThreadContext(params: ResolveParams): Promise<Resol
         await feishuClient.replyText(messageId, question);
       }
       return { status: 'pending' };
+    }
+
+    // clone 失败时通知用户，不静默回退
+    if (decision.cloneError) {
+      const errorMsg = `❌ ${decision.cloneError}`;
+      if (threadRootMsgId) {
+        await feishuClient.replyTextInThread(threadRootMsgId, errorMsg);
+      } else {
+        await feishuClient.replyText(messageId, errorMsg);
+      }
+      return { status: 'error' };
     }
 
     workingDir = decision.workdir || config.claude.defaultWorkDir;
