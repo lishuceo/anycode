@@ -77,8 +77,8 @@ describe('parallelReview', () => {
       for (let i = 0; i < 3; i++) {
         const call = mockExecute.mock.calls[i][0];
         expect(call.systemPromptOverride).toContain('审查');
-        expect(call.maxBudgetUsd).toBe(0.5);
-        expect(call.maxTurns).toBe(10);
+        expect(call.maxBudgetUsd).toBe(5);
+        expect(call.maxTurns).toBe(30);
       }
     });
 
@@ -273,7 +273,7 @@ describe('parallelReview', () => {
   // ============================================================
 
   describe('budget and turns constraints', () => {
-    it('should pass maxBudgetUsd: 0.5 and maxTurns: 10 to each agent', async () => {
+    it('should pass maxBudgetUsd: 5 and maxTurns: 30 to each agent', async () => {
       mockExecute
         .mockResolvedValueOnce(makeResult({ output: 'APPROVED' }))
         .mockResolvedValueOnce(makeResult({ output: 'APPROVED' }))
@@ -287,8 +287,8 @@ describe('parallelReview', () => {
 
       for (let i = 0; i < 3; i++) {
         const call = mockExecute.mock.calls[i][0];
-        expect(call.maxBudgetUsd).toBe(0.5);
-        expect(call.maxTurns).toBe(10);
+        expect(call.maxBudgetUsd).toBe(5);
+        expect(call.maxTurns).toBe(30);
       }
     });
   });
