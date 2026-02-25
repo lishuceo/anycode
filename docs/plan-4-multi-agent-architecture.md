@@ -1,7 +1,7 @@
 # Plan 4: 多 Agent 角色架构
 
 > 日期: 2026-02-24
-> 状态: **Phase 1 已实现** (PR #52)
+> 状态: **Phase 1 已实现** (PR #52, #56)
 > 最后更新: 2026-02-25
 > 前置依赖: Plan 1 (渠道插件化) 可并行推进，不强依赖
 
@@ -649,6 +649,40 @@ FEISHU_APP_SECRET=secret_xxx
 - ⏳ Commander 模式 — 未实测（配置已支持）
 - ⏳ Chat Agent readonly 工具拦截 — 未实测（代码已支持 canUseTool 拦截）
 - ⏳ 不配 BOT_ACCOUNTS 单 bot 向后兼容 — 未实测（代码路径已覆盖）
+
+**Phase 1.2 — Chat Agent 直接回复模式 ✅ 已实现 (PR #56, 2026-02-25)：**
+
+Phase 1.1 中 Chat Agent 走与 Dev Agent 相同的执行流水线（创建话题 → 进度卡片 → 结果卡片），交互形式过重。Phase 1.2 让 Chat Agent 默认直接回复，不创建话题，更接近人类聊天行为。
+
+核心设计：
+- **Agent 驱动的回复模式**：Chat Agent 默认引用回复用户消息（不创话题），可通过 `start_discussion_thread` MCP 工具动态升级为话题模式
+- **并行执行函数**：新增 `executeDirectTask`（~100 行，简化版），与 `executeClaudeTask`（~300 行，话题模式）并行，`processQueue` 按 `replyMode` 分发
+- **平台消息接口**：定义 `MessagePort` / `InboundMessage` 接口（`src/platform/types.ts`），为未来 Slack/企微做架构准备
+
+新增文件 (3):
+1. ✅ `src/agent/tools/discussion.ts` — `createDiscussionMcpServer`，提供 `start_discussion_thread` 工具（闭包回调通知执行层）
+2. ✅ `src/platform/types.ts` — `MessagePort`, `MessageContent`, `InboundMessage` 接口定义（仅接口，不迁移）
+3. ✅ `src/__tests__/direct-reply.test.ts` — 6 个测试（replyMode 配置、discussion 工具、平台类型）
+
+改造文件 (4):
+4. ✅ `src/agent/types.ts` — 新增 `ReplyMode = 'direct' | 'thread'` 类型 + `AgentConfig.replyMode` 字段
+5. ✅ `src/agent/registry.ts` — chat: `replyMode: 'direct'`, dev: `replyMode: 'thread'`
+6. ✅ `src/agent/prompts/chat.ts` — 更新为对话风格 + `start_discussion_thread` 使用引导
+7. ✅ `src/claude/executor.ts` — `additionalMcpServers` 字段 + `discussion-tools` readonly 白名单
+8. ✅ `src/feishu/event-handler.ts` — `executeDirectTask` + `sendDirectReply` + `processQueue` replyMode 分发 + `makeQueueKey` per-user 并行
+
+验证结果：
+- ✅ 401 个测试全部通过（395 + 6 新增）
+- ✅ TypeScript typecheck 通过
+- ✅ CI review check 通过
+- ✅ PR review 发现 discussion-tools 被 readonly canUseTool 误拦截，已修复
+- ⏳ @ChatBot 直接回复 — 待实际部署验证
+- ⏳ start_discussion_thread 话题升级 — 待实际部署验证
+
+**设计决策记录：**
+- Chat Agent 固定使用 `config.claude.defaultWorkDir`，不做 workspace routing（只读分析不需要工作区隔离）
+- 直接模式 queue key 包含 userId（`chat:{chatId}:{userId}`），不同用户可并行
+- 话题内回复 @ChatBot 仍走 `executeClaudeTask`（话题模式），保持话题对话连贯性
 
 ### Phase 2: Agent 间调度 + 授权（待实施）
 
