@@ -386,6 +386,15 @@ async function handleMessageEvent(data: MessageEventData, accountId: string = 'd
     return;
   }
 
+  // 过期消息丢弃：服务重启后 WebSocket 重连可能重放旧的未确认消息
+  // create_time 为毫秒级时间戳字符串
+  const messageAgeMs = Date.now() - Number(data.message.create_time);
+  const MAX_MESSAGE_AGE_MS = 5 * 60 * 1000; // 5 分钟
+  if (messageAgeMs > MAX_MESSAGE_AGE_MS) {
+    logger.warn({ messageId: data.message.message_id, messageAgeMs, accountId }, 'Stale message ignored (older than 5 minutes)');
+    return;
+  }
+
   const parsed = await parseMessage(data);
   if (!parsed) return;
 
