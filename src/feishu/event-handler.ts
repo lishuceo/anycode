@@ -931,7 +931,7 @@ async function executeClaudeTask(
       onTurn,
       historySummaries,
       images,
-      ...(customSystemPrompt ? { systemPromptOverride: customSystemPrompt } : {}),
+      ...(customSystemPrompt ? { systemPromptOverride: customSystemPrompt, systemPromptMode: agentCfg?.systemPromptMode } : {}),
     });
 
     // 检测是否需要 restart（workspace 变更后重新执行以加载 CLAUDE.md）
@@ -987,7 +987,7 @@ async function executeClaudeTask(
         onTurn,
         historySummaries,
         disableWorkspaceTool: true,
-        ...(customSystemPrompt ? { systemPromptOverride: customSystemPrompt } : {}),
+        ...(customSystemPrompt ? { systemPromptOverride: customSystemPrompt, systemPromptMode: agentCfg?.systemPromptMode } : {}),
       });
 
       // 保存 restart query 的 session_id 到 thread session
@@ -1179,6 +1179,7 @@ async function executeDirectTask(
       toolDeny: agentCfg.toolDeny,
       settingSources: agentCfg.settingSources,
       systemPromptOverride: readSystemPromptFile(agentId) ?? buildChatAgentPrompt(),
+      systemPromptMode: agentCfg.systemPromptMode ?? 'replace',
       resumeSessionId,
       images,
       // 不需要 workspace-manager 工具（Chat Agent 不切换工作区）
