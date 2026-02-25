@@ -149,7 +149,7 @@ export async function startPipeline(pipelineId: string): Promise<void> {
   const pipelineStartTime = Date.now();
 
   // 拉取话题对话历史，仅注入 plan 阶段（解决 /dev 丢失前序对话的问题）
-  // 通过 historySummaries 参数传递，不污染 state.userPrompt（避免泄漏到 review/push/pr_fixup）
+  // 通过 threadHistory 参数拼入 plan 的 user prompt，不污染 state.userPrompt（避免泄漏到 review/push/pr_fixup）
   let threadHistory: string | undefined;
   if (pipelineThreadId) {
     try {
