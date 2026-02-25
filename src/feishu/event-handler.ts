@@ -23,7 +23,9 @@ import {
 import { resolveAgent, shouldRespond } from '../agent/router.js';
 import { agentRegistry } from '../agent/registry.js';
 import { accountManager } from './multi-account.js';
-import type { AgentId } from '../agent/types.js';
+import type { AgentId, AgentConfig } from '../agent/types.js';
+import { buildChatAgentPrompt } from '../agent/prompts/chat.js';
+import { createDiscussionMcpServer } from '../agent/tools/discussion.js';
 
 // 注册审批通过后的消息重新入队回调（避免 approval.ts → event-handler.ts 循环依赖）
 setOnApproved((chatId, userId, text, messageId, rootId, threadId) => {
@@ -232,17 +234,33 @@ async function handlePipelineRetry(pipelineId: string): Promise<Record<string, u
 /**
  * 构建队列 key，包含 agentId 维度
  * 同 thread 同 agent 串行，不同 agent 可并行
+ *
+ * direct 模式（无 thread）加入 userId，不同用户可并行
  */
-function makeQueueKey(chatId: string, threadId?: string, agentId: string = 'dev'): string {
-  const base = threadId ? `${chatId}:${threadId}` : chatId;
-  return `${agentId}:${base}`;
+function makeQueueKey(chatId: string, threadId?: string, agentId: string = 'dev', userId?: string): string {
+  if (threadId) {
+    return `${agentId}:${chatId}:${threadId}`;
+  }
+  // direct 模式: 加 userId 实现 per-user 并行
+  if (userId) {
+    return `${agentId}:${chatId}:${userId}`;
+  }
+  return `${agentId}:${chatId}`;
 }
 
 function processQueue(queueKey: string, agentId: AgentId = 'dev'): void {
   const task = taskQueue.dequeue(queueKey);
   if (!task) return;
 
-  executeClaudeTask(task.message, task.chatId, task.userId, task.messageId, task.rootId, task.threadId, task.images, agentId)
+  const agentCfg = agentRegistry.get(agentId);
+  // direct 模式 + 不在已有话题中 → executeDirectTask
+  const useDirectMode = agentCfg?.replyMode === 'direct' && !task.rootId;
+
+  const executeFn = useDirectMode
+    ? executeDirectTask(task.message, task.chatId, task.userId, task.messageId, task.images, agentId)
+    : executeClaudeTask(task.message, task.chatId, task.userId, task.messageId, task.rootId, task.threadId, task.images, agentId);
+
+  executeFn
     .then(() => task.resolve('done'))
     .catch((err) => task.reject(err instanceof Error ? err : new Error(String(err))))
     .finally(() => {
@@ -477,8 +495,10 @@ async function handleMessageEvent(data: MessageEventData, accountId: string = 'd
   const effectiveText = text || (images?.length ? DEFAULT_IMAGE_PROMPT : '');
 
   // 通过 taskQueue 串行化：queue key 包含 agentId，不同 agent 可并行
+  // direct 模式加 userId，不同用户可并行
   // enqueue 返回的 Promise 的错误处理在 processQueue/executeClaudeTask 中完成
-  const queueKey = makeQueueKey(chatId, effectiveThreadId, agentId);
+  const isDirectMode = agentConfig?.replyMode === 'direct' && !rootId;
+  const queueKey = makeQueueKey(chatId, effectiveThreadId, agentId, isDirectMode ? userId : undefined);
   taskQueue.enqueue(queueKey, chatId, userId, effectiveText, messageId, rootId, effectiveThreadId, images).catch(() => {});
   processQueue(queueKey, agentId);
 }
@@ -1016,6 +1036,145 @@ async function executeClaudeTask(
     } catch (err) {
       logger.error({ err, chatId, userId }, 'Failed to reset session status');
     }
+  }
+}
+
+// ============================================================
+// Direct 模式执行（Chat Agent 默认模式）
+//
+// 不创建话题，不发进度卡片。
+// Agent 可通过 start_discussion_thread 工具升级为话题模式。
+// ============================================================
+
+/**
+ * 直接回复模式执行（Chat Agent）
+ *
+ * 与 executeClaudeTask（话题模式）并行的简化执行路径：
+ * - 不创建话题、不做 workspace routing
+ * - 不发进度卡片（Chat Agent 响应通常较快）
+ * - 固定使用 defaultWorkDir（Chat Agent 只读分析，不需要工作区隔离）
+ * - Agent 可通过 start_discussion_thread MCP 工具动态升级为话题模式
+ */
+async function executeDirectTask(
+  rawPrompt: string,
+  chatId: string,
+  userId: string,
+  messageId: string,
+  images?: ImageAttachment[],
+  agentId: AgentId = 'chat',
+): Promise<void> {
+  const agentCfg = agentRegistry.getOrThrow(agentId);
+  const session = sessionManager.getOrCreate(chatId, userId, agentId);
+  const workingDir = config.claude.defaultWorkDir;
+  const sessionKey = `${chatId}:${userId}`;
+
+  sessionManager.setStatus(chatId, userId, 'busy', agentId);
+
+  // 话题升级标志（由 start_discussion_thread MCP 工具设置）
+  let threadRootMsgId: string | undefined;
+  let threadId: string | undefined;
+
+  try {
+    // Resume 策略：使用全局 session 的 conversationId
+    const canResume = session.conversationId
+      && (!session.conversationCwd || session.conversationCwd === workingDir);
+    // 有图片时不 resume（AsyncIterable 与 resume 不兼容）
+    const resumeSessionId = (images?.length || !canResume) ? undefined : session.conversationId;
+
+    // discussion MCP server：允许 agent 动态创建话题
+    const discussionMcp = createDiscussionMcpServer({
+      chatId, userId, messageId, agentId,
+      onThreadCreated: (info) => {
+        threadRootMsgId = info.threadRootMsgId;
+        threadId = info.threadId;
+      },
+    });
+
+    const result = await claudeExecutor.execute({
+      sessionKey,
+      prompt: rawPrompt,
+      workingDir,
+      readOnly: agentCfg.readOnly,
+      model: agentCfg.model,
+      maxTurns: agentCfg.maxTurns,
+      maxBudgetUsd: agentCfg.maxBudgetUsd,
+      settingSources: agentCfg.settingSources,
+      systemPromptOverride: buildChatAgentPrompt(),
+      resumeSessionId,
+      images,
+      // 不需要 workspace-manager 工具（Chat Agent 不切换工作区）
+      disableWorkspaceTool: true,
+      // 注入 discussion-tools MCP server
+      additionalMcpServers: { 'discussion-tools': discussionMcp },
+    });
+
+    // 保存 conversationId（下次消息可 resume）
+    if (result.sessionId) {
+      if (threadId) {
+        sessionManager.upsertThreadSession(threadId, chatId, userId, workingDir, agentId);
+        sessionManager.setThreadConversationId(threadId, result.sessionId, workingDir, agentId);
+      }
+      sessionManager.setConversationId(chatId, userId, result.sessionId, workingDir, agentId);
+    }
+
+    // 发送结果
+    if (threadRootMsgId) {
+      // Agent 通过 start_discussion_thread 升级到话题模式
+      await sendResultCard(
+        rawPrompt, result, result.durationMs, result.costUsd,
+        threadRootMsgId, chatId,
+      );
+    } else {
+      // 直接回复
+      await sendDirectReply(messageId, chatId, result);
+    }
+
+  } catch (err) {
+    logger.error({ err }, 'Error in executeDirectTask');
+    const errorReply = `❌ 执行出错: ${(err as Error).message}`;
+    if (threadRootMsgId) {
+      await feishuClient.replyTextInThread(threadRootMsgId, errorReply);
+    } else {
+      await feishuClient.replyText(messageId, errorReply);
+    }
+  } finally {
+    try {
+      sessionManager.setStatus(chatId, userId, 'idle', agentId);
+    } catch (err) {
+      logger.error({ err, chatId, userId }, 'Failed to reset session status');
+    }
+  }
+}
+
+/**
+ * 直接回复结果（不在话题中）
+ *
+ * 短文本用引用回复，长文本用卡片
+ */
+async function sendDirectReply(
+  messageId: string,
+  chatId: string,
+  result: import('../claude/types.js').ClaudeResult,
+): Promise<void> {
+  const output = result.output || result.error || '(无输出)';
+
+  if (!result.success) {
+    // 失败时显示错误
+    const errorMsg = result.error || output;
+    const truncated = errorMsg.length > 2000 ? errorMsg.slice(0, 2000) + '...' : errorMsg;
+    await feishuClient.replyText(messageId, `❌ ${truncated}`);
+    return;
+  }
+
+  if (output.length <= 2000) {
+    // 短文本：引用回复
+    await feishuClient.replyText(messageId, output);
+  } else {
+    // 长文本：卡片 + 完整文本
+    const durationStr = formatDuration(result.durationMs);
+    const costInfo = result.costUsd ? ` | 💰 $${result.costUsd.toFixed(4)}` : '';
+    const card = buildResultCard(output, output, true, durationStr + costInfo);
+    await feishuClient.sendCard(chatId, card);
   }
 }
 

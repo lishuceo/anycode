@@ -18,6 +18,7 @@ function createBuiltinAgents(): Map<AgentId, AgentConfig> {
     maxBudgetUsd: 5,
     maxTurns: 100,
     requiresApproval: false,
+    replyMode: 'direct',
   });
 
   map.set('dev', {
@@ -30,6 +31,7 @@ function createBuiltinAgents(): Map<AgentId, AgentConfig> {
     maxBudgetUsd: config.claude.maxBudgetUsd,
     maxTurns: config.claude.maxTurns,
     requiresApproval: true,
+    replyMode: 'thread',
   });
 
   return map;
