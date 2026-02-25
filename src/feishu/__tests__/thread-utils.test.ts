@@ -61,6 +61,7 @@ describe('ensureThread', () => {
         'chat1', 'user1',
         'omt_real_thread_id',  // threadId — used as session thread identifier
         'om_root_msg_id',      // rootId — used as threadRootMessageId for replies
+        'dev',                 // agentId — default
       );
       // Reply target should be rootId (message_id for reply_in_thread)
       expect(result.threadRootMsgId).toBe('om_root_msg_id');
@@ -91,6 +92,7 @@ describe('ensureThread', () => {
         'chat1', 'user1',
         'omt_new_thread',  // threadId from createThreadWithCard
         'msg-new',         // original user message as rootMessageId
+        'dev',             // agentId — default
       );
       expect(result.threadRootMsgId).toBe('msg-new');
       expect(result.greetingMsgId).toBe('bot-card-msg-1');

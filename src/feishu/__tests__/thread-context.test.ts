@@ -133,6 +133,7 @@ describe('resolveThreadContext', () => {
         'chat1', 'user1', 'msg-1',
         'om_root_id',        // rootId for reply target
         'omt_real_thread',   // threadId for identification
+        'dev',               // agentId — default
       );
     });
 
@@ -154,6 +155,7 @@ describe('resolveThreadContext', () => {
         'chat1', 'user1', 'msg-1',
         'om_root_id',
         undefined,
+        'dev',               // agentId — default
       );
     });
 
@@ -231,7 +233,7 @@ describe('resolveThreadContext', () => {
       expect(result.status).toBe('resolved');
       expect(mockRouteWorkspace).toHaveBeenCalled();
       expect(mockEnsureIsolatedWorkspace).toHaveBeenCalledWith('/projects/repo-a', 'writable');
-      expect(mockMarkThreadRoutingCompleted).toHaveBeenCalledWith('omt_thread_1');
+      expect(mockMarkThreadRoutingCompleted).toHaveBeenCalledWith('omt_thread_1', 'dev');
     });
 
     it('should return pending when routing needs clarification', async () => {
@@ -259,7 +261,7 @@ describe('resolveThreadContext', () => {
         originalPrompt: 'fix something',
         question: '你想操作哪个仓库？',
         retryCount: 0,
-      });
+      }, 'dev');
       expect(mockReplyTextInThread).toHaveBeenCalledWith('root-msg-1', '你想操作哪个仓库？');
     });
 
@@ -301,7 +303,7 @@ describe('resolveThreadContext', () => {
         // prompt should be restored to original, not the clarification reply
         expect(result.ctx.prompt).toBe('fix bug in repo-a');
       }
-      expect(mockClearThreadRoutingState).toHaveBeenCalledWith('omt_thread_1');
+      expect(mockClearThreadRoutingState).toHaveBeenCalledWith('omt_thread_1', 'dev');
     });
   });
 

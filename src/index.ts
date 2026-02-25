@@ -1,4 +1,4 @@
-import { config, validateConfig } from './config.js';
+import { config, validateConfig, isMultiBotMode } from './config.js';
 import { logger } from './utils/logger.js';
 import { startServer } from './server.js';
 import { sessionManager } from './session/manager.js';
@@ -9,8 +9,10 @@ import { recoverInterruptedPipelines } from './pipeline/runner.js';
 import { killOrphanedClaudeProcesses } from './utils/process-cleanup.js';
 import { feishuClient } from './feishu/client.js';
 import { cleanupExpiredApprovals } from './feishu/approval.js';
+import { accountManager } from './feishu/multi-account.js';
+import { validateBindings } from './agent/router.js';
 
-function main(): void {
+async function main(): Promise<void> {
   logger.info('Starting Feishu Claude Code Bridge...');
 
   // 检查配置
@@ -26,16 +28,37 @@ function main(): void {
   logger.info({
     defaultWorkDir: config.claude.defaultWorkDir,
     timeoutSeconds: config.claude.timeoutSeconds,
+    multiBotMode: isMultiBotMode(),
   }, 'Configuration loaded');
 
   // 启动时清理残留的 .tmp-* 临时目录和孤儿 Claude 子进程
   cleanupTmpDirs();
   killOrphanedClaudeProcesses();
 
-  // 获取机器人信息（用于精确 @mention 检测）
-  feishuClient.fetchBotInfo().catch((err) => {
-    logger.warn({ err }, 'Failed to fetch bot info at startup');
-  });
+  // 初始化 bot 账号
+  if (isMultiBotMode()) {
+    // 多 bot 模式：初始化所有账号
+    await accountManager.initialize(config.agent.botAccounts);
+
+    // 校验 binding 配置
+    const bindingWarnings = validateBindings(config.agent.bindings);
+    for (const w of bindingWarnings) {
+      logger.warn({ warning: w }, 'Agent binding configuration warning');
+    }
+
+    logger.info({
+      accounts: config.agent.botAccounts.map((a) => a.accountId),
+      bindings: config.agent.bindings.length,
+    }, 'Multi-bot mode initialized');
+  } else {
+    // 单 bot 模式：向后兼容
+    accountManager.initializeSingleBot(config.feishu.appId, config.feishu.appSecret);
+
+    // 获取机器人信息（用于精确 @mention 检测）
+    await feishuClient.fetchBotInfo().catch((err) => {
+      logger.warn({ err }, 'Failed to fetch bot info at startup');
+    });
+  }
 
   // 启动 HTTP 服务
   startServer();
@@ -79,4 +102,7 @@ function main(): void {
   process.on('SIGTERM', () => shutdown('SIGTERM'));
 }
 
-main();
+main().catch((err) => {
+  logger.error({ err }, 'Fatal startup error');
+  process.exit(1);
+});
