@@ -28,7 +28,7 @@ export function isCodexEnabled(): boolean {
 async function getGitDiff(workingDir: string): Promise<string> {
   try {
     const { stdout } = await execFileAsync(
-      'git', ['diff', '--no-color'],
+      'git', ['diff', 'HEAD', '--no-color'],
       { cwd: workingDir, timeout: 10_000, maxBuffer: 512 * 1024 },
     );
     return stdout.trim() || '(no uncommitted changes)';
@@ -68,7 +68,13 @@ export async function executeCodexReview(
       {
         timeout: timeoutMs,
         maxBuffer: 1024 * 1024, // 1MB
-        env: process.env,
+        env: {
+          PATH: process.env.PATH,
+          HOME: process.env.HOME,
+          OPENAI_API_KEY: process.env.OPENAI_API_KEY,
+          CODEX_HOME: process.env.CODEX_HOME,
+          XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME,
+        },
       },
     );
 

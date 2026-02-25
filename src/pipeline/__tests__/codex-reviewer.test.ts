@@ -112,7 +112,7 @@ describe('codex-reviewer', () => {
       // First call: git diff
       const [gitCmd, gitArgs] = mockExecFile.mock.calls[0];
       expect(gitCmd).toBe('git');
-      expect(gitArgs).toContain('diff');
+      expect(gitArgs).toEqual(['diff', 'HEAD', '--no-color']);
 
       // Second call: codex exec
       const [cmd, args] = mockExecFile.mock.calls[1];
