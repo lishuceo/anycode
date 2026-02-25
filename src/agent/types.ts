@@ -53,6 +53,12 @@ export interface AgentConfig {
   requiresApproval: boolean;
   /** 默认回复模式 */
   replyMode: ReplyMode;
+  /** 系统提示词文件路径（每次 query 重新读取，支持热更新） */
+  systemPromptFile?: string;
+  /** 工具允许列表（在 toolPolicy 基础上额外允许，支持 glob 如 'mcp__*'） */
+  toolAllow?: string[];
+  /** 工具禁止列表（优先级高于 allow，支持 glob） */
+  toolDeny?: string[];
 }
 
 // ─── Binding 路由 ────────────────────────────────────────

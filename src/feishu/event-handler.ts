@@ -25,6 +25,7 @@ import { agentRegistry } from '../agent/registry.js';
 import { accountManager } from './multi-account.js';
 import type { AgentId, AgentConfig } from '../agent/types.js';
 import { buildChatAgentPrompt } from '../agent/prompts/chat.js';
+import { readSystemPromptFile } from '../agent/config-loader.js';
 import { createDiscussionMcpServer } from '../agent/tools/discussion.js';
 
 // 注册审批通过后的消息重新入队回调（避免 approval.ts → event-handler.ts 循环依赖）
@@ -909,6 +910,8 @@ async function executeClaudeTask(
     // 否则回退到 owner 检查（dev agent 中非 owner 也是只读）
     const agentCfg = agentRegistry.get(agentId);
     const readOnly = agentCfg?.readOnly ?? !isOwner(userId);
+    // 自定义 agent 支持 systemPromptFile（dev agent 没配置时 → undefined → 使用默认 buildWorkspaceSystemPrompt）
+    const customSystemPrompt = readSystemPromptFile(agentId);
 
     const result = await claudeExecutor.execute({
       sessionKey,
@@ -918,6 +921,9 @@ async function executeClaudeTask(
       model: agentCfg?.model,
       maxTurns: agentCfg?.maxTurns,
       maxBudgetUsd: agentCfg?.maxBudgetUsd,
+      settingSources: agentCfg?.settingSources,
+      toolAllow: agentCfg?.toolAllow,
+      toolDeny: agentCfg?.toolDeny,
       // 有图片时不 resume（AsyncIterable prompt 模式与 resume 不兼容）
       resumeSessionId: images?.length ? undefined : (canResume ? activeConversationId : undefined),
       onProgress,
@@ -925,6 +931,7 @@ async function executeClaudeTask(
       onTurn,
       historySummaries,
       images,
+      ...(customSystemPrompt ? { systemPromptOverride: customSystemPrompt } : {}),
     });
 
     // 检测是否需要 restart（workspace 变更后重新执行以加载 CLAUDE.md）
@@ -973,10 +980,14 @@ async function executeClaudeTask(
         model: agentCfg?.model,
         maxTurns: agentCfg?.maxTurns,
         maxBudgetUsd: agentCfg?.maxBudgetUsd,
+        settingSources: agentCfg?.settingSources,
+        toolAllow: agentCfg?.toolAllow,
+        toolDeny: agentCfg?.toolDeny,
         onProgress,
         onTurn,
         historySummaries,
         disableWorkspaceTool: true,
+        ...(customSystemPrompt ? { systemPromptOverride: customSystemPrompt } : {}),
       });
 
       // 保存 restart query 的 session_id 到 thread session
@@ -1164,8 +1175,10 @@ async function executeDirectTask(
       model: agentCfg.model,
       maxTurns: agentCfg.maxTurns,
       maxBudgetUsd: agentCfg.maxBudgetUsd,
+      toolAllow: agentCfg.toolAllow,
+      toolDeny: agentCfg.toolDeny,
       settingSources: agentCfg.settingSources,
-      systemPromptOverride: buildChatAgentPrompt(),
+      systemPromptOverride: readSystemPromptFile(agentId) ?? buildChatAgentPrompt(),
       resumeSessionId,
       images,
       // 不需要 workspace-manager 工具（Chat Agent 不切换工作区）

@@ -11,6 +11,7 @@ import { feishuClient } from './feishu/client.js';
 import { cleanupExpiredApprovals } from './feishu/approval.js';
 import { accountManager } from './feishu/multi-account.js';
 import { validateBindings } from './agent/router.js';
+import { loadAgentConfig, startConfigWatcher, stopConfigWatcher, reloadAgentConfig } from './agent/config-loader.js';
 
 async function main(): Promise<void> {
   logger.info('Starting Feishu Claude Code Bridge...');
@@ -30,6 +31,23 @@ async function main(): Promise<void> {
     timeoutSeconds: config.claude.timeoutSeconds,
     multiBotMode: isMultiBotMode(),
   }, 'Configuration loaded');
+
+  // 加载 agent 配置文件（热重载支持）
+  const agentConfigResult = loadAgentConfig();
+  if (agentConfigResult.error && config.agent.configPath) {
+    // 显式配置了 AGENT_CONFIG_PATH 但加载失败 → 致命错误
+    logger.error({ error: agentConfigResult.error }, 'Failed to load AGENT_CONFIG_PATH');
+    process.exit(1);
+  }
+
+  // 启动配置文件监听（热重载）
+  startConfigWatcher();
+
+  // SIGHUP 手动触发配置重载
+  process.on('SIGHUP', () => {
+    logger.info('SIGHUP received, reloading agent config...');
+    reloadAgentConfig();
+  });
 
   // 启动时清理残留的 .tmp-* 临时目录和孤儿 Claude 子进程
   cleanupTmpDirs();
@@ -85,6 +103,7 @@ async function main(): Promise<void> {
     shuttingDown = true;
 
     logger.info({ signal }, 'Shutting down...');
+    stopConfigWatcher();
     clearInterval(cleanupInterval);
     claudeExecutor.killAll();
     pipelineStore.markRunningAsInterrupted();
