@@ -153,12 +153,11 @@ export async function startPipeline(pipelineId: string): Promise<void> {
   let threadHistory: string | undefined;
   if (pipelineThreadId) {
     try {
-      const messages = await feishuClient.listThreadMessages(pipelineThreadId);
-      // 过滤：只保留文本消息（跳过卡片、图片等），排除 /dev 命令
+      const messages = await feishuClient.fetchRecentMessages(pipelineThreadId, 'thread', 50);
+      // 过滤：排除 /dev 命令本身
       const historyLines: string[] = [];
       for (const msg of messages) {
-        if (msg.msgType !== 'text' || !msg.textContent) continue;
-        const text = msg.textContent.trim();
+        const text = msg.content.trim();
         if (!text) continue;
         if (text === '/dev' || text.startsWith('/dev ')) continue;
         const role = msg.senderType === 'app' ? '助手' : '用户';
