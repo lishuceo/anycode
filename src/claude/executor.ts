@@ -515,13 +515,25 @@ export class ClaudeExecutor {
   }
 
   /**
-   * 中断某个 chat 下所有运行中的查询（匹配 sessionKey 前缀）
+   * 中断某个 chat 下所有运行中的查询
    * 用于 /stop：per-thread 并行后一个 chat 可能有多个 running query
+   *
+   * 匹配逻辑适配 agent-prefixed key 格式:
+   *   agent:{agentId}:{chatId}:{userId}:...
+   *   routing:agent:{agentId}:{chatId}:...
+   *   以及旧格式 {chatId}:{userId}:... (兼容)
    */
   killSessionsForChat(chatId: string, userId: string): void {
-    const prefix = `${chatId}:${userId}`;
+    const oldPrefix = `${chatId}:${userId}`;
     for (const [key, q] of this.runningQueries) {
-      if (key === prefix || key.startsWith(prefix + ':') || key === `routing:${prefix}` || key.startsWith(`routing:${prefix}:`)) {
+      // 新格式：key 中包含 {chatId}:{userId}
+      const matchesChat = key.includes(`${chatId}:${userId}`);
+      // 旧格式兼容
+      const matchesOld = key === oldPrefix || key.startsWith(oldPrefix + ':');
+      // routing 前缀兼容
+      const matchesRouting = key === `routing:${oldPrefix}` || key.startsWith(`routing:${oldPrefix}:`);
+
+      if (matchesChat || matchesOld || matchesRouting) {
         q.close();
         this.runningQueries.delete(key);
         logger.info({ sessionKey: key }, 'Killed Claude Agent SDK query');

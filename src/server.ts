@@ -1,8 +1,9 @@
 import express from 'express';
 import * as lark from '@larksuiteoapi/node-sdk';
-import { config } from './config.js';
+import { config, isMultiBotMode } from './config.js';
 import { logger } from './utils/logger.js';
 import { createEventDispatcher, createCardActionHandler } from './feishu/event-handler.js';
+import { accountManager } from './feishu/multi-account.js';
 
 /**
  * 启动服务
@@ -23,7 +24,9 @@ export function startServer(): void {
   const { port } = config.server;
   const eventDispatcher = createEventDispatcher();
 
-  if (config.feishu.eventMode === 'websocket') {
+  if (isMultiBotMode()) {
+    startMultiBotWebSocketMode(eventDispatcher, port);
+  } else if (config.feishu.eventMode === 'websocket') {
     startWebSocketMode(eventDispatcher, port);
   } else {
     startWebhookMode(eventDispatcher, port);
@@ -104,5 +107,60 @@ function startWebSocketMode(eventDispatcher: lark.EventDispatcher, port: number)
   app.listen(port, () => {
     logger.info({ port, mode: 'websocket' }, 'Health check + card action server started');
     logger.info(`  Card action URL: http://localhost:${port}/feishu/card`);
+  });
+}
+
+// ============================================================
+// 模式三: 多 Bot WebSocket (每个 bot 独立长连接)
+// ============================================================
+
+function startMultiBotWebSocketMode(_sharedDispatcher: lark.EventDispatcher, port: number): void {
+  const accounts = accountManager.allAccounts();
+  logger.info({ accountCount: accounts.length }, 'Starting multi-bot WebSocket mode');
+
+  // 每个 bot 创建独立的 EventDispatcher + WSClient
+  // 通过闭包绑定 accountId，确保收到事件时知道是哪个 bot 的
+  for (const account of accounts) {
+    const perBotDispatcher = createEventDispatcher(account.accountId);
+
+    const wsClient = new lark.WSClient({
+      appId: account.appId,
+      appSecret: account.appSecret,
+    });
+
+    wsClient.start({ eventDispatcher: perBotDispatcher }).then(() => {
+      logger.info(
+        { accountId: account.accountId, botName: account.botName },
+        'Bot WebSocket connected',
+      );
+    }).catch((err: Error) => {
+      logger.error(
+        { err, accountId: account.accountId },
+        'Failed to connect bot WebSocket',
+      );
+    });
+  }
+
+  // Express 用于健康检查 + 卡片交互回调
+  const app = express();
+  app.use(express.json());
+
+  app.get('/health', (_req, res) => {
+    res.json({
+      status: 'ok',
+      mode: 'multi-bot-websocket',
+      accounts: accounts.map((a) => a.accountId),
+      timestamp: new Date().toISOString(),
+    });
+  });
+
+  const cardHandler = createCardActionHandler();
+  app.post(
+    '/feishu/card',
+    lark.adaptExpress(cardHandler, { autoChallenge: true }),
+  );
+
+  app.listen(port, () => {
+    logger.info({ port, mode: 'multi-bot-websocket', accounts: accounts.length }, 'Multi-bot server started');
   });
 }

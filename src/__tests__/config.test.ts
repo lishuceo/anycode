@@ -15,22 +15,25 @@ describe('config', () => {
     it('should return errors when FEISHU_APP_ID is missing', async () => {
       vi.stubEnv('FEISHU_APP_ID', '');
       vi.stubEnv('FEISHU_APP_SECRET', 'secret');
+      vi.stubEnv('BOT_ACCOUNTS', '');
       const { validateConfig } = await loadConfig();
       const errors = validateConfig();
-      expect(errors).toContain('FEISHU_APP_ID is required');
+      expect(errors.some(e => e.includes('FEISHU_APP_ID is required'))).toBe(true);
     });
 
     it('should return errors when FEISHU_APP_SECRET is missing', async () => {
       vi.stubEnv('FEISHU_APP_ID', 'id');
       vi.stubEnv('FEISHU_APP_SECRET', '');
+      vi.stubEnv('BOT_ACCOUNTS', '');
       const { validateConfig } = await loadConfig();
       const errors = validateConfig();
-      expect(errors).toContain('FEISHU_APP_SECRET is required');
+      expect(errors.some(e => e.includes('FEISHU_APP_SECRET is required'))).toBe(true);
     });
 
     it('should return errors for both missing fields', async () => {
       vi.stubEnv('FEISHU_APP_ID', '');
       vi.stubEnv('FEISHU_APP_SECRET', '');
+      vi.stubEnv('BOT_ACCOUNTS', '');
       const { validateConfig } = await loadConfig();
       const errors = validateConfig();
       expect(errors).toHaveLength(2);

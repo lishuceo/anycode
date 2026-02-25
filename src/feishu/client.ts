@@ -14,10 +14,10 @@ export class FeishuClient {
     return this._botOpenId;
   }
 
-  constructor() {
+  constructor(appId?: string, appSecret?: string) {
     this.client = new lark.Client({
-      appId: config.feishu.appId,
-      appSecret: config.feishu.appSecret,
+      appId: appId ?? config.feishu.appId,
+      appSecret: appSecret ?? config.feishu.appSecret,
       disableTokenCache: false,
     });
   }
@@ -390,5 +390,47 @@ export class FeishuClient {
   }
 }
 
-/** 全局单例 */
-export const feishuClient = new FeishuClient();
+import { AsyncLocalStorage } from 'node:async_hooks';
+
+/**
+ * AsyncLocalStorage 用于在异步调用链中传递当前 accountId。
+ * handleMessageEvent 入口设置，下游的 feishuClient 调用自动路由到正确的 per-account client。
+ */
+export const feishuClientContext = new AsyncLocalStorage<string>();
+
+/** 设置当前请求的 accountId（在 handleMessageEvent 入口调用） */
+export function runWithAccountId<T>(accountId: string, fn: () => T): T {
+  return feishuClientContext.run(accountId, fn);
+}
+
+/**
+ * Client resolver — 由 multi-account.ts 在初始化后注册，
+ * 避免 client.ts → multi-account.ts 循环依赖。
+ */
+let _clientResolver: ((accountId: string) => FeishuClient | undefined) | undefined;
+
+/** 注册 per-account client resolver（由 multi-account.ts 调用） */
+export function registerClientResolver(resolver: (accountId: string) => FeishuClient | undefined): void {
+  _clientResolver = resolver;
+}
+
+/**
+ * 全局单例（向后兼容）
+ *
+ * 在多 bot 模式下，通过 Proxy 自动路由到 AsyncLocalStorage 中绑定的 per-account client。
+ * 单 bot 模式下或 AsyncLocalStorage 无值时，回退到默认实例。
+ */
+const _defaultClient = new FeishuClient();
+
+export const feishuClient: FeishuClient = new Proxy(_defaultClient, {
+  get(target, prop, receiver) {
+    const accountId = feishuClientContext.getStore();
+    if (accountId && accountId !== 'default' && _clientResolver) {
+      const client = _clientResolver(accountId);
+      if (client) {
+        return Reflect.get(client, prop, receiver);
+      }
+    }
+    return Reflect.get(target, prop, receiver);
+  },
+});

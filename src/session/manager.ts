@@ -22,10 +22,10 @@ export class SessionManager {
 
   /**
    * 获取或创建会话
-   * key = chatId (群聊共享) 或 chatId:userId (私聊独立)
+   * key = agent:{agentId}:{chatId}:{userId}
    */
-  getOrCreate(chatId: string, userId: string): Readonly<Session> {
-    const key = this.makeKey(chatId, userId);
+  getOrCreate(chatId: string, userId: string, agentId: string = 'dev'): Readonly<Session> {
+    const key = this.makeKey(chatId, userId, agentId);
     let session = this.db.get(key);
 
     if (!session) {
@@ -50,15 +50,15 @@ export class SessionManager {
   /**
    * 获取会话
    */
-  get(chatId: string, userId: string): Readonly<Session> | undefined {
-    return this.db.get(this.makeKey(chatId, userId));
+  get(chatId: string, userId: string, agentId: string = 'dev'): Readonly<Session> | undefined {
+    return this.db.get(this.makeKey(chatId, userId, agentId));
   }
 
   /**
    * 更新会话工作目录
    */
-  setWorkingDir(chatId: string, userId: string, dir: string): void {
-    const key = this.makeKey(chatId, userId);
+  setWorkingDir(chatId: string, userId: string, dir: string, agentId: string = 'dev'): void {
+    const key = this.makeKey(chatId, userId, agentId);
     this.db.updateWorkingDir(key, dir);
     logger.info({ chatId, userId, workingDir: dir }, 'Working directory changed');
   }
@@ -66,41 +66,41 @@ export class SessionManager {
   /**
    * 更新会话状态
    */
-  setStatus(chatId: string, userId: string, status: Session['status']): void {
-    this.db.updateStatus(this.makeKey(chatId, userId), status);
+  setStatus(chatId: string, userId: string, status: Session['status'], agentId: string = 'dev'): void {
+    this.db.updateStatus(this.makeKey(chatId, userId, agentId), status);
   }
 
   /**
    * 原子地尝试获取会话锁（idle → busy），防止 TOCTOU 竞态
    * @returns true 如果成功获取（session 之前不是 busy），false 如果已被占用
    */
-  tryAcquire(chatId: string, userId: string): boolean {
+  tryAcquire(chatId: string, userId: string, agentId: string = 'dev'): boolean {
     // 确保 session 存在
-    this.getOrCreate(chatId, userId);
-    return this.db.tryAcquire(this.makeKey(chatId, userId));
+    this.getOrCreate(chatId, userId, agentId);
+    return this.db.tryAcquire(this.makeKey(chatId, userId, agentId));
   }
 
   /**
    * 保存话题信息
    */
-  setThread(chatId: string, userId: string, threadId: string, rootMessageId: string): void {
-    this.db.updateThread(this.makeKey(chatId, userId), threadId, rootMessageId);
-    logger.info({ chatId, userId, threadId }, 'Thread saved to session');
+  setThread(chatId: string, userId: string, threadId: string, rootMessageId: string, agentId: string = 'dev'): void {
+    this.db.updateThread(this.makeKey(chatId, userId, agentId), threadId, rootMessageId);
+    logger.info({ chatId, userId, threadId, agentId }, 'Thread saved to session');
   }
 
   /**
    * 更新 Claude Code 会话 ID (用于续接对话)
    * @param cwd 创建该 session 时的工作目录（resume 需要 cwd 匹配）
    */
-  setConversationId(chatId: string, userId: string, conversationId: string, cwd?: string): void {
-    this.db.updateConversationId(this.makeKey(chatId, userId), conversationId, cwd);
+  setConversationId(chatId: string, userId: string, conversationId: string, cwd?: string, agentId: string = 'dev'): void {
+    this.db.updateConversationId(this.makeKey(chatId, userId, agentId), conversationId, cwd);
   }
 
   /**
    * 重置会话
    */
-  reset(chatId: string, userId: string): void {
-    const key = this.makeKey(chatId, userId);
+  reset(chatId: string, userId: string, agentId: string = 'dev'): void {
+    const key = this.makeKey(chatId, userId, agentId);
     this.db.delete(key);
     logger.info({ chatId, userId }, 'Session reset');
   }
@@ -108,18 +108,19 @@ export class SessionManager {
   /**
    * 获取 thread 级别的 session
    */
-  getThreadSession(threadId: string): Readonly<ThreadSession> | undefined {
-    return this.db.getThreadSession(threadId);
+  getThreadSession(threadId: string, agentId: string = 'dev'): Readonly<ThreadSession> | undefined {
+    return this.db.getThreadSession(this.makeThreadKey(threadId, agentId));
   }
 
   /**
    * 创建或更新 thread session（首条消息确定 workdir 时调用）
    */
-  upsertThreadSession(threadId: string, chatId: string, userId: string, workingDir: string): void {
-    const existing = this.db.getThreadSession(threadId);
+  upsertThreadSession(threadId: string, chatId: string, userId: string, workingDir: string, agentId: string = 'dev'): void {
+    const key = this.makeThreadKey(threadId, agentId);
+    const existing = this.db.getThreadSession(key);
     const now = new Date();
     this.db.upsertThreadSession({
-      threadId,
+      threadId: key,
       chatId,
       userId,
       workingDir,
@@ -133,57 +134,57 @@ export class SessionManager {
   /**
    * 保存 thread 对应的 Claude Code session ID
    */
-  setThreadConversationId(threadId: string, conversationId: string, cwd: string): void {
-    this.db.updateThreadConversationId(threadId, conversationId, cwd);
+  setThreadConversationId(threadId: string, conversationId: string, cwd: string, agentId: string = 'dev'): void {
+    this.db.updateThreadConversationId(this.makeThreadKey(threadId, agentId), conversationId, cwd);
   }
 
   /**
    * 更新 thread 的工作目录（workspace 切换时，同时清空 conversationId）
    */
-  setThreadWorkingDir(threadId: string, workingDir: string): void {
-    this.db.updateThreadWorkingDir(threadId, workingDir);
+  setThreadWorkingDir(threadId: string, workingDir: string, agentId: string = 'dev'): void {
+    this.db.updateThreadWorkingDir(this.makeThreadKey(threadId, agentId), workingDir);
   }
 
   /**
    * 设置 thread 的路由状态（need_clarification 时保存上下文）
    */
-  setThreadRoutingState(threadId: string, state: RoutingState): void {
-    this.db.updateThreadRoutingState(threadId, state);
+  setThreadRoutingState(threadId: string, state: RoutingState, agentId: string = 'dev'): void {
+    this.db.updateThreadRoutingState(this.makeThreadKey(threadId, agentId), state);
   }
 
   /**
    * 清空 thread 的路由状态（路由完成后）
    */
-  clearThreadRoutingState(threadId: string): void {
-    this.db.clearThreadRoutingState(threadId);
+  clearThreadRoutingState(threadId: string, agentId: string = 'dev'): void {
+    this.db.clearThreadRoutingState(this.makeThreadKey(threadId, agentId));
   }
 
   /**
    * 标记 thread 的路由已完成
    */
-  markThreadRoutingCompleted(threadId: string): void {
-    this.db.markThreadRoutingCompleted(threadId);
+  markThreadRoutingCompleted(threadId: string, agentId: string = 'dev'): void {
+    this.db.markThreadRoutingCompleted(this.makeThreadKey(threadId, agentId));
   }
 
   /**
    * 设置 thread 的审批状态（owner 审批通过/拒绝）
    */
-  setThreadApproved(threadId: string, approved: boolean): void {
-    this.db.setThreadApproved(threadId, approved);
+  setThreadApproved(threadId: string, approved: boolean, agentId: string = 'dev'): void {
+    this.db.setThreadApproved(this.makeThreadKey(threadId, agentId), approved);
   }
 
   /**
    * 保存 pipeline 上下文到 thread session（pipeline 完成后调用）
    */
-  setThreadPipelineContext(threadId: string, context: PipelineContext): void {
-    this.db.setThreadPipelineContext(threadId, context);
+  setThreadPipelineContext(threadId: string, context: PipelineContext, agentId: string = 'dev'): void {
+    this.db.setThreadPipelineContext(this.makeThreadKey(threadId, agentId), context);
   }
 
   /**
    * 刷新 thread session 的 updated_at（防止活跃 thread 被 cleanup 清理）
    */
-  touchThreadSession(threadId: string): void {
-    this.db.touchThreadSession(threadId);
+  touchThreadSession(threadId: string, agentId: string = 'dev'): void {
+    this.db.touchThreadSession(this.makeThreadKey(threadId, agentId));
   }
 
   /**
@@ -253,8 +254,20 @@ export class SessionManager {
     this.db.close();
   }
 
-  private makeKey(chatId: string, userId: string): string {
-    return `${chatId}:${userId}`;
+  /**
+   * 构建 session key，包含 agentId 前缀
+   * 格式: agent:{agentId}:{chatId}:{userId}
+   */
+  makeKey(chatId: string, userId: string, agentId: string = 'dev'): string {
+    return `agent:${agentId}:${chatId}:${userId}`;
+  }
+
+  /**
+   * 构建 thread session key，包含 agentId 前缀
+   * 格式: agent:{agentId}:{threadId}
+   */
+  makeThreadKey(threadId: string, agentId: string = 'dev'): string {
+    return `agent:${agentId}:${threadId}`;
   }
 }
 
