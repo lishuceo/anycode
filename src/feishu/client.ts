@@ -424,11 +424,15 @@ export class FeishuClient {
             content = body.text ?? '';
           } else if (msgType === 'post') {
             // 富文本：提取所有 text 类型元素的文本
-            const title = body.title ?? '';
+            // 飞书 post 格式可能是直接的 {title, content} 或带语言键的 {zh_cn: {title, content}}
+            const postBody = Array.isArray(body.content)
+              ? body
+              : (body.zh_cn || body.en_us || body.ja_jp || Object.values(body)[0]) as Record<string, unknown> | undefined;
+            const title = (postBody?.title as string) ?? '';
             const textParts: string[] = title ? [title] : [];
-            for (const paragraph of body.content ?? []) {
+            for (const paragraph of (postBody?.content as Array<Array<Record<string, unknown>>>) ?? []) {
               for (const element of paragraph ?? []) {
-                if (element.tag === 'text') textParts.push(element.text ?? '');
+                if (element.tag === 'text') textParts.push((element.text as string) ?? '');
               }
             }
             content = textParts.join(' ');

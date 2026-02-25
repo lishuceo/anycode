@@ -101,13 +101,14 @@ describe('ensureThread', () => {
 
     it('should reuse thread when threadId is present even without rootId', async () => {
       // threadId is the authoritative indicator of "in a thread"
+      // rootId undefined → fallback to messageId for reply target
       const result = await ensureThread('chat1', 'user1', 'msg-new', undefined, 'omt_stale');
 
       expect(mockSessionSetThread).toHaveBeenCalledWith(
-        'chat1', 'user1', 'omt_stale', undefined, 'dev',
+        'chat1', 'user1', 'omt_stale', 'msg-new', 'dev',
       );
       expect(mockCreateThreadWithCard).not.toHaveBeenCalled();
-      expect(result.threadRootMsgId).toBeUndefined();
+      expect(result.threadRootMsgId).toBe('msg-new');
     });
 
     it('should fallback gracefully when thread creation fails', async () => {

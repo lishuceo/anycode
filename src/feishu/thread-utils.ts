@@ -31,8 +31,10 @@ export async function ensureThread(
   //    注意：rootId 在主面板引用回复时也会有值，不能用来判断是否在话题内
   if (threadId) {
     // threadId (omt_xxx) 做话题标识，rootId (om_xxx) 做回复目标
-    sessionManager.setThread(chatId, userId, threadId, rootId!, agentId);
-    return { threadRootMsgId: rootId };
+    // rootId 在飞书实际场景中 threadId 存在时一定存在，但防御性处理避免 undefined 入库
+    const replyTarget = rootId ?? messageId;
+    sessionManager.setThread(chatId, userId, threadId, replyTarget, agentId);
+    return { threadRootMsgId: replyTarget };
   }
 
   // 2. 用户在主聊天区发消息（无 rootId）— 新会话意图
