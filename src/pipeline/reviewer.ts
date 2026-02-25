@@ -100,8 +100,8 @@ export async function parallelReview(options: ParallelReviewOptions): Promise<Re
         prompt: content,
         workingDir,
         systemPromptOverride: systemPrompt,
-        maxBudgetUsd: 0.5,
-        maxTurns: 10,
+        maxBudgetUsd: 5,
+        maxTurns: 30,
       });
 
       const durationMs = Date.now() - startTime;
