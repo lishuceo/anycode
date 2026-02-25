@@ -301,6 +301,11 @@ export class ClaudeExecutor {
                 return { behavior: 'allow' as const, updatedInput: inputObj };
               }
             }
+            // discussion-tools: Chat Agent 话题升级工具，readonly 下允许
+            if (toolName.includes('discussion-tools')) {
+              logger.info({ toolName, readOnly }, 'canUseTool allowed — discussion tool in read-only mode');
+              return { behavior: 'allow' as const, updatedInput: inputObj };
+            }
             // 所有其他 MCP 工具（含 workspace-manager、未来新增）以及不在 allow-list 的 feishu action：deny
             logger.info({ toolName, readOnly }, 'canUseTool denied — read-only mode (MCP tool)');
             return { behavior: 'deny' as const, message: '当前用户处于只读模式，无法使用此工具。' };
