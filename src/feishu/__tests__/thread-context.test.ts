@@ -60,6 +60,11 @@ vi.mock('../approval.js', () => ({
   consumePreApproved: vi.fn(() => false),
 }));
 
+vi.mock('../../utils/security.js', () => ({
+  isOwner: vi.fn(() => true),
+  isUserAllowed: vi.fn(() => true),
+}));
+
 const mockReplyText = vi.fn();
 const mockReplyTextInThread = vi.fn();
 const mockUpdateCard = vi.fn(() => Promise.resolve(true));
@@ -89,6 +94,8 @@ vi.mock('../../config.js', () => ({
 
 // Import after mocks
 const { resolveThreadContext } = await import('../thread-context.js');
+const { isOwner } = await import('../../utils/security.js');
+const mockIsOwner = vi.mocked(isOwner);
 
 // ============================================================
 // Tests
@@ -97,6 +104,7 @@ const { resolveThreadContext } = await import('../thread-context.js');
 describe('resolveThreadContext', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockIsOwner.mockReturnValue(false); // 默认非 owner，确保既有测试验证的是 router mode
     mockSessionGetOrCreate.mockReturnValue({
       chatId: 'chat1', userId: 'user1', workingDir: '/tmp/work', status: 'idle',
       threadId: 'omt_thread_1',
@@ -294,6 +302,86 @@ describe('resolveThreadContext', () => {
         expect(result.ctx.prompt).toBe('fix bug in repo-a');
       }
       expect(mockClearThreadRoutingState).toHaveBeenCalledWith('omt_thread_1');
+    });
+  });
+
+  describe('owner always gets writable isolation mode', () => {
+    it('should force writable mode for owner even when routing returns readonly', async () => {
+      mockIsOwner.mockReturnValue(true);
+      mockGetThreadSession
+        .mockReturnValueOnce(undefined)
+        .mockReturnValueOnce({ threadId: 'omt_thread_1', workingDir: '/tmp/work' })
+        .mockReturnValueOnce({ threadId: 'omt_thread_1', workingDir: '/projects/repo-a', routingCompleted: true });
+
+      mockRouteWorkspace.mockResolvedValue({
+        decision: 'use_existing',
+        workdir: '/projects/repo-a',
+        mode: 'readonly',
+      });
+      mockEnsureIsolatedWorkspace.mockReturnValue('/workspaces/repo-a-isolated');
+
+      await resolveThreadContext({
+        prompt: 'analyze repo-a',
+        chatId: 'chat1', userId: 'owner1', messageId: 'msg-1',
+      });
+
+      expect(mockEnsureIsolatedWorkspace).toHaveBeenCalledWith('/projects/repo-a', 'writable');
+    });
+
+    it('should respect readonly mode for non-owner users', async () => {
+      mockIsOwner.mockReturnValue(false);
+      mockGetThreadSession
+        .mockReturnValueOnce(undefined)
+        .mockReturnValueOnce({ threadId: 'omt_thread_1', workingDir: '/tmp/work' })
+        .mockReturnValueOnce({ threadId: 'omt_thread_1', workingDir: '/projects/repo-a', routingCompleted: true });
+
+      mockRouteWorkspace.mockResolvedValue({
+        decision: 'use_existing',
+        workdir: '/projects/repo-a',
+        mode: 'readonly',
+      });
+      mockEnsureIsolatedWorkspace.mockReturnValue('/workspaces/repo-a-isolated');
+
+      await resolveThreadContext({
+        prompt: 'analyze repo-a',
+        chatId: 'chat1', userId: 'guest1', messageId: 'msg-1',
+      });
+
+      expect(mockEnsureIsolatedWorkspace).toHaveBeenCalledWith('/projects/repo-a', 'readonly');
+    });
+
+    it('should force writable for owner during routing clarification retry', async () => {
+      mockIsOwner.mockReturnValue(true);
+      mockGetThreadSession
+        .mockReturnValueOnce(undefined)
+        .mockReturnValueOnce({
+          threadId: 'omt_thread_1', workingDir: '/tmp/work',
+          routingState: {
+            status: 'pending_clarification',
+            originalPrompt: 'look at repo-b',
+            question: '哪个仓库？',
+            retryCount: 0,
+          },
+        });
+
+      mockRouteWorkspace.mockResolvedValue({
+        decision: 'use_existing',
+        workdir: '/projects/repo-b',
+        mode: 'readonly',
+      });
+      mockEnsureIsolatedWorkspace.mockReturnValue('/workspaces/repo-b-isolated');
+      mockGetThreadSession.mockReturnValue({
+        threadId: 'omt_thread_1', workingDir: '/workspaces/repo-b-isolated',
+        routingCompleted: true,
+      });
+
+      await resolveThreadContext({
+        prompt: 'repo-b',
+        chatId: 'chat1', userId: 'owner1', messageId: 'msg-2',
+        rootId: 'om_root', threadId: 'omt_thread_1',
+      });
+
+      expect(mockEnsureIsolatedWorkspace).toHaveBeenCalledWith('/projects/repo-b', 'writable');
     });
   });
 
