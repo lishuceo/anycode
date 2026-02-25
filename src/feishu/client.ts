@@ -384,45 +384,49 @@ export class FeishuClient {
     }
   }
 
+  /** fetchRecentMessages 返回的消息结构 */
+  /** 飞书消息简化结构（fetchRecentMessages 返回） */
   /**
-   * 获取话题内的消息列表（用于构建对话历史上下文）
-   * 使用降序获取最新消息（单页即可覆盖最相关的上下文），返回时 reverse 为时间正序
+   * 拉取群聊或话题的最近消息（用于注入聊天上下文）
+   *
+   * 统一入口：支持群聊主面板（chat）和话题（thread）两种容器，
+   * 解析 text + post（含 locale-wrapped）消息，处理 @mention 占位符。
+   *
+   * @param containerId - chat_id（群聊）或 thread_id（话题）
+   * @param containerType - 'chat' 或 'thread'
+   * @param limit - 最多拉取条数（默认 10）
+   * @returns 简化的消息数组（时间正序），出错时返回空数组
    */
-  async listThreadMessages(threadId: string, pageSize = 50): Promise<Array<{
-    senderType: 'user' | 'app';
-    msgType: string;
-    textContent?: string;
-    createTime: string;
-  }>> {
+  async fetchRecentMessages(
+    containerId: string,
+    containerType: 'chat' | 'thread' = 'chat',
+    limit: number = 10,
+  ): Promise<Array<{ messageId: string; senderType: 'user' | 'app'; content: string; msgType: string }>> {
     try {
-      // 降序取最新一页：即使话题消息 >pageSize，也能拿到 /dev 前最近的上下文
       const resp = await this.client.im.message.list({
         params: {
-          container_id_type: 'thread',
-          container_id: threadId,
-          page_size: pageSize,
+          container_id_type: containerType,
+          container_id: containerId,
           sort_type: 'ByCreateTimeDesc',
+          page_size: limit,
         },
       });
-
-      if (resp.code !== 0 || !resp.data?.items) {
-        logger.warn({ code: resp.code, msg: resp.msg, threadId }, 'Failed to list thread messages');
+      if (resp.code !== 0) {
+        logger.warn({ code: resp.code, msg: resp.msg, containerId, containerType }, 'Failed to fetch recent messages');
         return [];
       }
-
-      if (resp.data.has_more) {
-        logger.info({ threadId, pageSize, total: resp.data.items.length }, 'Thread has more messages than pageSize, early history truncated');
-      }
-
-      const results = resp.data.items.map((item) => {
+      const items = resp.data?.items ?? [];
+      const messages: Array<{ messageId: string; senderType: 'user' | 'app'; content: string; msgType: string }> = [];
+      for (const item of items) {
+        if (item.deleted) continue;
+        const msgType = item.msg_type ?? '';
+        if (msgType !== 'text' && msgType !== 'post') continue;
         const senderType = item.sender?.sender_type === 'app' ? 'app' as const : 'user' as const;
-        const msgType = item.msg_type ?? 'unknown';
-
-        let textContent: string | undefined;
-        if (msgType === 'text' && item.body?.content) {
-          try {
-            const parsed = JSON.parse(item.body.content);
-            let text = parsed.text as string | undefined;
+        let content = '';
+        try {
+          const body = JSON.parse(item.body?.content ?? '{}');
+          if (msgType === 'text') {
+            let text = (body.text as string) ?? '';
             // 解析飞书 @mention 占位符（@_user_1 → @用户名）
             if (text && Array.isArray(item.mentions)) {
               for (const m of item.mentions as Array<{ key?: string; name?: string }>) {
@@ -431,25 +435,36 @@ export class FeishuClient {
                 }
               }
             }
-            textContent = text;
-          } catch {
-            // ignore parse errors
+            content = text;
+          } else if (msgType === 'post') {
+            // 飞书 post 格式可能是直接的 {title, content} 或带语言键的 {zh_cn: {title, content}}
+            const postBody = Array.isArray(body.content)
+              ? body
+              : (body.zh_cn || body.en_us || body.ja_jp || Object.values(body)[0]) as Record<string, unknown> | undefined;
+            const title = (postBody?.title as string) ?? '';
+            const textParts: string[] = title ? [title] : [];
+            for (const paragraph of (postBody?.content as Array<Array<Record<string, unknown>>>) ?? []) {
+              for (const element of paragraph ?? []) {
+                if (element.tag === 'text') textParts.push((element.text as string) ?? '');
+              }
+            }
+            content = textParts.join(' ');
           }
+        } catch {
+          continue;
         }
-
-        return {
+        if (!content.trim()) continue;
+        messages.push({
+          messageId: item.message_id ?? '',
           senderType,
+          content: content.trim(),
           msgType,
-          textContent,
-          createTime: item.create_time ?? '',
-        };
-      });
-
-      // 降序取回后 reverse 为时间正序
-      results.reverse();
-      return results;
+        });
+      }
+      // API 返回的是 ByCreateTimeDesc（最新在前），反转为时间正序
+      return messages.reverse();
     } catch (err) {
-      logger.warn({ err, threadId }, 'Error listing thread messages');
+      logger.warn({ err, containerId, containerType }, 'Error fetching recent messages');
       return [];
     }
   }

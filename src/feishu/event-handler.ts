@@ -253,8 +253,9 @@ function processQueue(queueKey: string, agentId: AgentId = 'dev'): void {
   if (!task) return;
 
   const agentCfg = agentRegistry.get(agentId);
-  // direct 模式 + 不在已有话题中 → executeDirectTask
-  const useDirectMode = agentCfg?.replyMode === 'direct' && !task.rootId;
+  // direct 模式 + 不在话题中 → executeDirectTask
+  // 用 threadId 判断是否在话题内（rootId 在主面板引用回复时也会有值）
+  const useDirectMode = agentCfg?.replyMode === 'direct' && !task.threadId;
 
   const executeFn = useDirectMode
     ? executeDirectTask(task.message, task.chatId, task.userId, task.messageId, task.images, agentId)
@@ -444,12 +445,7 @@ async function handleMessageEvent(data: MessageEventData, accountId: string = 'd
     }
   }
 
-  // 话题内消息必须有 thread_id
-  if (rootId && !threadId) {
-    logger.error({ messageId, rootId, chatId }, 'Feishu event has root_id but missing thread_id — aborting to surface the issue');
-    await feishuClient.replyText(messageId, '⚠️ 系统异常：飞书事件缺少 thread_id，请联系管理员');
-    return;
-  }
+  // root_id 单独出现（无 thread_id）= 主面板引用回复，不是话题内消息，正常处理即可
 
   const effectiveThreadId = threadId;
 
@@ -506,7 +502,7 @@ async function handleMessageEvent(data: MessageEventData, accountId: string = 'd
   // 通过 taskQueue 串行化：queue key 包含 agentId，不同 agent 可并行
   // direct 模式加 userId，不同用户可并行
   // enqueue 返回的 Promise 的错误处理在 processQueue/executeClaudeTask 中完成
-  const isDirectMode = agentConfig?.replyMode === 'direct' && !rootId;
+  const isDirectMode = agentConfig?.replyMode === 'direct' && !threadId;
   const queueKey = makeQueueKey(chatId, effectiveThreadId, agentId, isDirectMode ? userId : undefined);
   taskQueue.enqueue(queueKey, chatId, userId, effectiveText, messageId, rootId, effectiveThreadId, images).catch(() => {});
   processQueue(queueKey, agentId);
@@ -724,6 +720,50 @@ async function handleSlashCommand(
 }
 
 /**
+ * 构建飞书聊天历史上下文（首次 @bot 时注入，帮助 Claude 理解对话背景）
+ *
+ * @param chatId - 群聊 ID
+ * @param threadId - 话题 ID（话题内消息时传入）
+ * @param currentMessageId - 当前消息 ID（用于过滤，避免把自己也算进历史）
+ * @returns 格式化的聊天历史文本，无消息时返回 undefined
+ */
+async function buildChatHistoryContext(
+  chatId: string,
+  threadId?: string,
+  currentMessageId?: string,
+): Promise<string | undefined> {
+  try {
+    const containerId = threadId ?? chatId;
+    const containerType = threadId ? 'thread' as const : 'chat' as const;
+    const messages = await feishuClient.fetchRecentMessages(containerId, containerType, 10);
+
+    // 过滤掉当前消息
+    const history = currentMessageId
+      ? messages.filter(m => m.messageId !== currentMessageId)
+      : messages;
+
+    if (history.length === 0) return undefined;
+
+    const lines = history.map(m => {
+      const role = m.senderType === 'app' ? '[Bot]' : '[用户]';
+      // 截断过长的单条消息
+      const text = m.content.length > 500 ? m.content.slice(0, 500) + '...' : m.content;
+      return `${role}: ${text}`;
+    });
+
+    return [
+      '## 飞书聊天近期上下文',
+      '以下是用户 @bot 之前的聊天记录，帮助你理解当前对话的背景：',
+      '',
+      ...lines,
+    ].join('\n');
+  } catch (err) {
+    logger.error({ err, chatId, threadId }, 'Failed to build chat history context');
+    return undefined;
+  }
+}
+
+/**
  * 执行 Claude Agent SDK 任务
  * 支持 workspace 变更后自动 restart：第一次 query 触发 setup_workspace 后，
  * 自动以新 cwd 发起第二次 query，确保 CLAUDE.md 正确加载。
@@ -775,8 +815,16 @@ async function executeClaudeTask(
   // 标记会话为忙碌
   sessionManager.setStatus(chatId, userId, 'busy', agentId);
 
-  // 构建历史上下文：仅 pipeline thread 注入 pipeline 上下文，其他场景不注入
-  // （不同 thread 通常是不同项目/话题，全局摘要反而是噪声）
+  // 提前计算 resume 状态，用于判断是否需要注入聊天历史
+  const activeConversationId = threadId
+    ? threadSession?.conversationId
+    : session.conversationId;
+  const activeConversationCwd = threadId
+    ? threadSession?.conversationCwd
+    : session.conversationCwd;
+
+  // 构建历史上下文
+  // Pipeline context → system prompt (historySummaries)，聊天历史 → user prompt 前缀
   let historySummaries: string | undefined;
   if (threadSession?.pipelineContext) {
     const ctx = threadSession.pipelineContext;
@@ -787,11 +835,19 @@ async function executeClaudeTask(
       `**执行摘要**:\n${ctx.summary}`,
     ];
     let combined = parts.join('\n\n');
-    // 限制 ~10000 tokens ≈ 30000 chars
     if (combined.length > 30000) {
       combined = combined.slice(0, 30000) + '\n\n[摘要已截断]';
     }
     historySummaries = combined;
+  }
+
+  // 首次 @bot 时注入飞书聊天历史，拼入 user prompt（不是 system prompt）
+  let effectivePrompt = prompt;
+  if (!activeConversationId && !historySummaries) {
+    const chatHistory = await buildChatHistoryContext(chatId, threadId, messageId);
+    if (chatHistory) {
+      effectivePrompt = chatHistory + '\n\n---\n\n' + prompt;
+    }
   }
 
   // 构造逐条 turn 回调
@@ -833,15 +889,7 @@ async function executeClaudeTask(
   };
 
   try {
-    // Resume 策略：有 threadId 时只用该 thread 自己的 conversationId，
-    // 避免跨 thread 串台（如 pipeline thread 回退到另一 thread 的全局 session）。
-    // 无 threadId（主聊天）时使用全局 session 的 conversationId。
-    const activeConversationId = threadId
-      ? threadSession?.conversationId
-      : session.conversationId;
-    const activeConversationCwd = threadId
-      ? threadSession?.conversationCwd
-      : session.conversationCwd;
+    // Resume 策略：activeConversationId/activeConversationCwd 已在上方提前计算
     const canResume = activeConversationId
       && (!activeConversationCwd || activeConversationCwd === workingDir);
     if (activeConversationId && !canResume) {
@@ -864,7 +912,7 @@ async function executeClaudeTask(
 
     const result = await claudeExecutor.execute({
       sessionKey,
-      prompt,
+      prompt: effectivePrompt,
       workingDir,
       readOnly,
       model: agentCfg?.model,
@@ -1090,6 +1138,15 @@ async function executeDirectTask(
     // 有图片时不 resume（AsyncIterable 与 resume 不兼容）
     const resumeSessionId = (images?.length || !canResume) ? undefined : session.conversationId;
 
+    // 首次 @bot 时注入飞书聊天历史，拼入 user prompt
+    let effectivePrompt = rawPrompt;
+    if (!session.conversationId) {
+      const chatHistory = await buildChatHistoryContext(chatId, undefined, messageId);
+      if (chatHistory) {
+        effectivePrompt = chatHistory + '\n\n---\n\n' + rawPrompt;
+      }
+    }
+
     // discussion MCP server：允许 agent 动态创建话题
     const discussionMcp = createDiscussionMcpServer({
       chatId, userId, messageId, agentId,
@@ -1101,7 +1158,7 @@ async function executeDirectTask(
 
     const result = await claudeExecutor.execute({
       sessionKey,
-      prompt: rawPrompt,
+      prompt: effectivePrompt,
       workingDir,
       readOnly: agentCfg.readOnly,
       model: agentCfg.model,

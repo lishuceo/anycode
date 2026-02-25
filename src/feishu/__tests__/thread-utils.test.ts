@@ -68,12 +68,13 @@ describe('ensureThread', () => {
       expect(result.greetingMsgId).toBeUndefined();
     });
 
-    it('should throw when rootId is present but threadId is missing', async () => {
-      await expect(
-        ensureThread('chat1', 'user1', 'msg-1', 'om_root_msg_id', undefined),
-      ).rejects.toThrow('threadId missing');
+    it('should treat rootId without threadId as main chat quote-reply (not a thread)', async () => {
+      // rootId without threadId = user used "quote reply" in main chat, not a thread message
+      // Should create a new thread, not throw
+      const result = await ensureThread('chat1', 'user1', 'msg-1', 'om_root_msg_id', undefined);
 
-      expect(mockSessionSetThread).not.toHaveBeenCalled();
+      expect(mockCreateThreadWithCard).toHaveBeenCalledWith('msg-1', { type: 'greeting' });
+      expect(result.greetingMsgId).toBe('bot-card-msg-1');
     });
 
     it('should not create a new thread when rootId is present', async () => {
@@ -98,11 +99,16 @@ describe('ensureThread', () => {
       expect(result.greetingMsgId).toBe('bot-card-msg-1');
     });
 
-    it('should ignore threadId param when no rootId (new thread creation)', async () => {
-      // threadId without rootId shouldn't happen, but if it does, still create new thread
-      await ensureThread('chat1', 'user1', 'msg-new', undefined, 'omt_stale');
+    it('should reuse thread when threadId is present even without rootId', async () => {
+      // threadId is the authoritative indicator of "in a thread"
+      // rootId undefined → fallback to messageId for reply target
+      const result = await ensureThread('chat1', 'user1', 'msg-new', undefined, 'omt_stale');
 
-      expect(mockCreateThreadWithCard).toHaveBeenCalled();
+      expect(mockSessionSetThread).toHaveBeenCalledWith(
+        'chat1', 'user1', 'omt_stale', 'msg-new', 'dev',
+      );
+      expect(mockCreateThreadWithCard).not.toHaveBeenCalled();
+      expect(result.threadRootMsgId).toBe('msg-new');
     });
 
     it('should fallback gracefully when thread creation fails', async () => {
