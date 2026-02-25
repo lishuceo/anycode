@@ -38,6 +38,8 @@ export interface ExecuteInput extends ExecuteOptions {
   timeoutSeconds?: number;
   /** 图片附件（多模态输入） */
   images?: ImageAttachment[];
+  /** 额外的 MCP servers（会合并到内部自动创建的 servers） */
+  additionalMcpServers?: Record<string, ReturnType<typeof createWorkspaceMcpServer>>;
 }
 
 /** 构建工作区管理系统提示词（注入实际目录路径） */
@@ -232,6 +234,11 @@ export class ClaudeExecutor {
       }
     }
 
+    // 合并调用方传入的额外 MCP servers（如 discussion-tools）
+    if (input.additionalMcpServers) {
+      Object.assign(mcpServers, input.additionalMcpServers);
+    }
+
     // 构建 systemPrompt.append 内容
     // pipeline 模式使用独立的 system prompt，不需要工作区管理指引
     const baseAppend = systemPromptOverride ?? buildWorkspaceSystemPrompt();
@@ -293,6 +300,11 @@ export class ClaudeExecutor {
                 logger.info({ toolName, action, readOnly }, 'canUseTool allowed — read-only feishu action');
                 return { behavior: 'allow' as const, updatedInput: inputObj };
               }
+            }
+            // discussion-tools: Chat Agent 话题升级工具，readonly 下允许
+            if (toolName.includes('discussion-tools')) {
+              logger.info({ toolName, readOnly }, 'canUseTool allowed — discussion tool in read-only mode');
+              return { behavior: 'allow' as const, updatedInput: inputObj };
             }
             // 所有其他 MCP 工具（含 workspace-manager、未来新增）以及不在 allow-list 的 feishu action：deny
             logger.info({ toolName, readOnly }, 'canUseTool denied — read-only mode (MCP tool)');

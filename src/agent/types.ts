@@ -24,6 +24,13 @@ export type AgentId = BuiltinAgentId | (string & {});
  */
 export type ToolPolicy = 'all' | 'readonly';
 
+/**
+ * 默认回复模式：
+ * - 'direct': 直接回复用户消息（引用回复），不创建话题。Agent 可通过 MCP 工具升级为话题模式。
+ * - 'thread': 创建话题，在话题内发送进度卡片和结果卡片（当前 Dev Agent 行为）。
+ */
+export type ReplyMode = 'direct' | 'thread';
+
 /** Agent 角色配置 */
 export interface AgentConfig {
   /** 角色标识 */
@@ -44,6 +51,8 @@ export interface AgentConfig {
   maxTurns: number;
   /** 是否需要写权限审批（non-owner 场景） */
   requiresApproval: boolean;
+  /** 默认回复模式 */
+  replyMode: ReplyMode;
 }
 
 // ─── Binding 路由 ────────────────────────────────────────
