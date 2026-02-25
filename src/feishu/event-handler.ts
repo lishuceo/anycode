@@ -253,8 +253,9 @@ function processQueue(queueKey: string, agentId: AgentId = 'dev'): void {
   if (!task) return;
 
   const agentCfg = agentRegistry.get(agentId);
-  // direct 模式 + 不在已有话题中 → executeDirectTask
-  const useDirectMode = agentCfg?.replyMode === 'direct' && !task.rootId;
+  // direct 模式 + 不在话题中 → executeDirectTask
+  // 用 threadId 判断是否在话题内（rootId 在主面板引用回复时也会有值）
+  const useDirectMode = agentCfg?.replyMode === 'direct' && !task.threadId;
 
   const executeFn = useDirectMode
     ? executeDirectTask(task.message, task.chatId, task.userId, task.messageId, task.images, agentId)
@@ -444,12 +445,7 @@ async function handleMessageEvent(data: MessageEventData, accountId: string = 'd
     }
   }
 
-  // 话题内消息必须有 thread_id
-  if (rootId && !threadId) {
-    logger.error({ messageId, rootId, chatId }, 'Feishu event has root_id but missing thread_id — aborting to surface the issue');
-    await feishuClient.replyText(messageId, '⚠️ 系统异常：飞书事件缺少 thread_id，请联系管理员');
-    return;
-  }
+  // root_id 单独出现（无 thread_id）= 主面板引用回复，不是话题内消息，正常处理即可
 
   const effectiveThreadId = threadId;
 
@@ -506,7 +502,7 @@ async function handleMessageEvent(data: MessageEventData, accountId: string = 'd
   // 通过 taskQueue 串行化：queue key 包含 agentId，不同 agent 可并行
   // direct 模式加 userId，不同用户可并行
   // enqueue 返回的 Promise 的错误处理在 processQueue/executeClaudeTask 中完成
-  const isDirectMode = agentConfig?.replyMode === 'direct' && !rootId;
+  const isDirectMode = agentConfig?.replyMode === 'direct' && !threadId;
   const queueKey = makeQueueKey(chatId, effectiveThreadId, agentId, isDirectMode ? userId : undefined);
   taskQueue.enqueue(queueKey, chatId, userId, effectiveText, messageId, rootId, effectiveThreadId, images).catch(() => {});
   processQueue(queueKey, agentId);

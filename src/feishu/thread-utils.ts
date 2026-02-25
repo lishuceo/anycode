@@ -27,15 +27,11 @@ export async function ensureThread(
 ): Promise<EnsureThreadResult> {
   sessionManager.getOrCreate(chatId, userId, agentId);
 
-  // 1. 用户在已有话题内发消息 — 直接复用该话题，无需发送问候
-  if (rootId) {
-    // 有 rootId 说明是话题内回复，飞书应始终提供 thread_id。
-    // 如果 threadId 缺失，说明调用方未正确传递或飞书 API 异常，抛出错误以暴露问题。
-    if (!threadId) {
-      throw new Error(`ensureThread: rootId present (${rootId}) but threadId missing — Feishu event may be malformed`);
-    }
+  // 1. 用户在话题内发消息（有 threadId）— 直接复用该话题，无需发送问候
+  //    注意：rootId 在主面板引用回复时也会有值，不能用来判断是否在话题内
+  if (threadId) {
     // threadId (omt_xxx) 做话题标识，rootId (om_xxx) 做回复目标
-    sessionManager.setThread(chatId, userId, threadId, rootId, agentId);
+    sessionManager.setThread(chatId, userId, threadId, rootId!, agentId);
     return { threadRootMsgId: rootId };
   }
 
