@@ -1,7 +1,7 @@
 import { claudeExecutor } from '../claude/executor.js';
 import { logger } from '../utils/logger.js';
 import { REVIEW_AGENT_CONFIGS } from './prompts.js';
-import type { ReviewResult, ReviewVerdict } from './types.js';
+import type { ReviewAgentConfig, ReviewResult, ReviewVerdict } from './types.js';
 
 // ============================================================
 // 并行 Review — 3 个角色 agent 同时审查，聚合结果
@@ -11,13 +11,15 @@ export interface ParallelReviewOptions {
   reviewType: 'plan' | 'code';
   content: string;
   workingDir: string;
+  /** 自定义 agent 配置列表。未提供时使用默认 REVIEW_AGENT_CONFIGS */
+  agentConfigs?: ReviewAgentConfig[];
   onAgentComplete?: (completed: number, total: number, role: string, approved: boolean, abstained: boolean) => Promise<void>;
 }
 
 /**
  * 解析 review agent 输出中的 APPROVED/REJECTED
  */
-function parseVerdict(output: string): { approved: boolean; feedback: string } {
+export function parseVerdict(output: string): { approved: boolean; feedback: string } {
   const lines = output.trim().split('\n');
   const firstLine = lines[0]?.trim().toUpperCase() ?? '';
 
@@ -48,11 +50,44 @@ function parseVerdict(output: string): { approved: boolean; feedback: string } {
  * - 其余 → 整体 APPROVED
  */
 export async function parallelReview(options: ParallelReviewOptions): Promise<ReviewResult> {
-  const { reviewType, content, workingDir, onAgentComplete } = options;
-  const total = REVIEW_AGENT_CONFIGS.length;
+  const { reviewType, content, workingDir, agentConfigs, onAgentComplete } = options;
+  const allConfigs = agentConfigs ?? REVIEW_AGENT_CONFIGS;
+  // plan review 时跳过 codeReviewOnly agent
+  const configs = reviewType === 'plan'
+    ? allConfigs.filter(c => !c.codeReviewOnly)
+    : allConfigs;
+  const total = configs.length;
   let completed = 0;
 
-  const promises = REVIEW_AGENT_CONFIGS.map(async (agentConfig): Promise<ReviewVerdict> => {
+  const promises = configs.map(async (agentConfig): Promise<ReviewVerdict> => {
+    // 自定义执行器路径（如 Codex CLI）
+    if (agentConfig.customExecute) {
+      const startTime = Date.now();
+      try {
+        const verdict = await agentConfig.customExecute(content, workingDir);
+        completed++;
+        await onAgentComplete?.(completed, total, agentConfig.role, verdict.approved, verdict.abstained);
+        return verdict;
+      } catch (err) {
+        const durationMs = Date.now() - startTime;
+        logger.error(
+          { role: agentConfig.role, reviewType, err },
+          'Custom review agent threw exception, marking as abstained',
+        );
+        const verdict: ReviewVerdict = {
+          role: agentConfig.role,
+          approved: false,
+          abstained: true,
+          feedback: `Agent 异常: ${err instanceof Error ? err.message : String(err)}`,
+          costUsd: 0,
+          durationMs,
+        };
+        completed++;
+        await onAgentComplete?.(completed, total, agentConfig.role, false, true);
+        return verdict;
+      }
+    }
+
     const systemPrompt = reviewType === 'plan'
       ? agentConfig.planReviewSystemPrompt
       : agentConfig.codeReviewSystemPrompt;
@@ -135,8 +170,8 @@ export async function parallelReview(options: ParallelReviewOptions): Promise<Re
   // 合并反馈：只包含 REJECTED 或弃权的 agent 反馈
   const feedbackParts: string[] = [];
   for (const v of verdicts) {
-    const config = REVIEW_AGENT_CONFIGS.find(c => c.role === v.role);
-    const icon = config?.icon ?? '❓';
+    const agentCfg = configs.find(c => c.role === v.role);
+    const icon = agentCfg?.icon ?? '❓';
     if (v.abstained) {
       feedbackParts.push(`${icon} [${v.role}] (弃权) ${v.feedback}`);
     } else if (!v.approved) {
