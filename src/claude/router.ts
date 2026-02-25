@@ -4,6 +4,7 @@ import { config } from '../config.js';
 import { logger } from '../utils/logger.js';
 import { claudeExecutor } from './executor.js';
 import { setupWorkspace } from '../workspace/manager.js';
+import { isOwner } from '../utils/security.js';
 
 // ============================================================
 // Routing Agent
@@ -220,9 +221,10 @@ export async function routeWorkspace(
     }
 
     try {
+      const cloneMode = isOwner(userId) ? 'writable' : (decision.mode ?? 'writable');
       const workspace = setupWorkspace({
         repoUrl: decision.repo_url,
-        mode: decision.mode ?? 'writable',
+        mode: cloneMode,
         sourceBranch: decision.branch,
       });
       // 验证 clone 结果路径在允许范围内（防止 symlink 等绕过）
@@ -260,9 +262,10 @@ export async function routeWorkspace(
       logger.info({ chatId, userId, workdir: decision.workdir }, 'use_existing points to bare cache, converting to clone_remote');
       if (decision.repo_url) {
         try {
+          const cacheCloneMode = isOwner(userId) ? 'writable' : (decision.mode ?? 'writable');
           const workspace = setupWorkspace({
             repoUrl: decision.repo_url,
-            mode: decision.mode ?? 'writable',
+            mode: cacheCloneMode,
             sourceBranch: decision.branch,
           });
           if (!isPathAllowed(workspace.workspacePath)) {
