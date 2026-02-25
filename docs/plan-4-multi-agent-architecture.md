@@ -1,7 +1,8 @@
 # Plan 4: 多 Agent 角色架构
 
 > 日期: 2026-02-24
-> 状态: 草案
+> 状态: **Phase 1 已实现** (PR #52)
+> 最后更新: 2026-02-25
 > 前置依赖: Plan 1 (渠道插件化) 可并行推进，不强依赖
 
 ---
@@ -606,38 +607,50 @@ FEISHU_APP_SECRET=secret_xxx
 
 **目标：** ChatBot 能独立工作，只读讨论方案
 
-**Phase 1.0 — 飞书能力验证（先行，不写代码）：**
-1. 创建两个飞书 Bot 应用（ChatBot + DevBot）
-2. 验证：两个 bot 能否加入同一个群
-3. 验证：Bot B 能否 reply_in_thread 到 Bot A 创建的消息
-4. 验证：两个 bot 的 WebSocket 长连接能否在同一个 Node 进程中共存
-5. 如果任一验证失败 → 调整方案后再继续
+**Phase 1.0 — 飞书能力验证 ✅ 已完成 (2026-02-25)：**
+1. ✅ 创建两个飞书 Bot 应用（ChatBot + DevBot "黎叔的AI秘书"）
+2. ✅ 两个 bot 能加入同一个群
+3. ⏳ Bot B reply_in_thread 到 Bot A 消息 — 尚未测试（当前 chat-bot 通过 AsyncLocalStorage Proxy 以自己身份发消息，未触发跨 bot thread 场景）
+4. ✅ 两个 bot 的 WebSocket 长连接在同一 Node 进程中共存
+5. **实现中发现的额外问题（已解决）：**
+   - 飞书 WebSocket 事件不包含 appId → 改为每个 bot 独立 EventDispatcher，通过闭包绑定 accountId
+   - feishuClient 单例导致所有消息以同一 bot 身份发出 → 引入 AsyncLocalStorage + Proxy 自动路由
+   - 飞书 open_id 是 per-app 的，跨应用 mention 匹配需要注意（当前 shouldRespond 基于各 bot 自身视角判断，已验证可行）
 
-**Phase 1.1 — 核心改动：**
-1. `src/feishu/multi-account.ts` — 新增多 Bot 账号管理（AccountManager）
-2. `src/feishu/request-context.ts` — 新增 RequestContext，携带 accountId 贯穿调用链
-3. `src/feishu/client.ts` — 从单例改为 per-account 实例池（通过 RequestContext 获取），保持向后兼容
-4. `src/feishu/event-handler.ts` — 调整事件处理顺序：shouldRespond → binding router → slash command → workspace router → execute
-5. **dedup 改造** — dedup key 从 `messageId` 改为 `accountId:messageId`（Critical，不修复则多 bot 不工作）
-6. `src/agent/types.ts` — AgentBinding, AgentConfig 类型定义
-7. `src/agent/registry.ts` — Agent 注册表
-8. `src/agent/router.ts` — Binding 路由引擎（纯配置匹配，与现有 workspace router 独立）
-9. `src/agent/prompts/chat.ts` — Chat Agent system prompt
-10. `src/session/manager.ts` — session key + queue key + session lock 加 agentId 前缀
-11. **DB migration** — 启动时一次性迁移：存量 session/thread_session key 加 `agent:dev:` 前缀
-12. **killSessionsForChat** — 更新前缀匹配逻辑适配新 key 格式
-13. 群内 @mention 检测（含 commander 模式优先级规则：显式 @mention > commander）
-14. Chat Agent 工具限制通过 `canUseTool` 回调实现（非 `allowedTools` 参数）
+**Phase 1.1 — 核心改动 ✅ 已实现 (PR #52, 2026-02-25)：**
 
-**验证标准：**
-- 两个 bot 在群里独立工作，不互相抢消息
-- @ChatBot 只能读代码、讨论方案，无法调用 Edit/Write/Bash
-- @DevBot 行为与当前完全一致
-- Commander 模式下 @DevBot 时 ChatBot 不响应
-- `/stop` 命令正常工作
-- 不配 BOT_ACCOUNTS 时完全向后兼容
+新增文件 (7):
+1. ✅ `src/agent/types.ts` — AgentId, AgentConfig, AgentBinding, BotAccountConfig, GroupConfig
+2. ✅ `src/agent/registry.ts` — Agent 注册表（chat: Sonnet/readonly, dev: Opus/full）
+3. ✅ `src/agent/router.ts` — Binding Router (first-match-wins) + `shouldRespond()` @mention 路由
+4. ✅ `src/agent/prompts/chat.ts` — Chat Agent 只读 system prompt
+5. ✅ `src/feishu/multi-account.ts` — AccountManager（多 bot 账号管理 + 单 bot 兼容）
+6. ✅ `src/feishu/request-context.ts` — RequestContext（携带 accountId/agentId）
+7. ✅ 测试: `agent-router.test.ts` (15), `multi-account.test.ts` (5), `session-migration.test.ts` (3)
 
-### Phase 2: Agent 间调度 + 授权
+改造文件 (10):
+8. ✅ `src/config.ts` — BOT_ACCOUNTS / AGENT_BINDINGS / GROUP_CONFIGS 配置解析
+9. ✅ `src/feishu/client.ts` — AsyncLocalStorage + Proxy 自动路由到 per-account client（60+ 处调用零改动）
+10. ✅ `src/feishu/event-handler.ts` — 每个 bot 独立 EventDispatcher + shouldRespond + binding router + agentId 全链路
+11. ✅ `src/feishu/thread-context.ts` — resolveThreadContext 接受 agentId，所有 sessionManager 调用传 agentId
+12. ✅ `src/feishu/thread-utils.ts` — ensureThread 接受 agentId
+13. ✅ `src/session/database.ts` — DB migration v7→v8（存量 key 加 `agent:dev:` 前缀）
+14. ✅ `src/session/manager.ts` — 所有方法签名加可选 agentId（默认 'dev'，向后兼容）
+15. ✅ `src/claude/executor.ts` — killSessionsForChat 适配 agent-prefixed key
+16. ✅ `src/server.ts` — 多 bot WebSocket 模式（每个 bot 独立 dispatcher + WSClient）
+17. ✅ `src/index.ts` — async main + 多 bot 初始化 + binding 校验
+
+**验证结果 (2026-02-25)：**
+- ✅ 395 个测试全部通过（含 23 个新增）
+- ✅ TypeScript typecheck 通过
+- ✅ 两个 bot 在群里独立工作，dev-bot 收到 @chatbot 消息后被 shouldRespond 静默过滤
+- ✅ @ChatBot 以 chatbot 身份回复，agentId 正确为 "chat"，模型使用 sonnet
+- ✅ @DevBot 行为与改动前一致
+- ⏳ Commander 模式 — 未实测（配置已支持）
+- ⏳ Chat Agent readonly 工具拦截 — 未实测（代码已支持 canUseTool 拦截）
+- ⏳ 不配 BOT_ACCOUNTS 单 bot 向后兼容 — 未实测（代码路径已覆盖）
+
+### Phase 2: Agent 间调度 + 授权（待实施）
 
 **目标：** Chat Agent 能触发 Dev Agent 开发，non-owner 需审批
 
@@ -658,7 +671,7 @@ FEISHU_APP_SECRET=secret_xxx
 - Chat Agent 不被 Dev Agent 长时间执行阻塞
 - `/dev` 发给 ChatBot 正确路由到 DevBot 执行
 
-### Phase 3: 多角色扩展
+### Phase 3: 多角色扩展（待实施）
 
 **目标：** 支持动态注册新角色
 
