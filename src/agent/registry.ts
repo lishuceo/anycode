@@ -1,10 +1,15 @@
 /**
  * Agent 注册表 — 角色 → 配置映射
+ *
+ * 支持两种初始化模式：
+ * 1. 无配置文件 → createBuiltinAgents() 硬编码默认值（向后兼容）
+ * 2. 有 config/agents.json → config-loader 调用 replaceAll() 热加载
  */
 import { config } from '../config.js';
+import { logger } from '../utils/logger.js';
 import type { AgentId, AgentConfig } from './types.js';
 
-/** 内置 agent 配置 */
+/** 内置 agent 配置（无配置文件时的 fallback） */
 function createBuiltinAgents(): Map<AgentId, AgentConfig> {
   const map = new Map<AgentId, AgentConfig>();
 
@@ -56,9 +61,20 @@ class AgentRegistry {
     return cfg;
   }
 
-  /** 注册自定义 agent（Phase 3 用） */
-  register(agentConfig: AgentConfig): void {
-    this.agents.set(agentConfig.id, agentConfig);
+  /**
+   * 原子替换所有 agent 配置。
+   * 由 config-loader 在启动和热重载时调用。
+   * JS 单线程，Map 引用赋值是原子的 — 并发的 get() 总是看到完整的旧 Map 或新 Map。
+   */
+  replaceAll(configs: AgentConfig[]): void {
+    const newMap = new Map<AgentId, AgentConfig>();
+    for (const cfg of configs) {
+      if (newMap.has(cfg.id)) {
+        logger.warn({ agentId: cfg.id }, 'Duplicate agent ID in config, later entry wins');
+      }
+      newMap.set(cfg.id, cfg);
+    }
+    this.agents = newMap;
   }
 
   /** 所有已注册的 agent IDs */

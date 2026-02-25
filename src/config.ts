@@ -116,6 +116,8 @@ export const config = {
     bindings: parseAgentBindings(process.env.AGENT_BINDINGS),
     /** 群配置 (JSON 对象: chatId → GroupConfig) */
     groupConfigs: parseGroupConfigs(process.env.GROUP_CONFIGS),
+    /** Agent 配置文件路径 (默认 ./config/agents.json，不存在则使用内置默认值) */
+    configPath: process.env.AGENT_CONFIG_PATH || '',
   },
 
   // Codex CLI 配置 (用于 pipeline code review)
