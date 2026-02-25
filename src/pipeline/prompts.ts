@@ -300,3 +300,32 @@ export const REVIEW_AGENT_CONFIGS: ReviewAgentConfig[] = [
 - 如果 git diff 为空，输出 APPROVED 并说明没有变更`,
   },
 ];
+
+// ============================================================
+// Codex CLI Review Agent 配置
+// ============================================================
+
+/** Codex 专用 code review prompt（作为 codex exec 的输入） */
+export const CODEX_CODE_REVIEW_PROMPT = `You are a code reviewer. Review the code changes in the current working directory.
+
+Steps:
+1. Run \`git diff\` to see all uncommitted changes
+2. Review each changed file
+
+Focus areas:
+1. **Correctness**: Logic errors, boundary conditions, error handling
+2. **Security**: Injection vulnerabilities, hardcoded secrets, unsafe operations
+3. **Quality**: Code clarity, maintainability, test coverage
+
+Output format (strictly follow):
+First line must be APPROVED or REJECTED (uppercase, on its own line, nothing else)
+
+If REJECTED, list specific issues:
+- [severity: high/medium/low] file:line — issue description
+
+If APPROVED, optionally list improvement suggestions.
+
+Rules:
+- Only high severity issues trigger REJECTED
+- If git diff is empty, output APPROVED and note no changes`;
+

@@ -118,6 +118,16 @@ export const config = {
     groupConfigs: parseGroupConfigs(process.env.GROUP_CONFIGS),
   },
 
+  // Codex CLI 配置 (用于 pipeline code review)
+  codex: {
+    /** 是否启用 Codex review agent */
+    enabled: process.env.CODEX_ENABLED === 'true',
+    /** codex 可执行文件路径，默认从 PATH 查找 */
+    command: process.env.CODEX_COMMAND || 'codex',
+    /** 单次 review 超时 (秒) */
+    timeoutSeconds: parseInt(process.env.CODEX_TIMEOUT || '120', 10),
+  },
+
   // 服务配置
   server: {
     port: parseInt(process.env.PORT || '3000', 10),
