@@ -22,8 +22,10 @@ export async function ensureThread(
   rootId?: string,
   /** 飞书事件中的 thread_id（可靠的话题标识，优先于 root_id） */
   threadId?: string,
+  /** agent 角色标识（多 agent 模式，默认 'dev'） */
+  agentId: string = 'dev',
 ): Promise<EnsureThreadResult> {
-  sessionManager.getOrCreate(chatId, userId);
+  sessionManager.getOrCreate(chatId, userId, agentId);
 
   // 1. 用户在已有话题内发消息 — 直接复用该话题，无需发送问候
   if (rootId) {
@@ -33,7 +35,7 @@ export async function ensureThread(
       throw new Error(`ensureThread: rootId present (${rootId}) but threadId missing — Feishu event may be malformed`);
     }
     // threadId (omt_xxx) 做话题标识，rootId (om_xxx) 做回复目标
-    sessionManager.setThread(chatId, userId, threadId, rootId);
+    sessionManager.setThread(chatId, userId, threadId, rootId, agentId);
     return { threadRootMsgId: rootId };
   }
 
@@ -49,7 +51,7 @@ export async function ensureThread(
   if (newThreadId && botMsgId) {
     // 新话题创建成功，保存话题信息
     // 不清空全局 conversationId——各 thread 通过 thread_sessions 表独立管理自己的 conversationId
-    sessionManager.setThread(chatId, userId, newThreadId, messageId);
+    sessionManager.setThread(chatId, userId, newThreadId, messageId, agentId);
     return { threadRootMsgId: messageId, greetingMsgId: botMsgId };
   }
 

@@ -50,6 +50,8 @@ export interface ResolveParams {
   rootId?: string;
   /** message.thread_id — 可靠的话题标识 */
   threadId?: string;
+  /** agent 角色标识（多 agent 模式下传入，默认 'dev'） */
+  agentId?: string;
 }
 
 /**
@@ -59,31 +61,31 @@ export interface ResolveParams {
  * 返回 resolved context 或指示 pending/stale/error 状态（已回复用户）。
  */
 export async function resolveThreadContext(params: ResolveParams): Promise<ResolveResult> {
-  const { chatId, userId, messageId, rootId, threadId: eventThreadId } = params;
+  const { chatId, userId, messageId, rootId, threadId: eventThreadId, agentId = 'dev' } = params;
   let prompt = params.prompt;
 
   // 1. 确保话题存在
-  const { threadRootMsgId, greetingMsgId } = await ensureThread(chatId, userId, messageId, rootId, eventThreadId);
-  const session = sessionManager.getOrCreate(chatId, userId);
+  const { threadRootMsgId, greetingMsgId } = await ensureThread(chatId, userId, messageId, rootId, eventThreadId, agentId);
+  const session = sessionManager.getOrCreate(chatId, userId, agentId);
 
   // 2. Thread session 管理
   const threadId = session.threadId;
-  let threadSession = threadId ? sessionManager.getThreadSession(threadId) : undefined;
+  let threadSession = threadId ? sessionManager.getThreadSession(threadId, agentId) : undefined;
 
   // 确保 thread_sessions 中有记录（首条消息时创建）
   if (threadId && !threadSession) {
-    sessionManager.upsertThreadSession(threadId, chatId, userId, session.workingDir);
-    threadSession = sessionManager.getThreadSession(threadId);
+    sessionManager.upsertThreadSession(threadId, chatId, userId, session.workingDir, agentId);
+    threadSession = sessionManager.getThreadSession(threadId, agentId);
   }
 
   // 预审批持久化（审批通过时 thread 尚未创建的情况）
   if (threadId && consumePreApproved(chatId, userId)) {
-    sessionManager.setThreadApproved(threadId, true);
+    sessionManager.setThreadApproved(threadId, true, agentId);
   }
 
   // 刷新活跃时间，防止被 cleanup 清理
   if (threadId && threadSession) {
-    sessionManager.touchThreadSession(threadId);
+    sessionManager.touchThreadSession(threadId, agentId);
   }
 
   // 3. 路由状态机：决定工作目录
@@ -105,9 +107,9 @@ export async function resolveThreadContext(params: ResolveParams): Promise<Resol
       // 超过最大追问次数，使用默认目录
       logger.warn({ chatId, userId, threadId, retryCount }, 'Routing clarification limit reached, using default workdir');
       workingDir = config.claude.defaultWorkDir;
-      sessionManager.clearThreadRoutingState(threadId);
-      sessionManager.setThreadWorkingDir(threadId, workingDir);
-      sessionManager.markThreadRoutingCompleted(threadId);
+      sessionManager.clearThreadRoutingState(threadId, agentId);
+      sessionManager.setThreadWorkingDir(threadId, workingDir, agentId);
+      sessionManager.markThreadRoutingCompleted(threadId, agentId);
       threadSession = sessionManager.getThreadSession(threadId);
     } else {
       // 拼接上下文重新路由
@@ -127,7 +129,7 @@ export async function resolveThreadContext(params: ResolveParams): Promise<Resol
           originalPrompt: threadSession.routingState.originalPrompt,
           question,
           retryCount: retryCount + 1,
-        });
+        }, agentId);
         if (threadRootMsgId) {
           await feishuClient.replyTextInThread(threadRootMsgId, question);
         } else {
@@ -151,10 +153,10 @@ export async function resolveThreadContext(params: ResolveParams): Promise<Resol
       }
       // 路由成功后恢复原始请求作为主查询 prompt
       prompt = threadSession.routingState.originalPrompt;
-      sessionManager.clearThreadRoutingState(threadId);
-      sessionManager.setThreadWorkingDir(threadId, workingDir);
-      sessionManager.markThreadRoutingCompleted(threadId);
-      threadSession = sessionManager.getThreadSession(threadId);
+      sessionManager.clearThreadRoutingState(threadId, agentId);
+      sessionManager.setThreadWorkingDir(threadId, workingDir, agentId);
+      sessionManager.markThreadRoutingCompleted(threadId, agentId);
+      threadSession = sessionManager.getThreadSession(threadId, agentId);
     }
 
   } else if (threadId && !threadSession?.routingCompleted && !threadSession?.conversationId) {
@@ -169,7 +171,7 @@ export async function resolveThreadContext(params: ResolveParams): Promise<Resol
         originalPrompt: prompt,
         question,
         retryCount: 0,
-      });
+      }, agentId);
       if (threadRootMsgId) {
         await feishuClient.replyTextInThread(threadRootMsgId, question);
       } else {
@@ -191,11 +193,11 @@ export async function resolveThreadContext(params: ResolveParams): Promise<Resol
       }
       return { status: 'error' };
     }
-    sessionManager.setThreadWorkingDir(threadId, workingDir);
-    sessionManager.markThreadRoutingCompleted(threadId);
+    sessionManager.setThreadWorkingDir(threadId, workingDir, agentId);
+    sessionManager.markThreadRoutingCompleted(threadId, agentId);
     // 同步更新全局 session 的 workingDir
-    sessionManager.setWorkingDir(chatId, userId, workingDir);
-    threadSession = sessionManager.getThreadSession(threadId);
+    sessionManager.setWorkingDir(chatId, userId, workingDir, agentId);
+    threadSession = sessionManager.getThreadSession(threadId, agentId);
 
   } else {
     // 3c. Thread 后续消息，使用已绑定的 workdir
@@ -216,7 +218,7 @@ export async function resolveThreadContext(params: ResolveParams): Promise<Resol
     } else {
       await feishuClient.replyText(messageId, reply);
     }
-    sessionManager.setStatus(chatId, userId, 'idle');
+    sessionManager.setStatus(chatId, userId, 'idle', agentId);
     return { status: 'stale' };
   }
 
