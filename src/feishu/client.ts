@@ -384,6 +384,76 @@ export class FeishuClient {
     }
   }
 
+  /**
+   * 获取话题内的消息列表（用于构建对话历史上下文）
+   * 使用降序获取最新消息（单页即可覆盖最相关的上下文），返回时 reverse 为时间正序
+   */
+  async listThreadMessages(threadId: string, pageSize = 50): Promise<Array<{
+    senderType: 'user' | 'app';
+    msgType: string;
+    textContent?: string;
+    createTime: string;
+  }>> {
+    try {
+      // 降序取最新一页：即使话题消息 >pageSize，也能拿到 /dev 前最近的上下文
+      const resp = await this.client.im.message.list({
+        params: {
+          container_id_type: 'thread',
+          container_id: threadId,
+          page_size: pageSize,
+          sort_type: 'ByCreateTimeDesc',
+        },
+      });
+
+      if (resp.code !== 0 || !resp.data?.items) {
+        logger.warn({ code: resp.code, msg: resp.msg, threadId }, 'Failed to list thread messages');
+        return [];
+      }
+
+      if (resp.data.has_more) {
+        logger.info({ threadId, pageSize, total: resp.data.items.length }, 'Thread has more messages than pageSize, early history truncated');
+      }
+
+      const results = resp.data.items.map((item) => {
+        const senderType = item.sender?.sender_type === 'app' ? 'app' as const : 'user' as const;
+        const msgType = item.msg_type ?? 'unknown';
+
+        let textContent: string | undefined;
+        if (msgType === 'text' && item.body?.content) {
+          try {
+            const parsed = JSON.parse(item.body.content);
+            let text = parsed.text as string | undefined;
+            // 解析飞书 @mention 占位符（@_user_1 → @用户名）
+            if (text && Array.isArray(item.mentions)) {
+              for (const m of item.mentions as Array<{ key?: string; name?: string }>) {
+                if (m.key) {
+                  text = text.replaceAll(m.key, m.name ? `@${m.name}` : '');
+                }
+              }
+            }
+            textContent = text;
+          } catch {
+            // ignore parse errors
+          }
+        }
+
+        return {
+          senderType,
+          msgType,
+          textContent,
+          createTime: item.create_time ?? '',
+        };
+      });
+
+      // 降序取回后 reverse 为时间正序
+      results.reverse();
+      return results;
+    } catch (err) {
+      logger.warn({ err, threadId }, 'Error listing thread messages');
+      return [];
+    }
+  }
+
   /** 获取原始 client 以便直接使用 */
   get raw(): lark.Client {
     return this.client;
