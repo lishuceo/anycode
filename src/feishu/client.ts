@@ -384,6 +384,75 @@ export class FeishuClient {
     }
   }
 
+  /**
+   * 拉取群聊或话题的最近消息（用于首次 @bot 时注入聊天上下文）
+   *
+   * @param containerId - chat_id（群聊）或 thread_id（话题）
+   * @param containerType - 'chat' 或 'thread'
+   * @param limit - 最多拉取条数（默认 10）
+   * @returns 简化的消息数组（时间正序），出错时返回空数组
+   */
+  async fetchRecentMessages(
+    containerId: string,
+    containerType: 'chat' | 'thread' = 'chat',
+    limit: number = 10,
+  ): Promise<Array<{ messageId: string; sender: string; senderType: string; content: string; msgType: string }>> {
+    try {
+      const resp = await this.client.im.message.list({
+        params: {
+          container_id_type: containerType,
+          container_id: containerId,
+          sort_type: 'ByCreateTimeDesc',
+          page_size: limit,
+        },
+      });
+      if (resp.code !== 0) {
+        logger.error({ code: resp.code, msg: resp.msg, containerId, containerType }, 'Failed to fetch recent messages');
+        return [];
+      }
+      const items = resp.data?.items ?? [];
+      const messages: Array<{ messageId: string; sender: string; senderType: string; content: string; msgType: string }> = [];
+      for (const item of items) {
+        if (item.deleted) continue;
+        const msgType = item.msg_type ?? '';
+        // 只提取文本和富文本消息，跳过卡片、图片等
+        if (msgType !== 'text' && msgType !== 'post') continue;
+        let content = '';
+        try {
+          const body = JSON.parse(item.body?.content ?? '{}');
+          if (msgType === 'text') {
+            content = body.text ?? '';
+          } else if (msgType === 'post') {
+            // 富文本：提取所有 text 类型元素的文本
+            const title = body.title ?? '';
+            const textParts: string[] = title ? [title] : [];
+            for (const paragraph of body.content ?? []) {
+              for (const element of paragraph ?? []) {
+                if (element.tag === 'text') textParts.push(element.text ?? '');
+              }
+            }
+            content = textParts.join(' ');
+          }
+        } catch {
+          continue;
+        }
+        if (!content.trim()) continue;
+        messages.push({
+          messageId: item.message_id ?? '',
+          sender: item.sender?.id ?? '',
+          senderType: item.sender?.sender_type ?? 'user',
+          content: content.trim(),
+          msgType,
+        });
+      }
+      // API 返回的是 ByCreateTimeDesc（最新在前），反转为时间正序
+      return messages.reverse();
+    } catch (err) {
+      logger.error({ err, containerId, containerType }, 'Error fetching recent messages');
+      return [];
+    }
+  }
+
   /** 获取原始 client 以便直接使用 */
   get raw(): lark.Client {
     return this.client;

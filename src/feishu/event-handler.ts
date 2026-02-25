@@ -720,6 +720,50 @@ async function handleSlashCommand(
 }
 
 /**
+ * 构建飞书聊天历史上下文（首次 @bot 时注入，帮助 Claude 理解对话背景）
+ *
+ * @param chatId - 群聊 ID
+ * @param threadId - 话题 ID（话题内消息时传入）
+ * @param currentMessageId - 当前消息 ID（用于过滤，避免把自己也算进历史）
+ * @returns 格式化的聊天历史文本，无消息时返回 undefined
+ */
+async function buildChatHistoryContext(
+  chatId: string,
+  threadId?: string,
+  currentMessageId?: string,
+): Promise<string | undefined> {
+  try {
+    const containerId = threadId ?? chatId;
+    const containerType = threadId ? 'thread' as const : 'chat' as const;
+    const messages = await feishuClient.fetchRecentMessages(containerId, containerType, 10);
+
+    // 过滤掉当前消息
+    const history = currentMessageId
+      ? messages.filter(m => m.messageId !== currentMessageId)
+      : messages;
+
+    if (history.length === 0) return undefined;
+
+    const lines = history.map(m => {
+      const role = m.senderType === 'app' ? '[Bot]' : '[用户]';
+      // 截断过长的单条消息
+      const text = m.content.length > 500 ? m.content.slice(0, 500) + '...' : m.content;
+      return `${role}: ${text}`;
+    });
+
+    return [
+      '## 飞书聊天近期上下文',
+      '以下是用户 @bot 之前的聊天记录，帮助你理解当前对话的背景：',
+      '',
+      ...lines,
+    ].join('\n');
+  } catch (err) {
+    logger.error({ err, chatId, threadId }, 'Failed to build chat history context');
+    return undefined;
+  }
+}
+
+/**
  * 执行 Claude Agent SDK 任务
  * 支持 workspace 变更后自动 restart：第一次 query 触发 setup_workspace 后，
  * 自动以新 cwd 发起第二次 query，确保 CLAUDE.md 正确加载。
@@ -771,9 +815,17 @@ async function executeClaudeTask(
   // 标记会话为忙碌
   sessionManager.setStatus(chatId, userId, 'busy', agentId);
 
-  // 构建历史上下文：仅 pipeline thread 注入 pipeline 上下文，其他场景不注入
-  // （不同 thread 通常是不同项目/话题，全局摘要反而是噪声）
+  // 提前计算 resume 状态，用于判断是否需要注入聊天历史
+  const activeConversationId = threadId
+    ? threadSession?.conversationId
+    : session.conversationId;
+  const activeConversationCwd = threadId
+    ? threadSession?.conversationCwd
+    : session.conversationCwd;
+
+  // 构建历史上下文
   let historySummaries: string | undefined;
+  // 1. Pipeline thread 注入 pipeline 上下文
   if (threadSession?.pipelineContext) {
     const ctx = threadSession.pipelineContext;
     const parts = [
@@ -788,6 +840,13 @@ async function executeClaudeTask(
       combined = combined.slice(0, 30000) + '\n\n[摘要已截断]';
     }
     historySummaries = combined;
+  }
+  // 2. 首次 @bot 时注入飞书聊天历史上下文（仅无 conversationId 即无法 resume 时）
+  if (!activeConversationId && !historySummaries) {
+    const chatHistory = await buildChatHistoryContext(chatId, threadId, messageId);
+    if (chatHistory) {
+      historySummaries = chatHistory;
+    }
   }
 
   // 构造逐条 turn 回调
@@ -829,15 +888,7 @@ async function executeClaudeTask(
   };
 
   try {
-    // Resume 策略：有 threadId 时只用该 thread 自己的 conversationId，
-    // 避免跨 thread 串台（如 pipeline thread 回退到另一 thread 的全局 session）。
-    // 无 threadId（主聊天）时使用全局 session 的 conversationId。
-    const activeConversationId = threadId
-      ? threadSession?.conversationId
-      : session.conversationId;
-    const activeConversationCwd = threadId
-      ? threadSession?.conversationCwd
-      : session.conversationCwd;
+    // Resume 策略：activeConversationId/activeConversationCwd 已在上方提前计算
     const canResume = activeConversationId
       && (!activeConversationCwd || activeConversationCwd === workingDir);
     if (activeConversationId && !canResume) {
@@ -1086,6 +1137,12 @@ async function executeDirectTask(
     // 有图片时不 resume（AsyncIterable 与 resume 不兼容）
     const resumeSessionId = (images?.length || !canResume) ? undefined : session.conversationId;
 
+    // 首次 @bot 时注入飞书聊天历史上下文
+    let historySummaries: string | undefined;
+    if (!session.conversationId) {
+      historySummaries = await buildChatHistoryContext(chatId, undefined, messageId);
+    }
+
     // discussion MCP server：允许 agent 动态创建话题
     const discussionMcp = createDiscussionMcpServer({
       chatId, userId, messageId, agentId,
@@ -1107,6 +1164,7 @@ async function executeDirectTask(
       systemPromptOverride: buildChatAgentPrompt(),
       resumeSessionId,
       images,
+      historySummaries,
       // 不需要 workspace-manager 工具（Chat Agent 不切换工作区）
       disableWorkspaceTool: true,
       // 注入 discussion-tools MCP server
