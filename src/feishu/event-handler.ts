@@ -824,8 +824,8 @@ async function executeClaudeTask(
     : session.conversationCwd;
 
   // 构建历史上下文
+  // Pipeline context → system prompt (historySummaries)，聊天历史 → user prompt 前缀
   let historySummaries: string | undefined;
-  // 1. Pipeline thread 注入 pipeline 上下文
   if (threadSession?.pipelineContext) {
     const ctx = threadSession.pipelineContext;
     const parts = [
@@ -835,17 +835,18 @@ async function executeClaudeTask(
       `**执行摘要**:\n${ctx.summary}`,
     ];
     let combined = parts.join('\n\n');
-    // 限制 ~10000 tokens ≈ 30000 chars
     if (combined.length > 30000) {
       combined = combined.slice(0, 30000) + '\n\n[摘要已截断]';
     }
     historySummaries = combined;
   }
-  // 2. 首次 @bot 时注入飞书聊天历史上下文（仅无 conversationId 即无法 resume 时）
+
+  // 首次 @bot 时注入飞书聊天历史，拼入 user prompt（不是 system prompt）
+  let effectivePrompt = prompt;
   if (!activeConversationId && !historySummaries) {
     const chatHistory = await buildChatHistoryContext(chatId, threadId, messageId);
     if (chatHistory) {
-      historySummaries = chatHistory;
+      effectivePrompt = chatHistory + '\n\n---\n\n' + prompt;
     }
   }
 
@@ -911,7 +912,7 @@ async function executeClaudeTask(
 
     const result = await claudeExecutor.execute({
       sessionKey,
-      prompt,
+      prompt: effectivePrompt,
       workingDir,
       readOnly,
       model: agentCfg?.model,
@@ -1137,10 +1138,13 @@ async function executeDirectTask(
     // 有图片时不 resume（AsyncIterable 与 resume 不兼容）
     const resumeSessionId = (images?.length || !canResume) ? undefined : session.conversationId;
 
-    // 首次 @bot 时注入飞书聊天历史上下文
-    let historySummaries: string | undefined;
+    // 首次 @bot 时注入飞书聊天历史，拼入 user prompt
+    let effectivePrompt = rawPrompt;
     if (!session.conversationId) {
-      historySummaries = await buildChatHistoryContext(chatId, undefined, messageId);
+      const chatHistory = await buildChatHistoryContext(chatId, undefined, messageId);
+      if (chatHistory) {
+        effectivePrompt = chatHistory + '\n\n---\n\n' + rawPrompt;
+      }
     }
 
     // discussion MCP server：允许 agent 动态创建话题
@@ -1154,7 +1158,7 @@ async function executeDirectTask(
 
     const result = await claudeExecutor.execute({
       sessionKey,
-      prompt: rawPrompt,
+      prompt: effectivePrompt,
       workingDir,
       readOnly: agentCfg.readOnly,
       model: agentCfg.model,
@@ -1164,7 +1168,6 @@ async function executeDirectTask(
       systemPromptOverride: buildChatAgentPrompt(),
       resumeSessionId,
       images,
-      historySummaries,
       // 不需要 workspace-manager 工具（Chat Agent 不切换工作区）
       disableWorkspaceTool: true,
       // 注入 discussion-tools MCP server

@@ -91,7 +91,7 @@ describe('PipelineOrchestrator', () => {
       expect(result.totalCostUsd).toBeCloseTo(0.04 + 0.12 + 0.12);
     });
 
-    it('should pass historySummaries only to the plan step', async () => {
+    it('should inject threadHistory into plan prompt only (not system prompt or downstream phases)', async () => {
       mockExecute
         .mockResolvedValueOnce(makeResult({ output: 'plan' }))
         .mockResolvedValueOnce(makeResult({ output: 'implemented' }))
@@ -102,15 +102,18 @@ describe('PipelineOrchestrator', () => {
         .mockResolvedValueOnce(makeReviewResult())
         .mockResolvedValueOnce(makeReviewResult());
 
-      await orchestrator.run('task', '/tmp', noopCallbacks, '历史摘要内容');
+      await orchestrator.run('task', '/tmp', noopCallbacks, '对话历史内容');
 
-      // plan step (call 0) should include historySummaries
+      // plan step (call 0): threadHistory should be prepended to the user prompt, not in historySummaries
       const planCall = mockExecute.mock.calls[0][0];
-      expect(planCall.historySummaries).toBe('历史摘要内容');
+      expect(planCall.prompt).toContain('对话历史内容');
+      expect(planCall.prompt).toContain('task');
+      expect(planCall.historySummaries).toBeUndefined();
 
-      // subsequent executor steps should not have historySummaries
+      // subsequent executor steps should not contain threadHistory in prompt or historySummaries
       for (let i = 1; i < mockExecute.mock.calls.length; i++) {
         expect(mockExecute.mock.calls[i][0].historySummaries).toBeUndefined();
+        expect(mockExecute.mock.calls[i][0].prompt).not.toContain('对话历史内容');
       }
     });
 

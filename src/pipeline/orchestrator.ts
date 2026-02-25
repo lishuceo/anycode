@@ -57,7 +57,7 @@ export class PipelineOrchestrator {
     prompt: string,
     workingDir: string,
     callbacks: PipelineCallbacks,
-    historySummaries?: string,
+    threadHistory?: string,
   ): Promise<PipelineResult> {
     const startTime = Date.now();
 
@@ -99,7 +99,7 @@ export class PipelineOrchestrator {
 
       switch (currentPhase) {
         case 'plan':
-          state = await this.doPlan(state, callbacks, historySummaries);
+          state = await this.doPlan(state, callbacks, threadHistory);
           break;
         case 'plan_review':
           state = await this.doReview(state, 'plan_review', callbacks);
@@ -150,12 +150,16 @@ export class PipelineOrchestrator {
   private async doPlan(
     state: PipelineState,
     callbacks: PipelineCallbacks,
-    historySummaries?: string,
+    threadHistory?: string,
   ): Promise<PipelineState> {
-    // 如果是重试，带上上次 review 的反馈
+    // 构建 plan prompt：话题历史（如有）作为上下文前缀，用户任务在最后
     let prompt = state.userPrompt;
+    if (threadHistory) {
+      prompt = `## 话题对话历史\n以下是用户在发送 /dev 命令之前的对话记录：\n\n${threadHistory}\n\n---\n\n## 用户的开发任务\n${prompt}`;
+    }
+    // 如果是重试，带上上次 review 的反馈
     if (state.planReviewResult && !state.planReviewResult.approved) {
-      prompt = `${state.userPrompt}\n\n---\n上一版方案被审查拒绝，请根据以下反馈修改方案：\n${state.planReviewResult.consolidatedFeedback}`;
+      prompt += `\n\n---\n上一版方案被审查拒绝，请根据以下反馈修改方案：\n${state.planReviewResult.consolidatedFeedback}`;
     }
 
     const result = await this.executeStep(
@@ -163,7 +167,7 @@ export class PipelineOrchestrator {
       prompt,
       state.workingDir,
       PLAN_SYSTEM_PROMPT,
-      historySummaries,
+      undefined, // 不走 historySummaries（system prompt），历史已拼入 user prompt
       callbacks.onStreamUpdate,
     );
 
