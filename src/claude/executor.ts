@@ -297,14 +297,20 @@ export class ClaudeExecutor {
             logger.info({ toolName }, 'canUseTool denied — agent toolDeny list');
             return { behavior: 'deny' as const, message: `工具 ${toolName} 被 agent 配置禁止。` };
           }
-          // per-agent 工具允许列表（不可覆盖 readOnly 对写入工具的限制）
+          // per-agent 工具允许列表（不可覆盖 readOnly 对写入工具和 MCP 写工具的限制）
           if (input.toolAllow?.some(p => matchToolPattern(toolName, p))) {
             if (readOnly && WRITE_TOOLS.has(toolName)) {
               logger.warn({ toolName }, 'canUseTool denied — toolAllow cannot override readOnly for write tools');
               return { behavior: 'deny' as const, message: '只读模式下 toolAllow 不能覆盖写入工具限制。' };
             }
-            logger.info({ toolName }, 'canUseTool allowed — agent toolAllow list');
-            return { behavior: 'allow' as const, updatedInput: inputObj };
+            // readOnly 模式下 MCP 工具不能通过 toolAllow 绕过 — 交给后续 MCP readonly 白名单检查
+            if (readOnly && toolName.startsWith('mcp__')) {
+              logger.info({ toolName }, 'canUseTool — toolAllow matched MCP tool in readOnly mode, deferring to MCP readonly check');
+              // fall through: 不 return，让后面的 MCP readonly 逻辑决定
+            } else {
+              logger.info({ toolName }, 'canUseTool allowed — agent toolAllow list');
+              return { behavior: 'allow' as const, updatedInput: inputObj };
+            }
           }
           // 只读模式：拦截写入类工具
           if (readOnly && WRITE_TOOLS.has(toolName)) {
