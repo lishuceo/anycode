@@ -1,0 +1,29 @@
+{
+  "defaults": {
+    "model": "claude-sonnet-4-6",
+    "toolPolicy": "readonly",
+    "replyMode": "direct",
+    "maxBudgetUsd": 5,
+    "maxTurns": 100,
+    "requiresApproval": false,
+    "settingSources": ["user", "project"]
+  },
+  "agents": [
+    {
+      "id": "chat",
+      "displayName": "ChatBot",
+      "replyMode": "direct",
+      "systemPromptFile": "./config/prompts/chat.md"
+    },
+    {
+      "id": "dev",
+      "displayName": "DevBot",
+      "model": "claude-opus-4-6",
+      "toolPolicy": "all",
+      "replyMode": "thread",
+      "maxBudgetUsd": 50,
+      "maxTurns": 500,
+      "requiresApproval": true
+    }
+  ]
+}

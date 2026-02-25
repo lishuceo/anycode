@@ -1,0 +1,78 @@
+/**
+ * Agent 配置文件 Zod 校验 Schema
+ *
+ * 配置文件格式：{ defaults?, agents[] }
+ * 借鉴 OpenClaw 的 defaults + per-agent overrides 模式
+ */
+import { z } from 'zod/v4';
+
+// ─── Tool Policy ─────────────────────────────────────────────
+
+/** 简单字符串格式（向后兼容） */
+const ToolPolicySimpleSchema = z.enum(['all', 'readonly']);
+
+/** 详细对象格式（按需扩展的 allow/deny 列表） */
+const ToolPolicyDetailedSchema = z.object({
+  /** 基础策略 */
+  profile: z.enum(['all', 'readonly']).default('all'),
+  /** 显式允许的工具名（在 profile 基础上额外放行） */
+  allow: z.array(z.string()).optional(),
+  /** 显式禁止的工具名（优先级高于 allow） */
+  deny: z.array(z.string()).optional(),
+});
+
+/** toolPolicy 支持两种格式 */
+export const ToolPolicySchema = z.union([ToolPolicySimpleSchema, ToolPolicyDetailedSchema]);
+
+// ─── Agent 配置输入（用户填写，除 id 外全部 optional） ─────
+
+export const AgentConfigInputSchema = z.object({
+  /** Agent 标识（必填） */
+  id: z.string().min(1),
+  /** 显示名称 */
+  displayName: z.string().optional(),
+  /** 模型名称 */
+  model: z.string().optional(),
+  /** 工具策略 */
+  toolPolicy: ToolPolicySchema.optional(),
+  /** Settings 源 */
+  settingSources: z.array(z.enum(['user', 'project'])).optional(),
+  /** 单次 query 最大花费 (USD)，上限 1000 */
+  maxBudgetUsd: z.number().positive().max(1000).optional(),
+  /** 单次 query 最大轮次，上限 10000 */
+  maxTurns: z.number().int().positive().max(10000).optional(),
+  /** 是否需要写权限审批 */
+  requiresApproval: z.boolean().optional(),
+  /** 默认回复模式 */
+  replyMode: z.enum(['direct', 'thread']).optional(),
+  /** 系统提示词文件路径（每次 query 重新读取） */
+  systemPromptFile: z.string().optional(),
+});
+
+// ─── Defaults（全部 optional） ──────────────────────────────
+
+export const AgentDefaultsSchema = z.object({
+  model: z.string().optional(),
+  toolPolicy: ToolPolicySchema.optional(),
+  settingSources: z.array(z.enum(['user', 'project'])).optional(),
+  maxBudgetUsd: z.number().positive().max(1000).optional(),
+  maxTurns: z.number().int().positive().max(10000).optional(),
+  requiresApproval: z.boolean().optional(),
+  replyMode: z.enum(['direct', 'thread']).optional(),
+  systemPromptFile: z.string().optional(),
+});
+
+// ─── 顶层配置文件 ──────────────────────────────────────────
+
+export const AgentConfigFileSchema = z.object({
+  defaults: AgentDefaultsSchema.optional(),
+  agents: z.array(AgentConfigInputSchema).min(1),
+});
+
+// ─── 导出类型 ──────────────────────────────────────────────
+
+export type AgentConfigInput = z.infer<typeof AgentConfigInputSchema>;
+export type AgentDefaults = z.infer<typeof AgentDefaultsSchema>;
+export type AgentConfigFile = z.infer<typeof AgentConfigFileSchema>;
+export type ToolPolicyValue = z.infer<typeof ToolPolicySchema>;
+export type ToolPolicyDetailed = z.infer<typeof ToolPolicyDetailedSchema>;

@@ -21,6 +21,14 @@ const WRITE_TOOLS = new Set([
   'Edit', 'Write', 'NotebookEdit', 'Bash', 'Skill',
 ]);
 
+/** 工具名匹配（支持 glob 前缀：'mcp__*' 匹配所有 MCP 工具） */
+function matchToolPattern(toolName: string, pattern: string): boolean {
+  if (pattern.endsWith('*')) {
+    return toolName.toLowerCase().startsWith(pattern.slice(0, -1).toLowerCase());
+  }
+  return toolName.toLowerCase() === pattern.toLowerCase();
+}
+
 /** 执行 Claude query 的完整参数 */
 export interface ExecuteInput extends ExecuteOptions {
   sessionKey: string;
@@ -40,6 +48,10 @@ export interface ExecuteInput extends ExecuteOptions {
   images?: ImageAttachment[];
   /** 额外的 MCP servers（会合并到内部自动创建的 servers） */
   additionalMcpServers?: Record<string, ReturnType<typeof createWorkspaceMcpServer>>;
+  /** 工具允许列表（在 readOnly/toolPolicy 基础上额外放行，支持 glob 前缀如 'mcp__*'） */
+  toolAllow?: string[];
+  /** 工具禁止列表（优先级最高，支持 glob 前缀） */
+  toolDeny?: string[];
 }
 
 /** 构建工作区管理系统提示词（注入实际目录路径） */
@@ -280,6 +292,20 @@ export class ClaudeExecutor {
         // 这样 .claude/skills/ 中的 SKILL.md 才能被加载和使用
         allowedTools: ['Skill'],
         canUseTool: async (toolName: string, inputObj: Record<string, unknown>) => {
+          // per-agent 工具禁止列表（优先级最高）
+          if (input.toolDeny?.some(p => matchToolPattern(toolName, p))) {
+            logger.info({ toolName }, 'canUseTool denied — agent toolDeny list');
+            return { behavior: 'deny' as const, message: `工具 ${toolName} 被 agent 配置禁止。` };
+          }
+          // per-agent 工具允许列表（不可覆盖 readOnly 对写入工具的限制）
+          if (input.toolAllow?.some(p => matchToolPattern(toolName, p))) {
+            if (readOnly && WRITE_TOOLS.has(toolName)) {
+              logger.warn({ toolName }, 'canUseTool denied — toolAllow cannot override readOnly for write tools');
+              return { behavior: 'deny' as const, message: '只读模式下 toolAllow 不能覆盖写入工具限制。' };
+            }
+            logger.info({ toolName }, 'canUseTool allowed — agent toolAllow list');
+            return { behavior: 'allow' as const, updatedInput: inputObj };
+          }
           // 只读模式：拦截写入类工具
           if (readOnly && WRITE_TOOLS.has(toolName)) {
             logger.info({ toolName, readOnly }, 'canUseTool denied — read-only mode');
