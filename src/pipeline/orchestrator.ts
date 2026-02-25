@@ -14,6 +14,7 @@ import {
   PR_FIXUP_SYSTEM_PROMPT,
   REVIEW_AGENT_CONFIGS,
 } from './prompts.js';
+import { getCodeReviewAgentConfigs } from './codex-reviewer.js';
 import { parallelReview } from './reviewer.js';
 
 // ============================================================
@@ -221,19 +222,23 @@ export class PipelineOrchestrator {
       ].join('\n');
     }
 
+    // code_review 使用扩展后的 agent 列表（含可选的 Codex agent）
+    const activeConfigs = isPlanReview ? REVIEW_AGENT_CONFIGS : getCodeReviewAgentConfigs();
+
     // 构建进度状态 map，用于增量更新
     const agentStatus = new Map<string, string>();
-    for (const config of REVIEW_AGENT_CONFIGS) {
-      agentStatus.set(config.role, `${config.icon} ${config.role} ⏳`);
+    for (const cfg of activeConfigs) {
+      agentStatus.set(cfg.role, `${cfg.icon} ${cfg.role} ⏳`);
     }
 
     const reviewResult = await parallelReview({
       reviewType: isPlanReview ? 'plan' : 'code',
       content,
       workingDir: state.workingDir,
+      agentConfigs: activeConfigs,
       onAgentComplete: async (_completed, _total, role, approved, abstained) => {
-        const config = REVIEW_AGENT_CONFIGS.find(c => c.role === role);
-        const icon = config?.icon ?? '❓';
+        const cfg = activeConfigs.find(c => c.role === role);
+        const icon = cfg?.icon ?? '❓';
         const statusIcon = abstained ? '⚠️' : approved ? '✅' : '❌';
         agentStatus.set(role, `${icon} ${role} ${statusIcon}`);
 
@@ -457,9 +462,10 @@ export class PipelineOrchestrator {
    * 格式化 review 结果为摘要文本
    */
   private formatReviewSummary(label: string, result: import('./types.js').ReviewResult): string {
+    const allConfigs = getCodeReviewAgentConfigs();
     const lines = result.verdicts.map((v) => {
-      const config = REVIEW_AGENT_CONFIGS.find(c => c.role === v.role);
-      const icon = config?.icon ?? '❓';
+      const cfg = allConfigs.find(c => c.role === v.role) ?? REVIEW_AGENT_CONFIGS.find(c => c.role === v.role);
+      const icon = cfg?.icon ?? '❓';
       const status = v.abstained ? '⚠️ 弃权' : v.approved ? '✅ 通过' : '❌ 拒绝';
       return `  ${icon} ${v.role}: ${status}`;
     });

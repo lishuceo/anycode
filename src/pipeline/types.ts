@@ -43,6 +43,10 @@ export interface ReviewAgentConfig {
   icon: string;
   planReviewSystemPrompt: string;
   codeReviewSystemPrompt: string;
+  /** 自定义执行器。若提供，reviewer 使用它替代 claudeExecutor */
+  customExecute?: (content: string, workingDir: string) => Promise<ReviewVerdict>;
+  /** 是否仅参与 code review（跳过 plan review） */
+  codeReviewOnly?: boolean;
 }
 
 /** 单个 review agent 的裁决 */

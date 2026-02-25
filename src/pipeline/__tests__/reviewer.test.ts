@@ -366,4 +366,156 @@ describe('parallelReview', () => {
       expect(result.approved).toBe(true);
     });
   });
+
+  // ============================================================
+  // customExecute 支持
+  // ============================================================
+
+  describe('customExecute agent', () => {
+    it('should use customExecute when provided instead of claudeExecutor', async () => {
+      const customExecute = vi.fn().mockResolvedValue({
+        role: 'codex',
+        approved: true,
+        abstained: false,
+        feedback: 'Looks great',
+        costUsd: 0,
+        durationMs: 500,
+      });
+
+      // 3 Claude agents + 1 custom agent
+      mockExecute
+        .mockResolvedValueOnce(makeResult({ output: 'APPROVED' }))
+        .mockResolvedValueOnce(makeResult({ output: 'APPROVED' }))
+        .mockResolvedValueOnce(makeResult({ output: 'APPROVED' }));
+
+      const { REVIEW_AGENT_CONFIGS } = await import('../prompts.js');
+
+      const result = await parallelReview({
+        reviewType: 'code',
+        content: '请审查代码',
+        workingDir: '/tmp',
+        agentConfigs: [
+          ...REVIEW_AGENT_CONFIGS,
+          {
+            role: 'codex',
+            icon: '⚡',
+            planReviewSystemPrompt: '',
+            codeReviewSystemPrompt: 'review code',
+            customExecute,
+            codeReviewOnly: true,
+          },
+        ],
+      });
+
+      expect(result.approved).toBe(true);
+      expect(result.verdicts).toHaveLength(4);
+      expect(customExecute).toHaveBeenCalledWith('请审查代码', '/tmp');
+      // claudeExecutor should only be called 3 times (not for the custom agent)
+      expect(mockExecute).toHaveBeenCalledTimes(3);
+    });
+
+    it('should mark custom agent as abstained when customExecute throws', async () => {
+      const customExecute = vi.fn().mockRejectedValue(new Error('CLI crashed'));
+
+      mockExecute
+        .mockResolvedValueOnce(makeResult({ output: 'APPROVED' }))
+        .mockResolvedValueOnce(makeResult({ output: 'APPROVED' }))
+        .mockResolvedValueOnce(makeResult({ output: 'APPROVED' }));
+
+      const { REVIEW_AGENT_CONFIGS } = await import('../prompts.js');
+
+      const result = await parallelReview({
+        reviewType: 'code',
+        content: '请审查代码',
+        workingDir: '/tmp',
+        agentConfigs: [
+          ...REVIEW_AGENT_CONFIGS,
+          {
+            role: 'codex',
+            icon: '⚡',
+            planReviewSystemPrompt: '',
+            codeReviewSystemPrompt: '',
+            customExecute,
+          },
+        ],
+      });
+
+      // 3 Claude agents approved + 1 custom abstained → overall approved
+      expect(result.approved).toBe(true);
+      const codexVerdict = result.verdicts.find(v => v.role === 'codex');
+      expect(codexVerdict?.abstained).toBe(true);
+      expect(codexVerdict?.feedback).toContain('CLI crashed');
+    });
+
+    it('should reject when custom agent rejects', async () => {
+      const customExecute = vi.fn().mockResolvedValue({
+        role: 'codex',
+        approved: false,
+        abstained: false,
+        feedback: 'Security issue found',
+        costUsd: 0,
+        durationMs: 1000,
+      });
+
+      mockExecute
+        .mockResolvedValueOnce(makeResult({ output: 'APPROVED' }))
+        .mockResolvedValueOnce(makeResult({ output: 'APPROVED' }))
+        .mockResolvedValueOnce(makeResult({ output: 'APPROVED' }));
+
+      const { REVIEW_AGENT_CONFIGS } = await import('../prompts.js');
+
+      const result = await parallelReview({
+        reviewType: 'code',
+        content: '请审查代码',
+        workingDir: '/tmp',
+        agentConfigs: [
+          ...REVIEW_AGENT_CONFIGS,
+          {
+            role: 'codex',
+            icon: '⚡',
+            planReviewSystemPrompt: '',
+            codeReviewSystemPrompt: '',
+            customExecute,
+          },
+        ],
+      });
+
+      expect(result.approved).toBe(false);
+      expect(result.consolidatedFeedback).toContain('Security issue found');
+    });
+
+    it('should skip codeReviewOnly agents during plan review', async () => {
+      const customExecute = vi.fn();
+
+      mockExecute
+        .mockResolvedValueOnce(makeResult({ output: 'APPROVED' }))
+        .mockResolvedValueOnce(makeResult({ output: 'APPROVED' }))
+        .mockResolvedValueOnce(makeResult({ output: 'APPROVED' }));
+
+      const { REVIEW_AGENT_CONFIGS } = await import('../prompts.js');
+
+      const result = await parallelReview({
+        reviewType: 'plan',
+        content: '请审查方案',
+        workingDir: '/tmp',
+        agentConfigs: [
+          ...REVIEW_AGENT_CONFIGS,
+          {
+            role: 'codex',
+            icon: '⚡',
+            planReviewSystemPrompt: '',
+            codeReviewSystemPrompt: '',
+            customExecute,
+            codeReviewOnly: true,
+          },
+        ],
+      });
+
+      expect(result.approved).toBe(true);
+      // codex should be skipped entirely
+      expect(result.verdicts).toHaveLength(3);
+      expect(customExecute).not.toHaveBeenCalled();
+      expect(result.verdicts.find(v => v.role === 'codex')).toBeUndefined();
+    });
+  });
 });
