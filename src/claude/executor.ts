@@ -38,6 +38,8 @@ export interface ExecuteInput extends ExecuteOptions {
   timeoutSeconds?: number;
   /** 图片附件（多模态输入） */
   images?: ImageAttachment[];
+  /** 额外的 MCP servers（会合并到内部自动创建的 servers） */
+  additionalMcpServers?: Record<string, ReturnType<typeof createWorkspaceMcpServer>>;
 }
 
 /** 构建工作区管理系统提示词（注入实际目录路径） */
@@ -230,6 +232,11 @@ export class ClaudeExecutor {
       if (feishuMcp) {
         mcpServers['feishu-tools'] = feishuMcp;
       }
+    }
+
+    // 合并调用方传入的额外 MCP servers（如 discussion-tools）
+    if (input.additionalMcpServers) {
+      Object.assign(mcpServers, input.additionalMcpServers);
     }
 
     // 构建 systemPrompt.append 内容
