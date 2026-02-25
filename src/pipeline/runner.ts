@@ -148,6 +148,40 @@ export async function startPipeline(pipelineId: string): Promise<void> {
 
   const pipelineStartTime = Date.now();
 
+  // 拉取话题对话历史，仅注入 plan 阶段（解决 /dev 丢失前序对话的问题）
+  // 通过 historySummaries 参数传递，不污染 state.userPrompt（避免泄漏到 review/push/pr_fixup）
+  let threadHistory: string | undefined;
+  if (pipelineThreadId) {
+    try {
+      const messages = await feishuClient.listThreadMessages(pipelineThreadId);
+      // 过滤：只保留文本消息（跳过卡片、图片等），排除 /dev 命令
+      const historyLines: string[] = [];
+      for (const msg of messages) {
+        if (msg.msgType !== 'text' || !msg.textContent) continue;
+        const text = msg.textContent.trim();
+        if (!text) continue;
+        if (text === '/dev' || text.startsWith('/dev ')) continue;
+        const role = msg.senderType === 'app' ? '助手' : '用户';
+        historyLines.push(`[${role}] ${text}`);
+      }
+      if (historyLines.length > 0) {
+        let combined = historyLines.join('\n');
+        // 限制大小：~10000 tokens ≈ 30000 chars
+        if (combined.length > 30000) {
+          combined = combined.slice(-30000);
+          // 对齐到行边界，避免截断半条消息
+          const firstNewline = combined.indexOf('\n');
+          if (firstNewline > 0) combined = combined.slice(firstNewline + 1);
+          combined = '...(已截断早期对话)\n' + combined;
+        }
+        threadHistory = combined;
+        logger.info({ pipelineId, threadId: pipelineThreadId, messageCount: historyLines.length }, 'Fetched thread history for pipeline');
+      }
+    } catch (err) {
+      logger.warn({ err, pipelineId, threadId: pipelineThreadId }, 'Failed to fetch thread history for pipeline');
+    }
+  }
+
   const orchestrator = new PipelineOrchestrator();
   runningPipelines.set(pipelineId, { orchestrator, chatId, userId });
 
@@ -207,6 +241,7 @@ export async function startPipeline(pipelineId: string): Promise<void> {
           ]);
         },
       },
+      threadHistory,
     );
 
     // 更新最终状态（中止的管道保留 aborted 状态，不覆盖为 failed）
