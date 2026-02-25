@@ -393,16 +393,7 @@ async function handleMessageEvent(data: MessageEventData, accountId: string = 'd
 
   logger.info({ userId, chatId, chatType, rootId, threadId, accountId, text: text.slice(0, 100), hasImages: !!images?.length }, 'Received message');
 
-  // 话题内消息必须有 thread_id
-  if (rootId && !threadId) {
-    logger.error({ messageId, rootId, chatId }, 'Feishu event has root_id but missing thread_id — aborting to surface the issue');
-    await feishuClient.replyText(messageId, '⚠️ 系统异常：飞书事件缺少 thread_id，请联系管理员');
-    return;
-  }
-
-  const effectiveThreadId = threadId;
-
-  // ── 多 Agent: @mention 路由 ──
+  // ── @mention 过滤（必须在所有副作用之前，避免对不该响应的消息发送错误提示） ──
   if (isMultiBotMode()) {
     const botOpenId = accountManager.getBotOpenId(accountId) ?? '';
     const allBotOpenIds = accountManager.getAllBotOpenIds();
@@ -425,6 +416,15 @@ async function handleMessageEvent(data: MessageEventData, accountId: string = 'd
       logger.debug({ messageId, threadId }, 'Image message allowed in group chat: active thread session exists');
     }
   }
+
+  // 话题内消息必须有 thread_id
+  if (rootId && !threadId) {
+    logger.error({ messageId, rootId, chatId }, 'Feishu event has root_id but missing thread_id — aborting to surface the issue');
+    await feishuClient.replyText(messageId, '⚠️ 系统异常：飞书事件缺少 thread_id，请联系管理员');
+    return;
+  }
+
+  const effectiveThreadId = threadId;
 
   // ── 多 Agent: Binding Router 选 agent 角色 ──
   const agentId: AgentId = isMultiBotMode()
