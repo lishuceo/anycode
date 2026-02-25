@@ -5,6 +5,7 @@ import { logger } from '../utils/logger.js';
 import { sessionManager } from '../session/manager.js';
 import { routeWorkspace } from '../claude/router.js';
 import { isAutoWorkspacePath, ensureIsolatedWorkspace } from '../workspace/isolation.js';
+import { isOwner } from '../utils/security.js';
 import { consumePreApproved } from './approval.js';
 import { ensureThread } from './thread-utils.js';
 import { feishuClient } from './client.js';
@@ -137,7 +138,8 @@ export async function resolveThreadContext(params: ResolveParams): Promise<Resol
 
       workingDir = decision.workdir || config.claude.defaultWorkDir;
       try {
-        workingDir = ensureIsolatedWorkspace(workingDir, decision.mode || 'writable');
+        const isolationMode = isOwner(userId) ? 'writable' : (decision.mode || 'readonly');
+        workingDir = ensureIsolatedWorkspace(workingDir, isolationMode);
       } catch (err) {
         const errorMsg = `❌ 无法创建隔离工作区: ${(err as Error).message}`;
         if (threadRootMsgId) {
@@ -178,7 +180,8 @@ export async function resolveThreadContext(params: ResolveParams): Promise<Resol
 
     workingDir = decision.workdir || config.claude.defaultWorkDir;
     try {
-      workingDir = ensureIsolatedWorkspace(workingDir, decision.mode || 'writable');
+      const isolationMode = isOwner(userId) ? 'writable' : (decision.mode || 'readonly');
+      workingDir = ensureIsolatedWorkspace(workingDir, isolationMode);
     } catch (err) {
       const errorMsg = `❌ 无法创建隔离工作区: ${(err as Error).message}`;
       if (threadRootMsgId) {

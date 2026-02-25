@@ -59,15 +59,11 @@ function buildWorkspaceSystemPrompt(): string {
 
 你当前的工作目录已经由系统预先设定好。**大多数情况下直接在当前目录工作即可**。
 
-你有一个 setup_workspace 工具可用，但仅在以下情况使用：
-- 用户**明确要求**切换到另一个仓库
-- 用户提供了新的仓库 URL 要求 clone
+你有一个 setup_workspace 工具可用，但**仅在用户明确要求切换到另一个仓库或提供新的仓库 URL 时使用**。
 
-**不要主动使用 setup_workspace**，除非用户明确要求。当前工作目录通常就是正确的工作区。
+**绝对不要用 setup_workspace 来切换当前工作区的模式（如从 readonly 切换到 writable）。** 当前工作区已经配置好了正确的权限，直接在当前目录工作即可。
 
-模式选择 (mode 参数)：
-- mode="readonly": 只读分析代码
-- mode="writable": 修改代码、提交变更
+调用 setup_workspace 时使用 mode="writable"。
 
 **重要：调用 setup_workspace 后，系统将自动重启以加载项目配置（CLAUDE.md 等）。
 请在调用后仅输出简短确认（如"工作区已就绪，正在重新加载项目配置..."），不要继续执行后续任务。**
@@ -239,19 +235,21 @@ export class ClaudeExecutor {
     // 构建 systemPrompt.append 内容
     // pipeline 模式使用独立的 system prompt，不需要工作区管理指引
     const baseAppend = systemPromptOverride ?? buildWorkspaceSystemPrompt();
-    const readOnlyNotice = readOnly
-      ? `\n\n## 权限限制\n当前用户处于只读模式。你可以阅读和分析代码、回答问题，但不能修改文件或执行命令。不要尝试使用 Edit、Write、Bash 等工具。如果用户请求代码修改，告知他们需要管理员权限。`
-      : '';
-    const baseAppendWithHistory = historySummaries
+    const promptAppend = historySummaries
       ? baseAppend + `\n\n## 历史会话摘要\n以下是该用户之前的会话记录，帮助你了解项目上下文：\n${historySummaries}`
       : baseAppend;
-    const promptAppend = baseAppendWithHistory + readOnlyNotice;
+
+    // 只读提示放入 user prompt（而非 system prompt），避免 per-user 差异导致 cache miss
+    const readOnlyPrefix = readOnly
+      ? '[系统提示：当前用户处于只读模式。你可以阅读和分析代码、回答问题，但不能修改文件或执行命令。不要尝试使用 Edit、Write、Bash 等工具。如果用户请求代码修改，告知他们需要管理员权限。]\n\n'
+      : '';
+    const effectivePrompt = readOnlyPrefix + prompt;
 
     // 构建 SDK query
     // 有图片时使用 AsyncIterable<SDKUserMessage> 多模态格式
     const promptInput = images?.length
-      ? buildMultimodalPrompt(prompt, images)
-      : prompt;
+      ? buildMultimodalPrompt(effectivePrompt, images)
+      : effectivePrompt;
 
     const q = query({
       prompt: promptInput,

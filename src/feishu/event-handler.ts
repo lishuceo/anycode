@@ -801,12 +801,9 @@ async function executeClaudeTask(
         'Workspace changed, restarting query with new cwd',
       );
 
-      // 检查 session 是否已被用户 /stop 中断
-      const currentSession = sessionManager.get(chatId, userId);
-      if (!currentSession || currentSession.status !== 'busy') {
-        logger.info({ chatId, userId }, 'Restart cancelled: session no longer busy');
-        return;
-      }
+      // 注意：不检查 session.status，因为 status 是 per chatId:userId 共享的，
+      // 其他 thread 的 finally 块可能已将其设为 'idle'，导致误判。
+      // needsRestart 仅在 workspace 变更回调中设置（非 /stop），无需额外守卫。
 
       // 验证新工作目录确实存在
       const { existsSync: dirExists } = await import('node:fs');
@@ -820,15 +817,15 @@ async function executeClaudeTask(
         return;
       }
 
-      // workspace 已变更：更新 thread session 的 workingDir，同时清空旧 conversationId
-      // （S1 只做了 workspace setup，其 session 不应被 resume）
+      // workspace 已变更：更新 thread session 的 workingDir，清空 conversationId
+      // （cwd 变更后无法 resume 旧 session —— Agent SDK 不允许跨 cwd resume）
       if (threadId) {
         sessionManager.setThreadWorkingDir(threadId, result.newWorkingDir);
       }
       sessionManager.setConversationId(chatId, userId, '');
 
       // 第二次 query：以新 cwd 执行，CLAUDE.md 正确加载
-      // - 不传 resumeSessionId（全新 session）
+      // - 不传 resumeSessionId（Agent SDK 不支持跨 cwd resume，会 exit code 1）
       // - 不传 onWorkspaceChanged（不触发二次 restart）
       // - disableWorkspaceTool: 完全移除 setup_workspace MCP tool，防止无限循环
       const restartResult = await claudeExecutor.execute({
@@ -843,13 +840,18 @@ async function executeClaudeTask(
       });
 
       // 保存 restart query 的 session_id 到 thread session
-      // 如果 restart query 失败未返回 sessionId，用第一次 query 的作为 fallback
-      const finalSessionId = restartResult.sessionId || result.sessionId;
-      if (finalSessionId) {
+      // 仅保存 restart 自身的 sessionId，不 fallback 到 S1 的 sessionId
+      // （S1 的 session 是在旧 cwd 创建的，跨 cwd resume 会 exit code 1）
+      if (restartResult.sessionId) {
         if (threadId) {
-          sessionManager.setThreadConversationId(threadId, finalSessionId, result.newWorkingDir);
+          sessionManager.setThreadConversationId(threadId, restartResult.sessionId, result.newWorkingDir);
         }
-        sessionManager.setConversationId(chatId, userId, finalSessionId, result.newWorkingDir);
+        sessionManager.setConversationId(chatId, userId, restartResult.sessionId, result.newWorkingDir);
+      } else {
+        logger.warn(
+          { chatId, userId, threadId },
+          'Restart query produced no sessionId — next message will start fresh',
+        );
       }
 
       // 合并两次 query 的耗时和花费

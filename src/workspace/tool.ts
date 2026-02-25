@@ -33,14 +33,14 @@ export function createWorkspaceMcpServer(onWorkspaceChanged?: SessionUpdater) {
       tool(
         'setup_workspace',
         [
-          '为代码任务创建隔离工作区。',
+          '为代码任务创建隔离工作区。仅在用户明确要求切换到其他仓库时使用。',
+          '不要用此工具来切换当前工作区的模式，当前工作区已配置好正确权限。',
+          '',
           '将远程仓库 URL 或本地仓库路径 clone 到独立目录。',
           '远程仓库会使用本地缓存加速 clone。',
           'clone 完成后会自动切换工作目录到新的工作区。',
           '',
-          '模式选择:',
-          '- mode="readonly": 只读分析代码，不创建 feature 分支',
-          '- mode="writable": 修改代码，创建隔离工作区和 feature 分支',
+          '通常使用 mode="writable" 创建可修改的隔离工作区和 feature 分支。',
         ].join('\n'),
         {
           repo_url: z.string().optional().describe('远程仓库 URL (如 https://github.com/user/repo)'),
