@@ -167,6 +167,22 @@ export class SessionDatabase {
       this.db.exec('UPDATE schema_version SET version = 7');
     }
 
+    // Migration v7 → v8: prefix existing keys with agent:dev: for multi-agent support
+    if (version < 8) {
+      // thread_sessions: threadId → agent:dev:{threadId}
+      const threadCount = this.db.prepare(
+        "UPDATE thread_sessions SET thread_id = 'agent:dev:' || thread_id WHERE thread_id NOT LIKE 'agent:%'",
+      ).run().changes;
+      // sessions: key → agent:dev:{key}
+      const sessionCount = this.db.prepare(
+        "UPDATE sessions SET key = 'agent:dev:' || key WHERE key NOT LIKE 'agent:%'",
+      ).run().changes;
+      if (threadCount > 0 || sessionCount > 0) {
+        logger.info({ threadCount, sessionCount }, 'Migrated session keys to agent-prefixed format');
+      }
+      this.db.exec('UPDATE schema_version SET version = 8');
+    }
+
     this.stmtUpsert = this.db.prepare(`
       INSERT INTO sessions (key, chat_id, user_id, working_dir, conversation_id, conversation_cwd, thread_id, thread_root_message_id, status, created_at, last_active_at)
       VALUES (@key, @chat_id, @user_id, @working_dir, @conversation_id, @conversation_cwd, @thread_id, @thread_root_message_id, @status, @created_at, @last_active_at)

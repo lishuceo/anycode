@@ -7,8 +7,8 @@ import { claudeExecutor } from '../claude/executor.js';
 import { DEFAULT_IMAGE_PROMPT } from '../claude/types.js';
 import type { TurnInfo, ToolCallInfo, ImageAttachment } from '../claude/types.js';
 import { buildResultCard, buildStatusCard, buildCancelledCard, buildPipelineCard, buildPipelineConfirmCard, buildProgressCard, buildToolProgressCard, buildSimpleResultCard } from './message-builder.js';
-import { feishuClient } from './client.js';
-import { config } from '../config.js';
+import { feishuClient, runWithAccountId } from './client.js';
+import { config, isMultiBotMode } from '../config.js';
 import { setupWorkspace } from '../workspace/manager.js';
 import { checkAndRequestApproval, handleApprovalTextCommand, handleApprovalCardAction, setOnApproved } from './approval.js';
 import { resolveThreadContext } from './thread-context.js';
@@ -20,6 +20,10 @@ import {
   cancelPipeline,
   retryPipeline,
 } from '../pipeline/runner.js';
+import { resolveAgent, shouldRespond } from '../agent/router.js';
+import { agentRegistry } from '../agent/registry.js';
+import { accountManager } from './multi-account.js';
+import type { AgentId } from '../agent/types.js';
 
 // 注册审批通过后的消息重新入队回调（避免 approval.ts → event-handler.ts 循环依赖）
 setOnApproved((chatId, userId, text, messageId, rootId, threadId) => {
@@ -42,11 +46,13 @@ setOnApproved((chatId, userId, text, messageId, rootId, threadId) => {
 // 配合 adaptExpress 可以一行代码接入 Express
 // ============================================================
 
-// 消息去重缓存 (message_id → 时间戳)，防止飞书重试导致重复处理
+// 消息去重缓存 (accountId:message_id → 时间戳)，防止飞书重试导致重复处理
+// 多 bot 模式下每个 bot 独立去重（key 包含 accountId），避免跨 bot 误去重
 const processedMessages = new Map<string, number>();
 const DEDUP_TTL_MS = 5 * 60 * 1000; // 5 分钟过期
 
-function isDuplicate(messageId: string): boolean {
+function isDuplicate(messageId: string, accountId: string = 'default'): boolean {
+  const dedupKey = `${accountId}:${messageId}`;
   const now = Date.now();
   // 清理过期条目
   if (processedMessages.size > 500) {
@@ -54,40 +60,43 @@ function isDuplicate(messageId: string): boolean {
       if (now - ts > DEDUP_TTL_MS) processedMessages.delete(id);
     }
   }
-  if (processedMessages.has(messageId)) return true;
-  processedMessages.set(messageId, now);
+  if (processedMessages.has(dedupKey)) return true;
+  processedMessages.set(dedupKey, now);
   return false;
 }
 
 /**
  * 创建飞书事件分发器
+ *
+ * @param accountId 多 bot 模式下的 bot 账号标识（通过闭包绑定到 handler）。
+ *   每个 bot 各自创建独立的 EventDispatcher + WSClient，确保收到事件时知道是哪个 bot 的。
+ *   单 bot 模式下 accountId = 'default'。
  */
-export function createEventDispatcher(): lark.EventDispatcher {
+export function createEventDispatcher(accountId: string = 'default'): lark.EventDispatcher {
   const dispatcher = new lark.EventDispatcher({
     encryptKey: config.feishu.encryptKey || undefined,
     verificationToken: config.feishu.verifyToken || undefined,
   });
 
   // 注册消息接收事件 (im.message.receive_v1)
+  // accountId 通过闭包绑定，handleMessageEvent 无需从事件数据推断
+  // runWithAccountId 将 accountId 注入 AsyncLocalStorage，
+  // 下游所有 feishuClient 调用自动路由到正确的 per-account client
   dispatcher.register({
     'im.message.receive_v1': async (data) => {
       try {
-        await handleMessageEvent(data);
+        await runWithAccountId(accountId, () => handleMessageEvent(data, accountId));
       } catch (err) {
-        logger.error({ err }, 'Error handling message event');
+        logger.error({ err, accountId }, 'Error handling message event');
       }
     },
   });
 
   // 注册卡片交互回调 (card.action.trigger)
-  // WebSocket 长连接模式下，卡片回调也通过 EventDispatcher 接收
-  // （CardActionHandler 仅适用于 HTTP Webhook 模式）
   dispatcher.register({
     'card.action.trigger': async (data: Record<string, unknown>) => {
       try {
         const cardBody = await handleCardAction(data);
-        // card.action.trigger 返回格式与 CardActionHandler 不同：
-        // 需要用 { card: { type: "raw", data: ... } } 包装
         if (cardBody && Object.keys(cardBody).length > 0) {
           return { card: { type: 'raw', data: cardBody } };
         }
@@ -99,7 +108,7 @@ export function createEventDispatcher(): lark.EventDispatcher {
     },
   });
 
-  logger.info('Feishu EventDispatcher created with im.message.receive_v1 + card.action.trigger handlers');
+  logger.debug({ accountId }, 'Feishu EventDispatcher created');
   return dispatcher;
 }
 
@@ -220,21 +229,26 @@ async function handlePipelineRetry(pipelineId: string): Promise<Record<string, u
 // queueKey = threadId 存在时用 `chatId:threadId`，否则用 `chatId`
 // ============================================================
 
-function makeQueueKey(chatId: string, threadId?: string): string {
-  return threadId ? `${chatId}:${threadId}` : chatId;
+/**
+ * 构建队列 key，包含 agentId 维度
+ * 同 thread 同 agent 串行，不同 agent 可并行
+ */
+function makeQueueKey(chatId: string, threadId?: string, agentId: string = 'dev'): string {
+  const base = threadId ? `${chatId}:${threadId}` : chatId;
+  return `${agentId}:${base}`;
 }
 
-function processQueue(queueKey: string): void {
+function processQueue(queueKey: string, agentId: AgentId = 'dev'): void {
   const task = taskQueue.dequeue(queueKey);
   if (!task) return;
 
-  executeClaudeTask(task.message, task.chatId, task.userId, task.messageId, task.rootId, task.threadId, task.images)
+  executeClaudeTask(task.message, task.chatId, task.userId, task.messageId, task.rootId, task.threadId, task.images, agentId)
     .then(() => task.resolve('done'))
     .catch((err) => task.reject(err instanceof Error ? err : new Error(String(err))))
     .finally(() => {
       taskQueue.complete(queueKey);
       // 处理队列中的下一个任务
-      processQueue(queueKey);
+      processQueue(queueKey, agentId);
     });
 }
 
@@ -342,7 +356,10 @@ interface ParsedMessage {
   userId: string;
   chatId: string;
   chatType: string;
+  /** 单 bot 模式下的 @mention 检测结果 */
   mentionedBot: boolean;
+  /** 原始 mentions 数组（多 bot 模式 shouldRespond 使用） */
+  mentions: Array<{ id: { open_id?: string } }>;
   /** message.root_id — 回复链根消息 ID */
   rootId?: string;
   /** message.thread_id — 飞书话题 ID（可靠的话题标识） */
@@ -353,41 +370,69 @@ interface ParsedMessage {
 
 /**
  * 处理消息事件 (由 EventDispatcher 回调)
+ *
+ * 多 Agent 模式处理流程：
+ * ① shouldRespond — @mention 过滤
+ * ② Binding Router — 选 agent 角色
+ * ③ Slash command — 在 agent 角色确定后执行
+ * ④ Workspace Router — 选工作目录（在 resolveThreadContext 中）
+ * ⑤ Agent 执行
  */
-async function handleMessageEvent(data: MessageEventData): Promise<void> {
+async function handleMessageEvent(data: MessageEventData, accountId: string = 'default'): Promise<void> {
   // 消息去重：飞书可能在未及时收到响应时重试推送（移到 parseMessage 之前，避免图片重复下载）
-  if (isDuplicate(data.message.message_id)) {
-    logger.debug({ messageId: data.message.message_id }, 'Duplicate message ignored');
+  // key 包含 accountId，多 bot 共存时各自独立去重
+  if (isDuplicate(data.message.message_id, accountId)) {
+    logger.debug({ messageId: data.message.message_id, accountId }, 'Duplicate message ignored');
     return;
   }
 
   const parsed = await parseMessage(data);
   if (!parsed) return;
 
-  const { text, messageId, userId, chatId, chatType, mentionedBot, rootId, threadId, images } = parsed;
+  const { text, messageId, userId, chatId, chatType, mentionedBot, rootId, threadId, images, mentions } = parsed;
 
-  logger.info({ userId, chatId, chatType, rootId, threadId, text: text.slice(0, 100), hasImages: !!images?.length }, 'Received message');
+  logger.info({ userId, chatId, chatType, rootId, threadId, accountId, text: text.slice(0, 100), hasImages: !!images?.length }, 'Received message');
 
-  // 话题内消息必须有 thread_id：有 root_id 说明是话题内回复，
-  // 飞书应始终返回 thread_id。如果缺失，说明 API 行为异常，中断并报错以暴露问题。
+  // 话题内消息必须有 thread_id
   if (rootId && !threadId) {
     logger.error({ messageId, rootId, chatId }, 'Feishu event has root_id but missing thread_id — aborting to surface the issue');
     await feishuClient.replyText(messageId, '⚠️ 系统异常：飞书事件缺少 thread_id，请联系管理员');
     return;
   }
 
-  // threadId 用于话题标识（话题内消息有值，新消息为 undefined）
   const effectiveThreadId = threadId;
 
-  // 群聊中需要 @机器人 才响应
-  // 例外：图片消息无法携带 @mention，在已有活跃话题（bot 已参与交互）中放行
-  if (chatType === 'group' && !mentionedBot) {
-    const allowImageInThread = images?.length && threadId && sessionManager.getThreadSession(threadId);
-    if (!allowImageInThread) {
+  // ── 多 Agent: @mention 路由 ──
+  if (isMultiBotMode()) {
+    const botOpenId = accountManager.getBotOpenId(accountId) ?? '';
+    const allBotOpenIds = accountManager.getAllBotOpenIds();
+    const groupConfig = config.agent.groupConfigs[chatId];
+    const commanderOpenId = groupConfig?.commander
+      ? accountManager.getBotOpenId(groupConfig.commander)
+      : undefined;
+
+    if (!shouldRespond(chatType, mentions, botOpenId, allBotOpenIds, commanderOpenId)) {
       return;
     }
-    logger.debug({ messageId, threadId }, 'Image message allowed in group chat: active thread session exists');
+  } else {
+    // 单 bot 模式：群聊中需要 @机器人 才响应
+    // 例外：图片消息无法携带 @mention，在已有活跃话题（bot 已参与交互）中放行
+    if (chatType === 'group' && !mentionedBot) {
+      const allowImageInThread = images?.length && threadId && sessionManager.getThreadSession(threadId);
+      if (!allowImageInThread) {
+        return;
+      }
+      logger.debug({ messageId, threadId }, 'Image message allowed in group chat: active thread session exists');
+    }
   }
+
+  // ── 多 Agent: Binding Router 选 agent 角色 ──
+  const agentId: AgentId = isMultiBotMode()
+    ? resolveAgent(config.agent.bindings, { accountId, chatId, userId, chatType: chatType as 'group' | 'p2p' })
+    : 'dev'; // 单 bot 模式默认 dev agent
+
+  const agentConfig = agentRegistry.get(agentId);
+  logger.debug({ agentId, accountId }, 'Agent resolved');
 
   // 用户权限检查
   if (!isUserAllowed(userId)) {
@@ -398,8 +443,8 @@ async function handleMessageEvent(data: MessageEventData): Promise<void> {
 
   // 斜杠命令、管道确认、审批命令仅对文本消息有效
   if (text) {
-    // 处理斜杠命令
-    const commandResult = await handleSlashCommand(text, chatId, userId, messageId, rootId, effectiveThreadId);
+    // 处理斜杠命令（在 agent 角色确定后执行）
+    const commandResult = await handleSlashCommand(text, chatId, userId, messageId, rootId, effectiveThreadId, agentId);
     if (commandResult) return;
 
     // 处理管道消息确认（卡片按钮的文本 fallback）
@@ -410,14 +455,17 @@ async function handleMessageEvent(data: MessageEventData): Promise<void> {
     if (handleApprovalTextCommand(text, userId, chatId, effectiveThreadId)) return;
   }
 
-  // 非 owner 用户审批检查（per-thread：首条消息需审批，审批后同 thread 自动放行）
-  const session = sessionManager.get(chatId, userId);
-  const threadIdForApproval = effectiveThreadId || session?.threadId;
-  const approved = await checkAndRequestApproval(
-    userId, chatId, chatType, text, messageId,
-    rootId, rootId, threadIdForApproval,
-  );
-  if (!approved) return;
+  // 非 owner 用户审批检查
+  // Chat Agent (readonly) 无需审批；Dev Agent 由 agentConfig.requiresApproval 控制
+  if (agentConfig?.requiresApproval) {
+    const session = sessionManager.get(chatId, userId, agentId);
+    const threadIdForApproval = effectiveThreadId || session?.threadId;
+    const approved = await checkAndRequestApproval(
+      userId, chatId, chatType, text, messageId,
+      rootId, rootId, threadIdForApproval,
+    );
+    if (!approved) return;
+  }
 
   // 安全检查（图片消息无文本，跳过）
   if (text && containsDangerousCommand(text)) {
@@ -428,11 +476,11 @@ async function handleMessageEvent(data: MessageEventData): Promise<void> {
   // 图片消息无文字时使用默认 prompt
   const effectiveText = text || (images?.length ? DEFAULT_IMAGE_PROMPT : '');
 
-  // 通过 taskQueue 串行化执行：同一 thread 内串行，不同 thread 可并行
+  // 通过 taskQueue 串行化：queue key 包含 agentId，不同 agent 可并行
   // enqueue 返回的 Promise 的错误处理在 processQueue/executeClaudeTask 中完成
-  const queueKey = makeQueueKey(chatId, effectiveThreadId);
+  const queueKey = makeQueueKey(chatId, effectiveThreadId, agentId);
   taskQueue.enqueue(queueKey, chatId, userId, effectiveText, messageId, rootId, effectiveThreadId, images).catch(() => {});
-  processQueue(queueKey);
+  processQueue(queueKey, agentId);
 }
 
 /**
@@ -445,6 +493,7 @@ async function handleSlashCommand(
   messageId: string,
   rootId?: string,
   effectiveThreadId?: string,
+  agentId: AgentId = 'dev',
 ): Promise<boolean> {
   const trimmed = text.trim();
 
@@ -661,6 +710,7 @@ async function executeClaudeTask(
   rootId?: string,
   eventThreadId?: string,
   images?: ImageAttachment[],
+  agentId: AgentId = 'dev',
 ): Promise<void> {
   // 1. 解析话题上下文（thread + 路由 + 工作区隔离 + greeting）
   const resolved = await resolveThreadContext({
@@ -670,12 +720,13 @@ async function executeClaudeTask(
     messageId,
     rootId,
     threadId: eventThreadId,
+    agentId,
   });
 
   if (resolved.status !== 'resolved') return;
 
   const { threadRootMsgId, workingDir, threadId, threadSession, prompt } = resolved.ctx;
-  const session = sessionManager.getOrCreate(chatId, userId);
+  const session = sessionManager.getOrCreate(chatId, userId, agentId);
 
   // sessionKey 包含 threadId，per-thread 并行时各 query 有独立的 key
   const sessionKey = threadId ? `${chatId}:${userId}:${threadId}` : `${chatId}:${userId}`;
@@ -693,7 +744,7 @@ async function executeClaudeTask(
   }
 
   // 标记会话为忙碌
-  sessionManager.setStatus(chatId, userId, 'busy');
+  sessionManager.setStatus(chatId, userId, 'busy', agentId);
 
   // 构建历史上下文：仅 pipeline thread 注入 pipeline 上下文，其他场景不注入
   // （不同 thread 通常是不同项目/话题，全局摘要反而是噪声）
@@ -744,7 +795,7 @@ async function executeClaudeTask(
 
   // workspace 变更回调: MCP 工具 clone 后自动更新 session.workingDir
   const onWorkspaceChanged = (newDir: string) => {
-    sessionManager.setWorkingDir(chatId, userId, newDir);
+    sessionManager.setWorkingDir(chatId, userId, newDir, agentId);
     logger.info({ chatId, userId, newDir }, 'Workspace changed via MCP tool');
   };
 
@@ -777,13 +828,19 @@ async function executeClaudeTask(
       );
     }
 
-    const readOnly = !isOwner(userId);
+    // readOnly: agent 配置优先，如果 agent 是 readonly 则强制只读；
+    // 否则回退到 owner 检查（dev agent 中非 owner 也是只读）
+    const agentCfg = agentRegistry.get(agentId);
+    const readOnly = agentCfg?.readOnly ?? !isOwner(userId);
 
     const result = await claudeExecutor.execute({
       sessionKey,
       prompt,
       workingDir,
       readOnly,
+      model: agentCfg?.model,
+      maxTurns: agentCfg?.maxTurns,
+      maxBudgetUsd: agentCfg?.maxBudgetUsd,
       // 有图片时不 resume（AsyncIterable prompt 模式与 resume 不兼容）
       resumeSessionId: images?.length ? undefined : (canResume ? activeConversationId : undefined),
       onProgress,
@@ -801,9 +858,12 @@ async function executeClaudeTask(
         'Workspace changed, restarting query with new cwd',
       );
 
-      // 注意：不检查 session.status，因为 status 是 per chatId:userId 共享的，
-      // 其他 thread 的 finally 块可能已将其设为 'idle'，导致误判。
-      // needsRestart 仅在 workspace 变更回调中设置（非 /stop），无需额外守卫。
+      // 检查 session 是否已被用户 /stop 中断
+      const currentSession = sessionManager.get(chatId, userId, agentId);
+      if (!currentSession || currentSession.status !== 'busy') {
+        logger.info({ chatId, userId }, 'Restart cancelled: session no longer busy');
+        return;
+      }
 
       // 验证新工作目录确实存在
       const { existsSync: dirExists } = await import('node:fs');
@@ -820,9 +880,9 @@ async function executeClaudeTask(
       // workspace 已变更：更新 thread session 的 workingDir，清空 conversationId
       // （cwd 变更后无法 resume 旧 session —— Agent SDK 不允许跨 cwd resume）
       if (threadId) {
-        sessionManager.setThreadWorkingDir(threadId, result.newWorkingDir);
+        sessionManager.setThreadWorkingDir(threadId, result.newWorkingDir, agentId);
       }
-      sessionManager.setConversationId(chatId, userId, '');
+      sessionManager.setConversationId(chatId, userId, '', undefined, agentId);
 
       // 第二次 query：以新 cwd 执行，CLAUDE.md 正确加载
       // - 不传 resumeSessionId（Agent SDK 不支持跨 cwd resume，会 exit code 1）
@@ -833,6 +893,9 @@ async function executeClaudeTask(
         prompt,
         workingDir: result.newWorkingDir,
         readOnly,
+        model: agentCfg?.model,
+        maxTurns: agentCfg?.maxTurns,
+        maxBudgetUsd: agentCfg?.maxBudgetUsd,
         onProgress,
         onTurn,
         historySummaries,
@@ -844,9 +907,9 @@ async function executeClaudeTask(
       // （S1 的 session 是在旧 cwd 创建的，跨 cwd resume 会 exit code 1）
       if (restartResult.sessionId) {
         if (threadId) {
-          sessionManager.setThreadConversationId(threadId, restartResult.sessionId, result.newWorkingDir);
+          sessionManager.setThreadConversationId(threadId, restartResult.sessionId, result.newWorkingDir, agentId);
         }
-        sessionManager.setConversationId(chatId, userId, restartResult.sessionId, result.newWorkingDir);
+        sessionManager.setConversationId(chatId, userId, restartResult.sessionId, result.newWorkingDir, agentId);
       } else {
         logger.warn(
           { chatId, userId, threadId },
@@ -911,9 +974,9 @@ async function executeClaudeTask(
     // 即使失败也保存——下次 resume 可能成功（如超时但 session 数据完整）
     if (result.sessionId) {
       if (threadId) {
-        sessionManager.setThreadConversationId(threadId, result.sessionId, workingDir);
+        sessionManager.setThreadConversationId(threadId, result.sessionId, workingDir, agentId);
       }
-      sessionManager.setConversationId(chatId, userId, result.sessionId, workingDir);
+      sessionManager.setConversationId(chatId, userId, result.sessionId, workingDir, agentId);
     }
 
     // 进度卡片切换为完成态
@@ -949,7 +1012,7 @@ async function executeClaudeTask(
     }
   } finally {
     try {
-      sessionManager.setStatus(chatId, userId, 'idle');
+      sessionManager.setStatus(chatId, userId, 'idle', agentId);
     } catch (err) {
       logger.error({ err, chatId, userId }, 'Failed to reset session status');
     }
@@ -1213,6 +1276,7 @@ async function parseMessage(data: MessageEventData): Promise<ParsedMessage | nul
     chatId: message.chat_id,
     chatType: message.chat_type,
     mentionedBot,
+    mentions: (message.mentions ?? []).map(m => ({ id: { open_id: m.id.open_id } })),
     rootId: message.root_id || undefined,
     threadId: message.thread_id || undefined,
     images,

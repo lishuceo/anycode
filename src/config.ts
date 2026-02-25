@@ -1,6 +1,35 @@
 import dotenv from 'dotenv';
 dotenv.config();
 
+import type { BotAccountConfig, AgentBinding, GroupConfig } from './agent/types.js';
+
+function parseBotAccounts(raw?: string): BotAccountConfig[] {
+  if (!raw?.trim()) return [];
+  try {
+    return JSON.parse(raw) as BotAccountConfig[];
+  } catch {
+    return [];
+  }
+}
+
+function parseAgentBindings(raw?: string): AgentBinding[] {
+  if (!raw?.trim()) return [];
+  try {
+    return JSON.parse(raw) as AgentBinding[];
+  } catch {
+    return [];
+  }
+}
+
+function parseGroupConfigs(raw?: string): Record<string, GroupConfig> {
+  if (!raw?.trim()) return {};
+  try {
+    return JSON.parse(raw) as Record<string, GroupConfig>;
+  } catch {
+    return {};
+  }
+}
+
 export const config = {
   // 飞书配置
   feishu: {
@@ -79,6 +108,16 @@ export const config = {
     pipelineDbPath: process.env.PIPELINE_DB_PATH || './data/pipelines.db',
   },
 
+  // 多 Agent 配置
+  agent: {
+    /** 多 bot 账号配置 (JSON 数组)，未配置时退化为单 bot 模式 */
+    botAccounts: parseBotAccounts(process.env.BOT_ACCOUNTS),
+    /** Agent 路由规则 (JSON 数组)，未配置时所有消息走 dev agent */
+    bindings: parseAgentBindings(process.env.AGENT_BINDINGS),
+    /** 群配置 (JSON 对象: chatId → GroupConfig) */
+    groupConfigs: parseGroupConfigs(process.env.GROUP_CONFIGS),
+  },
+
   // 服务配置
   server: {
     port: parseInt(process.env.PORT || '3000', 10),
@@ -90,7 +129,16 @@ export const config = {
 /** 检查必要配置是否存在 */
 export function validateConfig(): string[] {
   const errors: string[] = [];
-  if (!config.feishu.appId) errors.push('FEISHU_APP_ID is required');
-  if (!config.feishu.appSecret) errors.push('FEISHU_APP_SECRET is required');
+  const hasMultiBot = config.agent.botAccounts.length > 0;
+  // 多 bot 模式下不需要 FEISHU_APP_ID/SECRET（从 BOT_ACCOUNTS 读取）
+  if (!hasMultiBot) {
+    if (!config.feishu.appId) errors.push('FEISHU_APP_ID is required (or configure BOT_ACCOUNTS)');
+    if (!config.feishu.appSecret) errors.push('FEISHU_APP_SECRET is required (or configure BOT_ACCOUNTS)');
+  }
   return errors;
+}
+
+/** 是否多 bot 模式 */
+export function isMultiBotMode(): boolean {
+  return config.agent.botAccounts.length > 0;
 }
