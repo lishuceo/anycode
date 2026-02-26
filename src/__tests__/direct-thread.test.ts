@@ -104,18 +104,47 @@ async function buildDirectTaskHistory(
   }
 }
 
-function formatHistory(messages: SimpleMessage[]): string {
-  const lines = messages.map(m => {
-    const role = m.senderType === 'app' ? '[Bot]' : '[用户]';
-    const text = m.content.length > 500 ? m.content.slice(0, 500) + '...' : m.content;
-    return `${role}: ${text}`;
-  });
-  return [
+/** Match the production formatHistoryMessages logic (with total budget guard) */
+const TOTAL_BUDGET = 4000; // matches default CHAT_HISTORY_MAX_CHARS
+const PER_MSG_MAX = 500;
+
+function formatHistory(messages: SimpleMessage[]): string | undefined {
+  if (messages.length === 0) return undefined;
+
+  const header = [
     '## 飞书聊天近期上下文',
     '以下是用户 @bot 之前的聊天记录，帮助你理解当前对话的背景：',
     '',
-    ...lines,
   ].join('\n');
+
+  const lines = messages.map(m => {
+    const role = m.senderType === 'app' ? '[Bot]' : '[用户]';
+    const text = m.content.length > PER_MSG_MAX
+      ? m.content.slice(0, PER_MSG_MAX) + '...'
+      : m.content;
+    return `${role}: ${text}`;
+  });
+
+  // Total budget guard: drop oldest messages first
+  let totalLen = header.length;
+  let keepFrom = 0;
+  for (let i = lines.length - 1; i >= 0; i--) {
+    totalLen += lines[i].length + 1;
+    if (totalLen > TOTAL_BUDGET) {
+      keepFrom = i + 1;
+      break;
+    }
+  }
+
+  const kept = keepFrom > 0 ? lines.slice(keepFrom) : lines;
+  if (kept.length === 0) return undefined;
+
+  const parts = [header];
+  if (keepFrom > 0) {
+    parts.push(`_(已省略 ${keepFrom} 条较早消息)_`);
+  }
+  parts.push(...kept);
+  return parts.join('\n');
 }
 
 function makeMsg(id: string, content: string, senderType: 'user' | 'app' = 'user'): SimpleMessage {
@@ -255,6 +284,51 @@ describe('buildDirectTaskHistory fork semantics', () => {
 
     expect(result).toContain('[用户]: user question');
     expect(result).toContain('[Bot]: bot answer');
+  });
+});
+
+// ============================================================
+// 1b. formatHistoryMessages total budget guard
+// ============================================================
+
+describe('formatHistoryMessages total budget guard', () => {
+  it('truncates individual messages > 500 chars', () => {
+    const longContent = 'a'.repeat(600);
+    const result = formatHistory([makeMsg('m1', longContent)]);
+
+    expect(result).toContain('a'.repeat(500) + '...');
+    expect(result).not.toContain('a'.repeat(501));
+  });
+
+  it('drops oldest messages when total exceeds budget', () => {
+    // Each message ~400 chars, 10 of them ≈ 4000+ chars → should drop some
+    const msgs = Array.from({ length: 12 }, (_, i) =>
+      makeMsg(`m${i}`, `msg-${i}-${'x'.repeat(380)}`),
+    );
+
+    const result = formatHistory(msgs);
+    expect(result).toBeDefined();
+
+    // Should keep most recent messages and drop oldest
+    expect(result).toContain('msg-11-');  // most recent kept
+    expect(result).toContain('已省略');    // drop indicator present
+  });
+
+  it('keeps all messages when within budget', () => {
+    const msgs = [
+      makeMsg('m1', 'short msg 1'),
+      makeMsg('m2', 'short msg 2'),
+      makeMsg('m3', 'short msg 3'),
+    ];
+
+    const result = formatHistory(msgs);
+    expect(result).toContain('short msg 1');
+    expect(result).toContain('short msg 3');
+    expect(result).not.toContain('已省略');
+  });
+
+  it('returns undefined for empty messages', () => {
+    expect(formatHistory([])).toBeUndefined();
   });
 });
 

@@ -742,25 +742,65 @@ async function buildChatHistoryContext(
       ? messages.filter(m => m.messageId !== currentMessageId)
       : messages;
 
-    if (history.length === 0) return undefined;
-
-    const lines = history.map(m => {
-      const role = m.senderType === 'app' ? '[Bot]' : '[用户]';
-      // 截断过长的单条消息
-      const text = m.content.length > 500 ? m.content.slice(0, 500) + '...' : m.content;
-      return `${role}: ${text}`;
-    });
-
-    return [
-      '## 飞书聊天近期上下文',
-      '以下是用户 @bot 之前的聊天记录，帮助你理解当前对话的背景：',
-      '',
-      ...lines,
-    ].join('\n');
+    return formatHistoryMessages(history);
   } catch (err) {
     logger.error({ err, chatId, threadId }, 'Failed to build chat history context');
     return undefined;
   }
+}
+
+/**
+ * 格式化历史消息为上下文文本（共享逻辑）。
+ *
+ * 保护策略：
+ * 1. 单条消息 > 500 字符时截断（header 已存在）
+ * 2. 总字符数超 CHAT_HISTORY_MAX_CHARS（默认 4000）时，从最旧的消息开始丢弃
+ *
+ * 当前 @bot 的消息不在 history 中（调用前已过滤），rawPrompt 始终完整保留。
+ */
+function formatHistoryMessages(
+  messages: Array<{ messageId: string; senderType: 'user' | 'app'; content: string; msgType: string }>,
+): string | undefined {
+  if (messages.length === 0) return undefined;
+
+  const PER_MSG_MAX = 500;
+  const header = [
+    '## 飞书聊天近期上下文',
+    '以下是用户 @bot 之前的聊天记录，帮助你理解当前对话的背景：',
+    '',
+  ].join('\n');
+
+  // 1. 格式化每条消息，单条截断
+  const lines = messages.map(m => {
+    const role = m.senderType === 'app' ? '[Bot]' : '[用户]';
+    const text = m.content.length > PER_MSG_MAX
+      ? m.content.slice(0, PER_MSG_MAX) + '...'
+      : m.content;
+    return `${role}: ${text}`;
+  });
+
+  // 2. 总量保护：如果超出预算，从最旧的消息开始丢弃（保留最近的）
+  const maxChars = config.chat.historyMaxChars;
+  let totalLen = header.length;
+  // 从最新（末尾）向最旧（开头）累加，找到截断点
+  let keepFrom = 0;
+  for (let i = lines.length - 1; i >= 0; i--) {
+    totalLen += lines[i].length + 1; // +1 for newline
+    if (totalLen > maxChars) {
+      keepFrom = i + 1;
+      break;
+    }
+  }
+
+  const kept = keepFrom > 0 ? lines.slice(keepFrom) : lines;
+  if (kept.length === 0) return undefined;
+
+  const parts = [header];
+  if (keepFrom > 0) {
+    parts.push(`_(已省略 ${keepFrom} 条较早消息)_`);
+  }
+  parts.push(...kept);
+  return parts.join('\n');
 }
 
 /**
@@ -1294,19 +1334,7 @@ async function buildDirectTaskHistory(
       selected = [first, ...latest];
     }
 
-    // 格式化（与 buildChatHistoryContext 格式一致）
-    const lines = selected.map(m => {
-      const role = m.senderType === 'app' ? '[Bot]' : '[用户]';
-      const text = m.content.length > 500 ? m.content.slice(0, 500) + '...' : m.content;
-      return `${role}: ${text}`;
-    });
-
-    return [
-      '## 飞书聊天近期上下文',
-      '以下是用户 @bot 之前的聊天记录，帮助你理解当前对话的背景：',
-      '',
-      ...lines,
-    ].join('\n');
+    return formatHistoryMessages(selected);
   } catch (err) {
     logger.error({ err, chatId, threadId }, 'Failed to build direct task history');
     return undefined;
