@@ -26,6 +26,8 @@ export interface RoutingDecision {
   question?: string;
   /** clone 失败时携带错误信息，供调用方提示用户 */
   cloneError?: string;
+  /** 非阻断性警告（如缓存 fetch 失败） */
+  warning?: string;
 }
 
 /** 构建路由 system prompt（注入实际目录路径） */
@@ -241,7 +243,7 @@ export async function routeWorkspace(
         const fallbackDir = getFallbackWorkdir();
         return { decision: 'use_default', workdir: fallbackDir };
       }
-      return { ...decision, workdir: workspace.workspacePath };
+      return { ...decision, workdir: workspace.workspacePath, warning: workspace.warning };
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
       logger.error({ err: errMsg, chatId, userId, repoUrl: decision.repo_url }, 'Failed to setup workspace from routing decision');
@@ -281,7 +283,7 @@ export async function routeWorkspace(
             const fallbackDir = getFallbackWorkdir();
             return { decision: 'use_default', workdir: fallbackDir };
           }
-          return { ...decision, decision: 'clone_remote', workdir: workspace.workspacePath };
+          return { ...decision, decision: 'clone_remote', workdir: workspace.workspacePath, warning: workspace.warning };
         } catch (err) {
           logger.error({ err, chatId, userId, repoUrl: decision.repo_url }, 'Failed to clone from bare cache, using fallback');
           const fallbackDir = getFallbackWorkdir();

@@ -686,7 +686,7 @@ describe('ensureIsolatedWorkspace', () => {
 
   it('should return as-is when path is already under workspace baseDir', () => {
     const result = ensureIsolatedWorkspace('/tmp/workspaces/repo-abc123');
-    expect(result).toBe('/tmp/workspaces/repo-abc123');
+    expect(result).toEqual({ workingDir: '/tmp/workspaces/repo-abc123' });
     expect(setupWorkspaceMock).not.toHaveBeenCalled();
   });
 
@@ -700,7 +700,7 @@ describe('ensureIsolatedWorkspace', () => {
 
     const result = ensureIsolatedWorkspace('/tmp/work/my-repo', 'writable');
 
-    expect(result).toBe('/tmp/workspaces/my-repo-writable-abc123');
+    expect(result).toEqual({ workingDir: '/tmp/workspaces/my-repo-writable-abc123' });
     expect(setupWorkspaceMock).toHaveBeenCalledWith({
       localPath: '/tmp/work/my-repo',
       mode: 'writable',
@@ -717,7 +717,7 @@ describe('ensureIsolatedWorkspace', () => {
 
     const result = ensureIsolatedWorkspace('/tmp/work/my-repo', 'readonly');
 
-    expect(result).toBe('/tmp/workspaces/my-repo-readonly-abc123');
+    expect(result).toEqual({ workingDir: '/tmp/workspaces/my-repo-readonly-abc123' });
     expect(setupWorkspaceMock).toHaveBeenCalledWith({
       localPath: '/tmp/work/my-repo',
       mode: 'readonly',
@@ -729,7 +729,7 @@ describe('ensureIsolatedWorkspace', () => {
 
     const result = ensureIsolatedWorkspace('/tmp/work');
 
-    expect(result).toBe('/tmp/work');
+    expect(result).toEqual({ workingDir: '/tmp/work' });
     expect(setupWorkspaceMock).not.toHaveBeenCalled();
   });
 
@@ -751,7 +751,7 @@ describe('ensureIsolatedWorkspace', () => {
 
     const result = ensureIsolatedWorkspace('/tmp/work/my-repo', 'readonly');
 
-    expect(result).toBe('/tmp/work/my-repo');
+    expect(result).toEqual({ workingDir: '/tmp/work/my-repo' });
   });
 });
 
@@ -819,7 +819,8 @@ async function simulateExecutePipelineTask(
 
     // 5. Ensure isolated workspace
     try {
-      workingDir = ensureIsolatedWorkspace(workingDir, (decision.mode as 'readonly' | 'writable') || 'writable');
+      const isolated = ensureIsolatedWorkspace(workingDir, (decision.mode as 'readonly' | 'writable') || 'writable');
+      workingDir = isolated.workingDir;
     } catch (err) {
       const errorMsg = `❌ 无法创建隔离工作区: ${(err as Error).message}`;
       if (threadRootMsgId) {

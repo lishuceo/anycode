@@ -105,23 +105,30 @@ export function sanitizeRepoUrl(repoUrl: string): string {
 // ============================================================
 
 
+/** ensureBareCache 返回结果 */
+export interface BareCacheResult {
+  cachePath: string;
+  /** fetch 失败时为 true（缓存可能不是最新） */
+  fetchFailed?: boolean;
+}
+
 /**
  * 确保仓库的 bare clone 缓存存在且是最新的
- * 返回缓存的绝对路径
+ * 返回缓存路径及 fetch 状态
  */
-export function ensureBareCache(repoUrl: string): string {
+export function ensureBareCache(repoUrl: string): BareCacheResult {
   const relativePath = repoUrlToCachePath(repoUrl);
   const cachePath = resolve(config.repoCache.dir, relativePath);
 
   if (existsSync(cachePath)) {
     // 缓存已存在，检查是否需要 fetch
-    fetchIfStale(cachePath);
+    const fetchFailed = fetchIfStale(cachePath);
+    return { cachePath, fetchFailed: fetchFailed || undefined };
   } else {
     // 首次访问，创建 bare clone (原子操作)
     cloneBareAtomic(repoUrl, cachePath);
+    return { cachePath };
   }
-
-  return cachePath;
 }
 
 /**
@@ -159,15 +166,16 @@ function cloneBareAtomic(repoUrl: string, cachePath: string): void {
 
 /**
  * 如果上次 fetch 超过 fetchIntervalMin 分钟，执行 git fetch --all
+ * @returns true 表示 fetch 失败（缓存可能过期），false 表示成功或跳过
  */
-function fetchIfStale(cachePath: string): void {
+function fetchIfStale(cachePath: string): boolean {
   const now = Date.now();
   const lastFetch = lastFetchTime.get(cachePath) ?? 0;
   const intervalMs = config.repoCache.fetchIntervalMin * 60 * 1000;
 
   if (now - lastFetch < intervalMs) {
     logger.debug({ cachePath }, 'Skipping fetch, recently updated');
-    return;
+    return false;
   }
 
   logger.info({ cachePath }, 'Fetching updates for bare cache');
@@ -184,10 +192,12 @@ function fetchIfStale(cachePath: string): void {
     });
 
     lastFetchTime.set(cachePath, now);
+    return false;
   } catch (err) {
     // fetch 失败不阻断流程，使用过期缓存
     const msg = err instanceof Error ? err.message : String(err);
     logger.warn({ cachePath, err: msg }, 'Failed to fetch cache, using stale version');
+    return true;
   }
 }
 

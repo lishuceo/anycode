@@ -50,7 +50,7 @@ vi.mock('../../claude/router.js', () => ({
   routeWorkspace: (...args: unknown[]) => mockRouteWorkspace(...args),
 }));
 
-const mockEnsureIsolatedWorkspace = vi.fn((dir: string) => dir);
+const mockEnsureIsolatedWorkspace = vi.fn((dir: string) => ({ workingDir: dir }));
 vi.mock('../../workspace/isolation.js', () => ({
   isAutoWorkspacePath: vi.fn(() => false),
   ensureIsolatedWorkspace: (...args: unknown[]) => mockEnsureIsolatedWorkspace(...args),

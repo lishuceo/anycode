@@ -36,6 +36,8 @@ export interface SetupWorkspaceResult {
   branch: string;
   /** 仓库名 */
   repoName: string;
+  /** 非阻断性警告（如缓存 fetch 失败） */
+  warning?: string;
 }
 
 /** git 分支名合法字符 */
@@ -114,9 +116,12 @@ export function setupWorkspace(options: SetupWorkspaceOptions): SetupWorkspaceRe
 
   // 确定 clone 源: 有 repoUrl 时走缓存层，否则直接用 localPath
   let cloneSource: string;
+  let fetchFailed = false;
   if (repoUrl) {
-    cloneSource = ensureBareCache(repoUrl);
-    logger.info({ repoUrl: sanitizeRepoUrl(repoUrl), cachePath: cloneSource }, 'Using bare cache as clone source');
+    const cacheResult = ensureBareCache(repoUrl);
+    cloneSource = cacheResult.cachePath;
+    fetchFailed = !!cacheResult.fetchFailed;
+    logger.info({ repoUrl: sanitizeRepoUrl(repoUrl), cachePath: cloneSource, fetchFailed }, 'Using bare cache as clone source');
   } else {
     cloneSource = source;
   }
@@ -187,10 +192,12 @@ export function setupWorkspace(options: SetupWorkspaceOptions): SetupWorkspaceRe
     }
 
     logger.info({ workspacePath, branch: branchName, repoName, mode }, 'Workspace setup complete');
-    return { workspacePath, branch: branchName, repoName };
+    const warning = fetchFailed ? '仓库缓存更新失败，代码可能不是最新版本' : undefined;
+    return { workspacePath, branch: branchName, repoName, warning };
   }
 
   // readonly: 不创建 feature 分支
   logger.info({ workspacePath, repoName, mode }, 'Readonly workspace setup complete');
-  return { workspacePath, branch: sourceBranch || 'default', repoName };
+  const warning = fetchFailed ? '仓库缓存更新失败，代码可能不是最新版本' : undefined;
+  return { workspacePath, branch: sourceBranch || 'default', repoName, warning };
 }

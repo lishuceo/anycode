@@ -31,28 +31,40 @@ export function buildGreetingCard(): Record<string, unknown> {
 export function buildGreetingCardReady(
   threadId: string,
   workingDir: string,
+  warning?: string,
 ): Record<string, unknown> {
+  const elements: Record<string, unknown>[] = [
+    {
+      tag: 'div',
+      fields: [
+        {
+          is_short: true,
+          text: { tag: 'lark_md', content: `**话题 ID:**\n\`${threadId}\`` },
+        },
+        {
+          is_short: true,
+          text: { tag: 'lark_md', content: `**工作目录:**\n${workingDir}` },
+        },
+      ],
+    },
+  ];
+
+  if (warning) {
+    elements.push({
+      tag: 'note',
+      elements: [
+        { tag: 'plain_text', content: `⚠️ ${warning}` },
+      ],
+    });
+  }
+
   return {
     config: { wide_screen_mode: true },
     header: {
-      title: { tag: 'plain_text', content: '🤖 新会话已就绪' },
-      template: 'green',
+      title: { tag: 'plain_text', content: warning ? '🤖 新会话已就绪（有警告）' : '🤖 新会话已就绪' },
+      template: warning ? 'orange' : 'green',
     },
-    elements: [
-      {
-        tag: 'div',
-        fields: [
-          {
-            is_short: true,
-            text: { tag: 'lark_md', content: `**话题 ID:**\n\`${threadId}\`` },
-          },
-          {
-            is_short: true,
-            text: { tag: 'lark_md', content: `**工作目录:**\n${workingDir}` },
-          },
-        ],
-      },
-    ],
+    elements,
   };
 }
 
