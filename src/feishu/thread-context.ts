@@ -22,7 +22,7 @@ import type { ThreadSession } from '../session/types.js';
 /** 解析后的话题上下文 */
 export interface ThreadContext {
   /** 话题锚点消息 ID（用于 reply_in_thread） */
-  threadRootMsgId?: string;
+  threadReplyMsgId?: string;
   /** 问候卡片消息 ID（仅新建话题时有值） */
   greetingMsgId?: string;
   /** 解析后的工作目录 */
@@ -65,7 +65,7 @@ export async function resolveThreadContext(params: ResolveParams): Promise<Resol
   let prompt = params.prompt;
 
   // 1. 确保话题存在
-  const { threadRootMsgId, greetingMsgId } = await ensureThread(chatId, userId, messageId, rootId, eventThreadId, agentId);
+  const { threadReplyMsgId, greetingMsgId } = await ensureThread(chatId, userId, messageId, rootId, eventThreadId, agentId);
   const session = sessionManager.getOrCreate(chatId, userId, agentId);
 
   // 2. Thread session 管理
@@ -95,8 +95,8 @@ export async function resolveThreadContext(params: ResolveParams): Promise<Resol
     || (threadId && !threadSession?.routingCompleted);
 
   // 路由可能耗时较长，先给用户即时反馈
-  if (needsRouting && threadRootMsgId) {
-    await feishuClient.replyTextInThread(threadRootMsgId, '🔍 正在分析工作目录...');
+  if (needsRouting && threadReplyMsgId) {
+    await feishuClient.replyTextInThread(threadReplyMsgId, '🔍 正在分析工作目录...');
   }
 
   if (threadId && threadSession?.routingState?.status === 'pending_clarification') {
@@ -131,8 +131,8 @@ export async function resolveThreadContext(params: ResolveParams): Promise<Resol
           question,
           retryCount: retryCount + 1,
         }, agentId);
-        if (threadRootMsgId) {
-          await feishuClient.replyTextInThread(threadRootMsgId, question);
+        if (threadReplyMsgId) {
+          await feishuClient.replyTextInThread(threadReplyMsgId, question);
         } else {
           await feishuClient.replyText(messageId, question);
         }
@@ -142,8 +142,8 @@ export async function resolveThreadContext(params: ResolveParams): Promise<Resol
       // clone 失败时通知用户，不静默回退
       if (decision.cloneError) {
         const errorMsg = `❌ ${decision.cloneError}`;
-        if (threadRootMsgId) {
-          await feishuClient.replyTextInThread(threadRootMsgId, errorMsg);
+        if (threadReplyMsgId) {
+          await feishuClient.replyTextInThread(threadReplyMsgId, errorMsg);
         } else {
           await feishuClient.replyText(messageId, errorMsg);
         }
@@ -159,8 +159,8 @@ export async function resolveThreadContext(params: ResolveParams): Promise<Resol
         warning = warning || isolated.warning;
       } catch (err) {
         const errorMsg = `❌ 无法创建隔离工作区: ${(err as Error).message}`;
-        if (threadRootMsgId) {
-          await feishuClient.replyTextInThread(threadRootMsgId, errorMsg);
+        if (threadReplyMsgId) {
+          await feishuClient.replyTextInThread(threadReplyMsgId, errorMsg);
         } else {
           await feishuClient.replyText(messageId, errorMsg);
         }
@@ -187,8 +187,8 @@ export async function resolveThreadContext(params: ResolveParams): Promise<Resol
         question,
         retryCount: 0,
       }, agentId);
-      if (threadRootMsgId) {
-        await feishuClient.replyTextInThread(threadRootMsgId, question);
+      if (threadReplyMsgId) {
+        await feishuClient.replyTextInThread(threadReplyMsgId, question);
       } else {
         await feishuClient.replyText(messageId, question);
       }
@@ -198,8 +198,8 @@ export async function resolveThreadContext(params: ResolveParams): Promise<Resol
     // clone 失败时通知用户，不静默回退
     if (decision.cloneError) {
       const errorMsg = `❌ ${decision.cloneError}`;
-      if (threadRootMsgId) {
-        await feishuClient.replyTextInThread(threadRootMsgId, errorMsg);
+      if (threadReplyMsgId) {
+        await feishuClient.replyTextInThread(threadReplyMsgId, errorMsg);
       } else {
         await feishuClient.replyText(messageId, errorMsg);
       }
@@ -215,8 +215,8 @@ export async function resolveThreadContext(params: ResolveParams): Promise<Resol
       warning = warning || isolated.warning;
     } catch (err) {
       const errorMsg = `❌ 无法创建隔离工作区: ${(err as Error).message}`;
-      if (threadRootMsgId) {
-        await feishuClient.replyTextInThread(threadRootMsgId, errorMsg);
+      if (threadReplyMsgId) {
+        await feishuClient.replyTextInThread(threadReplyMsgId, errorMsg);
       } else {
         await feishuClient.replyText(messageId, errorMsg);
       }
@@ -242,8 +242,8 @@ export async function resolveThreadContext(params: ResolveParams): Promise<Resol
       '',
       '请开启新话题继续操作，系统会自动创建新的工作区。',
     ].join('\n');
-    if (threadRootMsgId) {
-      await feishuClient.replyTextInThread(threadRootMsgId, reply);
+    if (threadReplyMsgId) {
+      await feishuClient.replyTextInThread(threadReplyMsgId, reply);
     } else {
       await feishuClient.replyText(messageId, reply);
     }
@@ -264,7 +264,7 @@ export async function resolveThreadContext(params: ResolveParams): Promise<Resol
   return {
     status: 'resolved',
     ctx: {
-      threadRootMsgId,
+      threadReplyMsgId,
       greetingMsgId,
       workingDir,
       threadId,

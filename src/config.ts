@@ -132,6 +132,14 @@ export const config = {
     timeoutSeconds: parseInt(process.env.CODEX_TIMEOUT || '120', 10),
   },
 
+  // 聊天上下文配置
+  chat: {
+    /** 注入初始上下文时最多拉取的历史消息条数 */
+    historyMaxCount: parseInt(process.env.CHAT_HISTORY_MAX_COUNT || '10', 10),
+    /** 历史上下文总字符上限（超出时从最旧的消息开始丢弃） */
+    historyMaxChars: parseInt(process.env.CHAT_HISTORY_MAX_CHARS || '4000', 10),
+  },
+
   // 服务配置
   server: {
     port: parseInt(process.env.PORT || '3000', 10),

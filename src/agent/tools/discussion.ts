@@ -15,7 +15,7 @@ import { buildGreetingCard } from '../../feishu/message-builder.js';
 
 /** 话题创建回调 */
 export interface ThreadCreatedInfo {
-  threadRootMsgId: string;
+  threadReplyMsgId: string;
   threadId: string;
 }
 
@@ -87,7 +87,7 @@ export function createDiscussionMcpServer(params: DiscussionToolParams) {
                 threadId, params.messageId, params.agentId,
               );
               params.onThreadCreated({
-                threadRootMsgId: params.messageId,
+                threadReplyMsgId: params.messageId,
                 threadId,
               });
 
