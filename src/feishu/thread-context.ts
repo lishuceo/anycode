@@ -90,6 +90,7 @@ export async function resolveThreadContext(params: ResolveParams): Promise<Resol
 
   // 3. 路由状态机：决定工作目录
   let workingDir: string;
+  let warning: string | undefined;
   const needsRouting = (threadId && threadSession?.routingState?.status === 'pending_clarification')
     || (threadId && !threadSession?.routingCompleted);
 
@@ -150,9 +151,12 @@ export async function resolveThreadContext(params: ResolveParams): Promise<Resol
       }
 
       workingDir = decision.workdir || config.claude.defaultWorkDir;
+      warning = decision.warning;
       try {
         const isolationMode = isOwner(userId) ? 'writable' : (decision.mode || 'readonly');
-        workingDir = ensureIsolatedWorkspace(workingDir, isolationMode);
+        const isolated = ensureIsolatedWorkspace(workingDir, isolationMode);
+        workingDir = isolated.workingDir;
+        warning = warning || isolated.warning;
       } catch (err) {
         const errorMsg = `❌ 无法创建隔离工作区: ${(err as Error).message}`;
         if (threadRootMsgId) {
@@ -203,9 +207,12 @@ export async function resolveThreadContext(params: ResolveParams): Promise<Resol
     }
 
     workingDir = decision.workdir || config.claude.defaultWorkDir;
+    warning = decision.warning;
     try {
       const isolationMode = isOwner(userId) ? 'writable' : (decision.mode || 'readonly');
-      workingDir = ensureIsolatedWorkspace(workingDir, isolationMode);
+      const isolated = ensureIsolatedWorkspace(workingDir, isolationMode);
+      workingDir = isolated.workingDir;
+      warning = warning || isolated.warning;
     } catch (err) {
       const errorMsg = `❌ 无法创建隔离工作区: ${(err as Error).message}`;
       if (threadRootMsgId) {
@@ -248,7 +255,7 @@ export async function resolveThreadContext(params: ResolveParams): Promise<Resol
   if (greetingMsgId && threadId) {
     feishuClient.updateCard(
       greetingMsgId,
-      buildGreetingCardReady(threadId, workingDir),
+      buildGreetingCardReady(threadId, workingDir, warning),
     ).catch((err) => {
       logger.warn({ err }, 'Failed to update greeting card');
     });

@@ -43,7 +43,7 @@ vi.mock('../../utils/logger.js', () => ({
 }));
 
 // Mock cache module
-const mockEnsureBareCache = vi.fn(() => '/repos/cache/github.com/user/repo.git');
+const mockEnsureBareCache = vi.fn(() => ({ cachePath: '/repos/cache/github.com/user/repo.git' }));
 const mockSanitizeRepoUrl = vi.fn((url: string) => url);
 vi.mock('../cache.js', () => ({
   ensureBareCache: (...args: unknown[]) => mockEnsureBareCache(...args),
@@ -65,7 +65,7 @@ beforeEach(() => {
     if (p === '/tmp/workspaces') return true;
     return false;
   });
-  mockEnsureBareCache.mockReturnValue('/repos/cache/github.com/user/repo.git');
+  mockEnsureBareCache.mockReturnValue({ cachePath: '/repos/cache/github.com/user/repo.git' });
   mockSanitizeRepoUrl.mockImplementation((url) => url);
 });
 
