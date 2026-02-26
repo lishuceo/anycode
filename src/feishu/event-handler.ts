@@ -525,7 +525,7 @@ async function handleSlashCommand(
   // 获取当前会话的话题锚点消息 ID（用于将命令响应发到话题内）
   // 如果用户在话题内发消息，优先使用该话题的 rootId
   const currentSession = sessionManager.get(chatId, userId);
-  const threadRootMsgId = rootId || currentSession?.threadRootMessageId;
+  const threadReplyMsgId = rootId || currentSession?.threadRootMessageId;
 
   // /project <path> - 切换工作目录
   if (trimmed.startsWith('/project ')) {
@@ -536,8 +536,8 @@ async function handleSlashCommand(
     const resolved = resolve(dir);
     if (!existsSync(resolved)) {
       const reply = `⚠️ 路径不存在: ${dir}`;
-      if (threadRootMsgId) {
-        await feishuClient.replyTextInThread(threadRootMsgId, reply);
+      if (threadReplyMsgId) {
+        await feishuClient.replyTextInThread(threadReplyMsgId, reply);
       } else {
         await feishuClient.replyText(messageId, reply);
       }
@@ -549,8 +549,8 @@ async function handleSlashCommand(
       : resolve(config.claude.defaultWorkDir);
     if (!realResolved.startsWith(allowedBase + '/') && realResolved !== allowedBase) {
       const reply = `⚠️ 路径不在允许的目录范围内 (允许: ${allowedBase})`;
-      if (threadRootMsgId) {
-        await feishuClient.replyTextInThread(threadRootMsgId, reply);
+      if (threadReplyMsgId) {
+        await feishuClient.replyTextInThread(threadReplyMsgId, reply);
       } else {
         await feishuClient.replyText(messageId, reply);
       }
@@ -559,8 +559,8 @@ async function handleSlashCommand(
     sessionManager.getOrCreate(chatId, userId);
     sessionManager.setWorkingDir(chatId, userId, realResolved);
     const reply = `📂 工作目录已切换到: ${realResolved}`;
-    if (threadRootMsgId) {
-      await feishuClient.replyTextInThread(threadRootMsgId, reply);
+    if (threadReplyMsgId) {
+      await feishuClient.replyTextInThread(threadReplyMsgId, reply);
     } else {
       await feishuClient.replyText(messageId, reply);
     }
@@ -575,8 +575,8 @@ async function handleSlashCommand(
       session.status,
       taskQueue.pendingCountForChat(chatId),
     );
-    if (threadRootMsgId) {
-      await feishuClient.replyCardInThread(threadRootMsgId, card);
+    if (threadReplyMsgId) {
+      await feishuClient.replyCardInThread(threadReplyMsgId, card);
     } else {
       await feishuClient.sendCard(chatId, card);
     }
@@ -588,8 +588,8 @@ async function handleSlashCommand(
     claudeExecutor.killSessionsForChat(chatId, userId);
     // 先在旧话题内回复确认，再清除 session
     const reply = '🔄 会话已重置';
-    if (threadRootMsgId) {
-      await feishuClient.replyTextInThread(threadRootMsgId, reply);
+    if (threadReplyMsgId) {
+      await feishuClient.replyTextInThread(threadReplyMsgId, reply);
     } else {
       await feishuClient.replyText(messageId, reply);
     }
@@ -603,8 +603,8 @@ async function handleSlashCommand(
     taskQueue.cancelAllForChat(chatId);
     sessionManager.setStatus(chatId, userId, 'idle');
     const reply = '🛑 已中断当前会话的执行';
-    if (threadRootMsgId) {
-      await feishuClient.replyTextInThread(threadRootMsgId, reply);
+    if (threadReplyMsgId) {
+      await feishuClient.replyTextInThread(threadReplyMsgId, reply);
     } else {
       await feishuClient.replyText(messageId, reply);
     }
@@ -619,8 +619,8 @@ async function handleSlashCommand(
 
     if (!source) {
       const reply = '⚠️ 用法: `/workspace <repo-url-or-local-path> [branch]`';
-      if (threadRootMsgId) {
-        await feishuClient.replyTextInThread(threadRootMsgId, reply);
+      if (threadReplyMsgId) {
+        await feishuClient.replyTextInThread(threadReplyMsgId, reply);
       } else {
         await feishuClient.replyText(messageId, reply);
       }
@@ -643,16 +643,16 @@ async function handleSlashCommand(
         `分支: ${result.branch}`,
         `仓库: ${result.repoName}`,
       ].join('\n');
-      if (threadRootMsgId) {
-        await feishuClient.replyTextInThread(threadRootMsgId, reply);
+      if (threadReplyMsgId) {
+        await feishuClient.replyTextInThread(threadReplyMsgId, reply);
       } else {
         await feishuClient.replyText(messageId, reply);
       }
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
       const reply = `❌ 工作区创建失败: ${errorMsg}`;
-      if (threadRootMsgId) {
-        await feishuClient.replyTextInThread(threadRootMsgId, reply);
+      if (threadReplyMsgId) {
+        await feishuClient.replyTextInThread(threadReplyMsgId, reply);
       } else {
         await feishuClient.replyText(messageId, reply);
       }
@@ -664,8 +664,8 @@ async function handleSlashCommand(
   if (trimmed.startsWith('/dev ')) {
     if (!isOwner(userId)) {
       const reply = '⚠️ 只有管理员可以使用 /dev 命令';
-      if (threadRootMsgId) {
-        await feishuClient.replyTextInThread(threadRootMsgId, reply);
+      if (threadReplyMsgId) {
+        await feishuClient.replyTextInThread(threadReplyMsgId, reply);
       } else {
         await feishuClient.replyText(messageId, reply);
       }
@@ -674,8 +674,8 @@ async function handleSlashCommand(
     const task = trimmed.slice('/dev '.length).trim();
     if (!task) {
       const reply = '⚠️ 用法: `/dev <开发任务描述>`';
-      if (threadRootMsgId) {
-        await feishuClient.replyTextInThread(threadRootMsgId, reply);
+      if (threadReplyMsgId) {
+        await feishuClient.replyTextInThread(threadReplyMsgId, reply);
       } else {
         await feishuClient.replyText(messageId, reply);
       }
@@ -708,8 +708,8 @@ async function handleSlashCommand(
       '',
       '**自动工作区:** 直接发消息包含仓库 URL，Claude 会自动创建隔离工作区。',
     ].join('\n');
-    if (threadRootMsgId) {
-      await feishuClient.replyTextInThread(threadRootMsgId, helpText);
+    if (threadReplyMsgId) {
+      await feishuClient.replyTextInThread(threadReplyMsgId, helpText);
     } else {
       await feishuClient.replyText(messageId, helpText);
     }
@@ -735,7 +735,7 @@ async function buildChatHistoryContext(
   try {
     const containerId = threadId ?? chatId;
     const containerType = threadId ? 'thread' as const : 'chat' as const;
-    const messages = await feishuClient.fetchRecentMessages(containerId, containerType, 10);
+    const messages = await feishuClient.fetchRecentMessages(containerId, containerType, config.chat.historyMaxCount);
 
     // 过滤掉当前消息
     const history = currentMessageId
@@ -794,7 +794,7 @@ async function executeClaudeTask(
 
   if (resolved.status !== 'resolved') return;
 
-  const { threadRootMsgId, workingDir, threadId, threadSession, prompt } = resolved.ctx;
+  const { threadReplyMsgId, workingDir, threadId, threadSession, prompt } = resolved.ctx;
   const session = sessionManager.getOrCreate(chatId, userId, agentId);
 
   // sessionKey 包含 threadId，per-thread 并行时各 query 有独立的 key
@@ -803,9 +803,9 @@ async function executeClaudeTask(
   // 发送初始进度卡片（即时反馈），后续原地更新为 tool call 进度卡片
   let progressCardMsgId: string | undefined;
   let progressCardFailed = false;
-  if (threadRootMsgId) {
+  if (threadReplyMsgId) {
     progressCardMsgId = await feishuClient.replyCardInThread(
-      threadRootMsgId, buildProgressCard(prompt),
+      threadReplyMsgId, buildProgressCard(prompt),
     ) ?? undefined;
     if (!progressCardMsgId) progressCardFailed = true;
   } else {
@@ -955,7 +955,7 @@ async function executeClaudeTask(
         await sendResultCard(
           prompt, { ...result, success: false, output: '', error: '工作区准备失败，目录不存在' },
           result.durationMs, result.costUsd,
-          threadRootMsgId, chatId,
+          threadReplyMsgId, chatId,
         );
         return;
       }
@@ -1021,7 +1021,7 @@ async function executeClaudeTask(
 
       await sendResultCard(
         prompt, restartResult, totalDurationMs, totalCostUsd,
-        threadRootMsgId, chatId, threadRootMsgId ? pendingTurn : undefined, turnCount,
+        threadReplyMsgId, chatId, threadReplyMsgId ? pendingTurn : undefined, turnCount,
       );
       return;
     }
@@ -1049,8 +1049,8 @@ async function executeClaudeTask(
         '再次发送消息会继续尝试恢复。如需放弃旧会话重新开始，请发送 `/reset`。',
       ].join('\n');
 
-      if (threadRootMsgId) {
-        await feishuClient.replyTextInThread(threadRootMsgId, errorDetail);
+      if (threadReplyMsgId) {
+        await feishuClient.replyTextInThread(threadReplyMsgId, errorDetail);
       } else {
         await feishuClient.replyText(messageId, errorDetail);
       }
@@ -1076,7 +1076,7 @@ async function executeClaudeTask(
 
     await sendResultCard(
       prompt, result, result.durationMs, result.costUsd,
-      threadRootMsgId, chatId, threadRootMsgId ? pendingTurn : undefined, turnCount,
+      threadReplyMsgId, chatId, threadReplyMsgId ? pendingTurn : undefined, turnCount,
     );
 
   } catch (err) {
@@ -1092,8 +1092,8 @@ async function executeClaudeTask(
       ).catch(() => {});
     }
     const errorReply = `❌ 执行出错: ${(err as Error).message}`;
-    if (threadRootMsgId) {
-      await feishuClient.replyTextInThread(threadRootMsgId, errorReply);
+    if (threadReplyMsgId) {
+      await feishuClient.replyTextInThread(threadReplyMsgId, errorReply);
     } else {
       await feishuClient.replyText(messageId, errorReply);
     }
@@ -1143,8 +1143,9 @@ async function executeDirectTask(
   sessionManager.setStatus(chatId, userId, 'busy', agentId);
 
   // 话题升级标志（由 start_discussion_thread MCP 工具设置）
-  // 如果已经在话题内，从事件参数初始化
-  let threadRootMsgId: string | undefined = rootId;
+  // 仅在真正处于话题内时（eventThreadId 存在）初始化；
+  // rootId 单独出现（无 eventThreadId）= 主面板引用回复，不是话题
+  let threadReplyMsgId: string | undefined = eventThreadId ? rootId : undefined;
   let threadId: string | undefined = eventThreadId;
 
   try {
@@ -1182,7 +1183,7 @@ async function executeDirectTask(
     const discussionMcp = createDiscussionMcpServer({
       chatId, userId, messageId, agentId,
       onThreadCreated: (info) => {
-        threadRootMsgId = info.threadRootMsgId;
+        threadReplyMsgId = info.threadReplyMsgId;
         threadId = info.threadId;
       },
     });
@@ -1220,23 +1221,14 @@ async function executeDirectTask(
       }
     }
 
-    // 发送结果
-    if (threadRootMsgId) {
-      // 在话题内（用户直接在话题 @ 或 agent 通过 MCP 升级到话题）
-      await sendResultCard(
-        rawPrompt, result, result.durationMs, result.costUsd,
-        threadRootMsgId, chatId,
-      );
-    } else {
-      // 直接回复
-      await sendDirectReply(messageId, chatId, result);
-    }
+    // 发送结果（统一走轻量回复，话题内通过 threadReplyMsgId 路由）
+    await sendDirectReply(messageId, chatId, result, threadReplyMsgId);
 
   } catch (err) {
     logger.error({ err }, 'Error in executeDirectTask');
     const errorReply = `❌ 执行出错: ${(err as Error).message}`;
-    if (threadRootMsgId) {
-      await feishuClient.replyTextInThread(threadRootMsgId, errorReply);
+    if (threadReplyMsgId) {
+      await feishuClient.replyTextInThread(threadReplyMsgId, errorReply);
     } else {
       await feishuClient.replyText(messageId, errorReply);
     }
@@ -1253,10 +1245,10 @@ async function executeDirectTask(
 // Direct 模式聊天历史构建（Fork 语义）
 // ============================================================
 
-const HISTORY_MAX_COUNT = 10;
-
 /**
  * 构建 direct 模式的初始聊天上下文（fork 语义）。
+ *
+ * max 由环境变量 CHAT_HISTORY_MAX_COUNT 控制（默认 10）。
  *
  * - 主聊天区（无 threadId）：取父群最近 max 条
  * - 话题内：
@@ -1286,9 +1278,9 @@ async function buildDirectTaskHistory(
     if (filtered.length === 0) {
       // 话题为空，从父群 fork
       return buildChatHistoryContext(chatId, undefined, currentMessageId);
-    } else if (filtered.length <= HISTORY_MAX_COUNT) {
+    } else if (filtered.length <= config.chat.historyMaxCount) {
       // 话题消息不足 max，补充父群消息
-      const remaining = HISTORY_MAX_COUNT - filtered.length;
+      const remaining = config.chat.historyMaxCount - filtered.length;
       if (remaining > 0) {
         const parentMsgs = await feishuClient.fetchRecentMessages(chatId, 'chat', remaining);
         selected = [...parentMsgs, ...filtered];
@@ -1298,7 +1290,7 @@ async function buildDirectTaskHistory(
     } else {
       // 话题消息 > max：首条 + 最近 (max - 1) 条
       const first = filtered[0];
-      const latest = filtered.slice(-(HISTORY_MAX_COUNT - 1));
+      const latest = filtered.slice(-(config.chat.historyMaxCount - 1));
       selected = [first, ...latest];
     }
 
@@ -1322,14 +1314,15 @@ async function buildDirectTaskHistory(
 }
 
 /**
- * 直接回复结果（不在话题中）
+ * 直接回复结果（轻量模式，短文本纯文字、长文本才用卡片）
  *
- * 短文本用引用回复，长文本用卡片
+ * @param threadReplyMsgId 话题内时传入，使用 replyTextInThread / replyCardInThread
  */
 async function sendDirectReply(
   messageId: string,
   chatId: string,
   result: import('../claude/types.js').ClaudeResult,
+  threadReplyMsgId?: string,
 ): Promise<void> {
   const output = result.output || result.error || '(无输出)';
 
@@ -1337,19 +1330,31 @@ async function sendDirectReply(
     // 失败时显示错误
     const errorMsg = result.error || output;
     const truncated = errorMsg.length > 2000 ? errorMsg.slice(0, 2000) + '...' : errorMsg;
-    await feishuClient.replyText(messageId, `❌ ${truncated}`);
+    if (threadReplyMsgId) {
+      await feishuClient.replyTextInThread(threadReplyMsgId, `❌ ${truncated}`);
+    } else {
+      await feishuClient.replyText(messageId, `❌ ${truncated}`);
+    }
     return;
   }
 
   if (output.length <= 2000) {
-    // 短文本：引用回复
-    await feishuClient.replyText(messageId, output);
+    // 短文本：纯文字回复
+    if (threadReplyMsgId) {
+      await feishuClient.replyTextInThread(threadReplyMsgId, output);
+    } else {
+      await feishuClient.replyText(messageId, output);
+    }
   } else {
-    // 长文本：卡片 + 完整文本
+    // 长文本：卡片
     const durationStr = formatDuration(result.durationMs);
     const costInfo = result.costUsd ? ` | 💰 $${result.costUsd.toFixed(4)}` : '';
     const card = buildResultCard(output, output, true, durationStr + costInfo);
-    await feishuClient.sendCard(chatId, card);
+    if (threadReplyMsgId) {
+      await feishuClient.replyCardInThread(threadReplyMsgId, card);
+    } else {
+      await feishuClient.sendCard(chatId, card);
+    }
   }
 }
 
@@ -1361,7 +1366,7 @@ async function sendResultCard(
   result: import('../claude/types.js').ClaudeResult,
   totalDurationMs: number,
   totalCostUsd: number | undefined,
-  threadRootMsgId: string | undefined,
+  threadReplyMsgId: string | undefined,
   chatId: string,
   /** 最后一个缓冲的 turn（逐条模式），其内容合并进底部结果卡片 */
   lastTurn?: TurnInfo,
@@ -1384,16 +1389,16 @@ async function sendResultCard(
       );
 
   // 发送到话题底部（作为新消息）
-  if (threadRootMsgId) {
-    await feishuClient.replyCardInThread(threadRootMsgId, resultCard);
+  if (threadReplyMsgId) {
+    await feishuClient.replyCardInThread(threadReplyMsgId, resultCard);
   } else {
     await feishuClient.sendCard(chatId, resultCard);
   }
 
   // 非逐条模式下，如果输出特别长，额外发送完整文本
   if (!lastTurn && result.output && result.output.length > 3000) {
-    if (threadRootMsgId) {
-      await feishuClient.replyTextInThread(threadRootMsgId, result.output);
+    if (threadReplyMsgId) {
+      await feishuClient.replyTextInThread(threadReplyMsgId, result.output);
     } else {
       await feishuClient.sendText(chatId, result.output);
     }
@@ -1412,7 +1417,7 @@ async function executePipelineTask(
   rootId?: string,
   eventThreadId?: string,
 ): Promise<void> {
-  let threadRootMsgId: string | undefined;
+  let threadReplyMsgId: string | undefined;
 
   try {
     // 1. 解析话题上下文（共享逻辑：thread + 路由 + 工作区隔离 + greeting）
@@ -1427,7 +1432,7 @@ async function executePipelineTask(
 
     if (resolved.status !== 'resolved') return;
 
-    threadRootMsgId = resolved.ctx.threadRootMsgId;
+    threadReplyMsgId = resolved.ctx.threadReplyMsgId;
     const { workingDir } = resolved.ctx;
 
     // 2. 创建 pipeline，使用路由确定的工作目录
@@ -1439,14 +1444,14 @@ async function executePipelineTask(
       threadId: eventThreadId,
       prompt,
       workingDir,
-      threadRootMsgId,
+      threadReplyMsgId,
     });
   } catch (err) {
     logger.error({ err }, 'Error in executePipelineTask');
     const errorMsg = `❌ 开发管道创建失败: ${(err as Error).message}`;
     try {
-      if (threadRootMsgId) {
-        await feishuClient.replyTextInThread(threadRootMsgId, errorMsg);
+      if (threadReplyMsgId) {
+        await feishuClient.replyTextInThread(threadReplyMsgId, errorMsg);
       } else {
         await feishuClient.replyText(messageId, errorMsg);
       }

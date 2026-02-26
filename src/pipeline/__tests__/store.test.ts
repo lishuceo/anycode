@@ -45,7 +45,7 @@ describe('PipelineStore', () => {
         chatId: 'chat1',
         userId: 'user1',
         messageId: 'msg1',
-        threadRootMsgId: 'root1',
+        threadReplyMsgId: 'root1',
         progressMsgId: 'progress1',
         workingDir: '/tmp/work',
         prompt: 'build a feature',
@@ -62,7 +62,7 @@ describe('PipelineStore', () => {
       expect(retrieved!.userId).toBe('user1');
       expect(retrieved!.prompt).toBe('build a feature');
       expect(retrieved!.workingDir).toBe('/tmp/work');
-      expect(retrieved!.threadRootMsgId).toBe('root1');
+      expect(retrieved!.threadReplyMsgId).toBe('root1');
       expect(retrieved!.progressMsgId).toBe('progress1');
     });
 
@@ -81,7 +81,7 @@ describe('PipelineStore', () => {
       });
 
       const record = store.get('pipe_456');
-      expect(record!.threadRootMsgId).toBeUndefined();
+      expect(record!.threadReplyMsgId).toBeUndefined();
       expect(record!.progressMsgId).toBeUndefined();
     });
   });

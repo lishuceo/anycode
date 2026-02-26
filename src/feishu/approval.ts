@@ -16,7 +16,7 @@ interface PendingApproval {
   messagePreview: string;
   messageId: string;
   rootId?: string;
-  threadRootMsgId?: string;
+  threadReplyMsgId?: string;
   /** 审批卡片的消息 ID（用于更新卡片） */
   approvalMsgId?: string;
   createdAt: number;
@@ -93,7 +93,7 @@ export async function checkAndRequestApproval(
   text: string,
   messageId: string,
   rootId?: string,
-  threadRootMsgId?: string,
+  threadReplyMsgId?: string,
   threadId?: string,
 ): Promise<boolean> {
   // ownerUserId 未配置 → 跳过审批（向后兼容）
@@ -113,8 +113,8 @@ export async function checkAndRequestApproval(
 
   // 已有 pending approval → 通知用户等待
   if (threadId && threadToApproval.has(threadId)) {
-    if (threadRootMsgId) {
-      await feishuClient.replyTextInThread(threadRootMsgId, '⏳ 等待管理员授权中...');
+    if (threadReplyMsgId) {
+      await feishuClient.replyTextInThread(threadReplyMsgId, '⏳ 等待管理员授权中...');
     } else {
       await feishuClient.replyText(messageId, '⏳ 等待管理员授权中...');
     }
@@ -136,7 +136,7 @@ export async function checkAndRequestApproval(
     messagePreview: text,
     messageId,
     rootId,
-    threadRootMsgId,
+    threadReplyMsgId,
     createdAt: Date.now(),
   };
 
@@ -174,8 +174,8 @@ async function sendApprovalRequest(pending: PendingApproval): Promise<void> {
 
   if (pending.chatType === 'group') {
     // 群聊：在同一群/话题中发送审批卡片
-    if (pending.threadRootMsgId) {
-      approvalMsgId = await feishuClient.replyCardInThread(pending.threadRootMsgId, card) ?? undefined;
+    if (pending.threadReplyMsgId) {
+      approvalMsgId = await feishuClient.replyCardInThread(pending.threadReplyMsgId, card) ?? undefined;
     } else {
       approvalMsgId = await feishuClient.sendCard(pending.chatId, card) ?? undefined;
     }
@@ -189,8 +189,8 @@ async function sendApprovalRequest(pending: PendingApproval): Promise<void> {
   }
 
   // 通知请求者
-  if (pending.threadRootMsgId) {
-    await feishuClient.replyTextInThread(pending.threadRootMsgId, '⏳ 已通知管理员，等待授权...');
+  if (pending.threadReplyMsgId) {
+    await feishuClient.replyTextInThread(pending.threadReplyMsgId, '⏳ 已通知管理员，等待授权...');
   } else {
     await feishuClient.replyText(pending.messageId, '⏳ 已通知管理员，等待授权...');
   }
@@ -234,8 +234,8 @@ export function resolveApproval(approvalId: string, approved: boolean): PendingA
   if (approved) {
     // 通知用户并重新入队消息
     const notification = '✅ 管理员已授权，正在处理你的消息...';
-    if (pending.threadRootMsgId) {
-      feishuClient.replyTextInThread(pending.threadRootMsgId, notification).catch(() => {});
+    if (pending.threadReplyMsgId) {
+      feishuClient.replyTextInThread(pending.threadReplyMsgId, notification).catch(() => {});
     } else {
       feishuClient.replyText(pending.messageId, notification).catch(() => {});
     }
@@ -246,8 +246,8 @@ export function resolveApproval(approvalId: string, approved: boolean): PendingA
     }
   } else {
     const notification = '❌ 管理员已拒绝你的请求';
-    if (pending.threadRootMsgId) {
-      feishuClient.replyTextInThread(pending.threadRootMsgId, notification).catch(() => {});
+    if (pending.threadReplyMsgId) {
+      feishuClient.replyTextInThread(pending.threadReplyMsgId, notification).catch(() => {});
     } else {
       feishuClient.replyText(pending.messageId, notification).catch(() => {});
     }

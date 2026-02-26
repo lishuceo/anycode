@@ -38,7 +38,7 @@ vi.mock('../../session/manager.js', () => ({
 }));
 
 const mockEnsureThread = vi.fn(() => Promise.resolve({
-  threadRootMsgId: 'root-msg-1',
+  threadReplyMsgId: 'root-msg-1',
   greetingMsgId: 'greeting-1',
 }));
 vi.mock('../thread-utils.js', () => ({

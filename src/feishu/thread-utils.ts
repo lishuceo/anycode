@@ -6,7 +6,7 @@ import { buildGreetingCard } from './message-builder.js';
 /** ensureThread 的返回结果 */
 export interface EnsureThreadResult {
   /** 话题锚点消息 ID（用于后续 reply_in_thread） */
-  threadRootMsgId?: string;
+  threadReplyMsgId?: string;
   /** 问候卡片消息 ID（仅新建话题时有值，用于后续更新卡片） */
   greetingMsgId?: string;
 }
@@ -34,7 +34,7 @@ export async function ensureThread(
     // rootId 在飞书实际场景中 threadId 存在时一定存在，但防御性处理避免 undefined 入库
     const replyTarget = rootId ?? messageId;
     sessionManager.setThread(chatId, userId, threadId, replyTarget, agentId);
-    return { threadRootMsgId: replyTarget };
+    return { threadReplyMsgId: replyTarget };
   }
 
   // 2. 用户在主聊天区发消息（无 rootId）— 新会话意图
@@ -50,7 +50,7 @@ export async function ensureThread(
     // 新话题创建成功，保存话题信息
     // 不清空全局 conversationId——各 thread 通过 thread_sessions 表独立管理自己的 conversationId
     sessionManager.setThread(chatId, userId, newThreadId, messageId, agentId);
-    return { threadRootMsgId: messageId, greetingMsgId: botMsgId };
+    return { threadReplyMsgId: messageId, greetingMsgId: botMsgId };
   }
 
   logger.warn({ chatId, userId }, 'Failed to create thread, falling back to main chat');

@@ -17,7 +17,7 @@ export interface PipelineRecord {
   messageId: string;
   /** 飞书话题 ID（omt_xxx，用于 thread session 操作） */
   threadId?: string;
-  threadRootMsgId?: string;
+  threadReplyMsgId?: string;
   progressMsgId?: string;
   workingDir: string;
   prompt: string;
@@ -159,7 +159,7 @@ export class PipelineStore {
       user_id: full.userId,
       message_id: full.messageId,
       thread_id: full.threadId ?? null,
-      thread_root_msg_id: full.threadRootMsgId ?? null,
+      thread_root_msg_id: full.threadReplyMsgId ?? null,
       progress_msg_id: full.progressMsgId ?? null,
       working_dir: full.workingDir,
       prompt: full.prompt,
@@ -241,7 +241,7 @@ export class PipelineStore {
       userId: row.user_id,
       messageId: row.message_id,
       threadId: row.thread_id ?? undefined,
-      threadRootMsgId: row.thread_root_msg_id ?? undefined,
+      threadReplyMsgId: row.thread_root_msg_id ?? undefined,
       progressMsgId: row.progress_msg_id ?? undefined,
       workingDir: row.working_dir,
       prompt: row.prompt,
