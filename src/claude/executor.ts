@@ -5,7 +5,7 @@ import { config } from '../config.js';
 import { logger } from '../utils/logger.js';
 import { createWorkspaceMcpServer } from '../workspace/tool.js';
 import { createFeishuToolsMcpServer } from '../feishu/tools/index.js';
-import { isAutoWorkspacePath } from '../workspace/isolation.js';
+import { isAutoWorkspacePath, isServiceOwnRepo } from '../workspace/isolation.js';
 import type { ClaudeResult, ExecuteOptions, ProgressCallback, TurnInfo, ToolCallInfo, ImageAttachment, MultimodalContentBlock } from './types.js';
 
 // ============================================================
@@ -59,7 +59,7 @@ export interface ExecuteInput extends ExecuteOptions {
 }
 
 /** 构建工作区管理系统提示词（注入实际目录路径） */
-function buildWorkspaceSystemPrompt(): string {
+function buildWorkspaceSystemPrompt(workingDir?: string): string {
   const projectsDir = config.claude.defaultWorkDir;
   const cacheDir = config.repoCache.dir;
   const workspacesDir = config.workspace.baseDir;
@@ -129,7 +129,29 @@ URL Token 提取规则:
 - /drive/folder/ABC123 → folder_token: ABC123
 - /base/ABC123 → app_token: ABC123` : '';
 
-  return basePrompt + feishuToolsGuide;
+  const selfRepoGuide = (workingDir && isServiceOwnRepo(workingDir)) ? `
+
+## 服务运行时信息（自改自模式）
+
+你当前正在修改 anywhere-code 服务自身的代码。以下信息可帮助你查询运行日志、诊断问题：
+
+- **PM2 进程名**: \`feishu-claude\`
+- **当前 PID**: \`${process.pid}\`
+- **服务部署目录**: \`${process.cwd()}\`
+- **Node.js**: \`${process.version}\`
+
+### 常用命令
+- 查看最近日志: \`pm2 logs feishu-claude --lines 200 --nostream\`
+- 仅看错误日志: \`pm2 logs feishu-claude --err --lines 100 --nostream\`
+- 进程状态: \`pm2 show feishu-claude\`
+- 实时日志（谨慎，会持续输出）: \`pm2 logs feishu-claude --lines 50\`（需 Ctrl+C 中断）
+
+### 注意事项
+- **重启服务会中断当前对话**，仅在用户明确要求时执行 \`pm2 restart feishu-claude\`
+- 你的工作目录是服务仓库的隔离 clone，修改不会直接影响运行中的实例
+- 日志是 JSON 格式（Pino），可用 \`| jq .\` 格式化或 \`| grep "关键词"\` 过滤` : '';
+
+  return basePrompt + feishuToolsGuide + selfRepoGuide;
 }
 
 /**
@@ -269,7 +291,7 @@ export class ClaudeExecutor {
 
     // 构建 systemPrompt.append 内容
     // pipeline 模式使用独立的 system prompt，不需要工作区管理指引
-    const baseAppend = systemPromptOverride ?? buildWorkspaceSystemPrompt();
+    const baseAppend = systemPromptOverride ?? buildWorkspaceSystemPrompt(workingDir);
     const promptAppend = historySummaries
       ? baseAppend + `\n\n## 历史会话摘要\n以下是该用户之前的会话记录，帮助你了解项目上下文：\n${historySummaries}`
       : baseAppend;
