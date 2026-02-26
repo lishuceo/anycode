@@ -401,7 +401,7 @@ export class FeishuClient {
     containerId: string,
     containerType: 'chat' | 'thread' = 'chat',
     limit: number = 10,
-  ): Promise<Array<{ messageId: string; senderType: 'user' | 'app'; content: string; msgType: string }>> {
+  ): Promise<Array<{ messageId: string; senderId: string; senderType: 'user' | 'app'; content: string; msgType: string }>> {
     try {
       const resp = await this.client.im.message.list({
         params: {
@@ -416,7 +416,7 @@ export class FeishuClient {
         return [];
       }
       const items = resp.data?.items ?? [];
-      const messages: Array<{ messageId: string; senderType: 'user' | 'app'; content: string; msgType: string }> = [];
+      const messages: Array<{ messageId: string; senderId: string; senderType: 'user' | 'app'; content: string; msgType: string }> = [];
       for (const item of items) {
         if (item.deleted) continue;
         const msgType = item.msg_type ?? '';
@@ -456,6 +456,7 @@ export class FeishuClient {
         if (!content.trim()) continue;
         messages.push({
           messageId: item.message_id ?? '',
+          senderId: item.sender?.id ?? '',
           senderType,
           content: content.trim(),
           msgType,

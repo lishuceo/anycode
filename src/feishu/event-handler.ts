@@ -742,26 +742,59 @@ async function buildChatHistoryContext(
       ? messages.filter(m => m.messageId !== currentMessageId)
       : messages;
 
-    return formatHistoryMessages(history);
+    return formatHistoryMessages(history, chatId);
   } catch (err) {
     logger.error({ err, chatId, threadId }, 'Failed to build chat history context');
     return undefined;
   }
 }
 
+/** 用户名缓存：open_id → 用户名（TTL 由 Map 生命周期管理，进程重启清空） */
+const _userNameCache = new Map<string, string>();
+
+/**
+ * 批量解析 open_id → 用户名（带缓存，去重后只查未命中的）
+ */
+async function resolveUserNames(
+  openIds: string[],
+  chatId?: string,
+): Promise<void> {
+  const unknown = [...new Set(openIds)].filter(id => id && !_userNameCache.has(id));
+  if (unknown.length === 0) return;
+
+  // 并行查询，best-effort（失败的保持 open_id 不影响流程）
+  await Promise.all(unknown.map(async (id) => {
+    try {
+      const name = await feishuClient.getUserName(id, chatId);
+      if (name) _userNameCache.set(id, name);
+    } catch {
+      // ignore — fallback to [用户]
+    }
+  }));
+}
+
 /**
  * 格式化历史消息为上下文文本（共享逻辑）。
  *
  * 保护策略：
- * 1. 单条消息 > 500 字符时截断（header 已存在）
+ * 1. 单条消息 > 500 字符时截断
  * 2. 总字符数超 CHAT_HISTORY_MAX_CHARS（默认 4000）时，从最旧的消息开始丢弃
  *
  * 当前 @bot 的消息不在 history 中（调用前已过滤），rawPrompt 始终完整保留。
+ *
+ * @param chatId 群聊 ID（用于解析用户名的 fallback 查询）
  */
-function formatHistoryMessages(
-  messages: Array<{ messageId: string; senderType: 'user' | 'app'; content: string; msgType: string }>,
-): string | undefined {
+async function formatHistoryMessages(
+  messages: Array<{ messageId: string; senderId: string; senderType: 'user' | 'app'; content: string; msgType: string }>,
+  chatId?: string,
+): Promise<string | undefined> {
   if (messages.length === 0) return undefined;
+
+  // 批量解析用户名（只查 user 类型，bot 显示 [Bot]）
+  const userIds = messages.filter(m => m.senderType === 'user' && m.senderId).map(m => m.senderId);
+  if (userIds.length > 0) {
+    await resolveUserNames(userIds, chatId);
+  }
 
   const PER_MSG_MAX = 500;
   const header = [
@@ -772,7 +805,13 @@ function formatHistoryMessages(
 
   // 1. 格式化每条消息，单条截断
   const lines = messages.map(m => {
-    const role = m.senderType === 'app' ? '[Bot]' : '[用户]';
+    let role: string;
+    if (m.senderType === 'app') {
+      role = '[Bot]';
+    } else {
+      const name = m.senderId ? _userNameCache.get(m.senderId) : undefined;
+      role = name ? `[${name}]` : '[用户]';
+    }
     const text = m.content.length > PER_MSG_MAX
       ? m.content.slice(0, PER_MSG_MAX) + '...'
       : m.content;
@@ -1320,7 +1359,7 @@ async function buildDirectTaskHistory(
   afterMsgId?: string,
 ): Promise<HistoryResult> {
   try {
-    let messages: Array<{ messageId: string; senderType: 'user' | 'app'; content: string; msgType: string }>;
+    let messages: Array<{ messageId: string; senderId: string; senderType: 'user' | 'app'; content: string; msgType: string }>;
 
     if (!threadId) {
       // 主聊天区：直接取父群最近消息
@@ -1369,7 +1408,7 @@ async function buildDirectTaskHistory(
       // afterMsgId 不在列表中 → 可能消息已过期滚动，注入全部
     }
 
-    const text = formatHistoryMessages(messages);
+    const text = await formatHistoryMessages(messages, chatId);
     return { text: text ?? undefined, newestMsgId };
   } catch (err) {
     logger.error({ err, chatId, threadId }, 'Failed to build direct task history');
