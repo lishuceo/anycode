@@ -95,9 +95,13 @@ function buildRoutingSystemPrompt(): string {
 - 回复中只输出 JSON 代码块，不要输出其他内容`;
 }
 
-/** 构建路由 prompt */
+/** 构建路由 prompt（截断过长消息，routing 只需判断目标仓库） */
 function buildRoutingPrompt(userMessage: string): string {
-  return userMessage;
+  const MAX_ROUTING_PROMPT_LENGTH = 1500;
+  if (userMessage.length <= MAX_ROUTING_PROMPT_LENGTH) {
+    return userMessage;
+  }
+  return userMessage.slice(0, MAX_ROUTING_PROMPT_LENGTH) + '\n\n[... 消息已截断，仅用于路由决策]';
 }
 
 /** 从 agent 输出中解析 JSON 决策 */
@@ -189,8 +193,9 @@ export async function routeWorkspace(
       model: 'claude-sonnet-4-6',
       settingSources: [],
       maxTurns: 10,
-      maxBudgetUsd: 0.5,
-      timeoutSeconds: 60, // 路由不需要太长超时
+      maxBudgetUsd: 1.0,
+      timeoutSeconds: 60, // 单步空闲超时
+      hardTimeoutSeconds: 120, // 总执行时长硬上限
     });
   } catch (err) {
     logger.error({ err, chatId, userId }, 'Routing agent execution failed');
