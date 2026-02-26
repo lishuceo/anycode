@@ -31,6 +31,13 @@ export type ToolPolicy = 'all' | 'readonly';
  */
 export type ReplyMode = 'direct' | 'thread';
 
+/**
+ * 系统提示词模式：
+ * - 'append': 在 Claude Code 内置系统提示词后追加（dev agent 等需要工具链的角色）
+ * - 'replace': 完整替换 Claude Code 内置系统提示词（chat 等不需要开发指令的角色）
+ */
+export type SystemPromptMode = 'append' | 'replace';
+
 /** Agent 角色配置 */
 export interface AgentConfig {
   /** 角色标识 */
@@ -55,6 +62,8 @@ export interface AgentConfig {
   replyMode: ReplyMode;
   /** 系统提示词文件路径（每次 query 重新读取，支持热更新） */
   systemPromptFile?: string;
+  /** 系统提示词模式：'append'（默认，追加到 Claude Code 内置 prompt）| 'replace'（完整替换） */
+  systemPromptMode?: SystemPromptMode;
   /** 工具允许列表（在 toolPolicy 基础上额外允许，支持 glob 如 'mcp__*'） */
   toolAllow?: string[];
   /** 工具禁止列表（优先级高于 allow，支持 glob） */

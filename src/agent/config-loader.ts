@@ -88,6 +88,7 @@ function mergeAgentConfig(input: AgentConfigInput, defaults: AgentDefaults): Age
     requiresApproval: input.requiresApproval ?? defaults.requiresApproval ?? BUILTIN_DEFAULTS.requiresApproval!,
     replyMode: input.replyMode ?? defaults.replyMode ?? BUILTIN_DEFAULTS.replyMode! as 'direct' | 'thread',
     systemPromptFile: input.systemPromptFile ?? defaults.systemPromptFile,
+    systemPromptMode: input.systemPromptMode ?? defaults.systemPromptMode,
     toolAllow,
     toolDeny,
   };

@@ -47,6 +47,8 @@ export const AgentConfigInputSchema = z.object({
   replyMode: z.enum(['direct', 'thread']).optional(),
   /** 系统提示词文件路径（每次 query 重新读取） */
   systemPromptFile: z.string().optional(),
+  /** 系统提示词模式：'append'（追加到 Claude Code 内置 prompt）| 'replace'（完整替换） */
+  systemPromptMode: z.enum(['append', 'replace']).optional(),
 });
 
 // ─── Defaults（全部 optional） ──────────────────────────────
@@ -60,6 +62,7 @@ export const AgentDefaultsSchema = z.object({
   requiresApproval: z.boolean().optional(),
   replyMode: z.enum(['direct', 'thread']).optional(),
   systemPromptFile: z.string().optional(),
+  systemPromptMode: z.enum(['append', 'replace']).optional(),
 });
 
 // ─── 顶层配置文件 ──────────────────────────────────────────
