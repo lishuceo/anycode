@@ -13,7 +13,7 @@
       "id": "chat",
       "displayName": "ChatBot",
       "replyMode": "direct",
-      "systemPromptFile": "./config/prompts/chat.md",
+      "systemPromptFile": "./prompts/chat.md",
       "systemPromptMode": "replace"
     },
     {

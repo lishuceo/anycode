@@ -254,12 +254,11 @@ function processQueue(queueKey: string, agentId: AgentId = 'dev'): void {
   if (!task) return;
 
   const agentCfg = agentRegistry.get(agentId);
-  // direct 模式 + 不在话题中 → executeDirectTask
-  // 用 threadId 判断是否在话题内（rootId 在主面板引用回复时也会有值）
-  const useDirectMode = agentCfg?.replyMode === 'direct' && !task.threadId;
+  // direct 模式 → executeDirectTask（话题内也走 direct 路径）
+  const useDirectMode = agentCfg?.replyMode === 'direct';
 
   const executeFn = useDirectMode
-    ? executeDirectTask(task.message, task.chatId, task.userId, task.messageId, task.images, agentId)
+    ? executeDirectTask(task.message, task.chatId, task.userId, task.messageId, task.images, agentId, task.threadId, task.rootId)
     : executeClaudeTask(task.message, task.chatId, task.userId, task.messageId, task.rootId, task.threadId, task.images, agentId);
 
   executeFn
@@ -503,7 +502,7 @@ async function handleMessageEvent(data: MessageEventData, accountId: string = 'd
   // 通过 taskQueue 串行化：queue key 包含 agentId，不同 agent 可并行
   // direct 模式加 userId，不同用户可并行
   // enqueue 返回的 Promise 的错误处理在 processQueue/executeClaudeTask 中完成
-  const isDirectMode = agentConfig?.replyMode === 'direct' && !threadId;
+  const isDirectMode = agentConfig?.replyMode === 'direct';
   const queueKey = makeQueueKey(chatId, effectiveThreadId, agentId, isDirectMode ? userId : undefined);
   taskQueue.enqueue(queueKey, chatId, userId, effectiveText, messageId, rootId, effectiveThreadId, images).catch(() => {});
   processQueue(queueKey, agentId);
@@ -1121,6 +1120,7 @@ async function executeClaudeTask(
  * - 不创建话题、不做 workspace routing
  * - 不发进度卡片（Chat Agent 响应通常较快）
  * - 固定使用 defaultWorkDir（Chat Agent 只读分析，不需要工作区隔离）
+ * - 话题内也走此路径，通过 per-thread session 管理独立对话
  * - Agent 可通过 start_discussion_thread MCP 工具动态升级为话题模式
  */
 async function executeDirectTask(
@@ -1130,29 +1130,49 @@ async function executeDirectTask(
   messageId: string,
   images?: ImageAttachment[],
   agentId: AgentId = 'chat',
+  eventThreadId?: string,
+  rootId?: string,
 ): Promise<void> {
   const agentCfg = agentRegistry.getOrThrow(agentId);
   const session = sessionManager.getOrCreate(chatId, userId, agentId);
   const workingDir = config.claude.defaultWorkDir;
-  const sessionKey = `${chatId}:${userId}`;
+  const sessionKey = eventThreadId
+    ? `${chatId}:${userId}:${eventThreadId}`
+    : `${chatId}:${userId}`;
 
   sessionManager.setStatus(chatId, userId, 'busy', agentId);
 
   // 话题升级标志（由 start_discussion_thread MCP 工具设置）
-  let threadRootMsgId: string | undefined;
-  let threadId: string | undefined;
+  // 如果已经在话题内，从事件参数初始化
+  let threadRootMsgId: string | undefined = rootId;
+  let threadId: string | undefined = eventThreadId;
 
   try {
-    // Resume 策略：使用全局 session 的 conversationId
-    const canResume = session.conversationId
-      && (!session.conversationCwd || session.conversationCwd === workingDir);
-    // 有图片时不 resume（AsyncIterable 与 resume 不兼容）
-    const resumeSessionId = (images?.length || !canResume) ? undefined : session.conversationId;
+    // Thread session 管理（话题内独立对话）
+    let threadSession = eventThreadId
+      ? sessionManager.getThreadSession(eventThreadId, agentId)
+      : undefined;
+    if (eventThreadId && !threadSession) {
+      sessionManager.upsertThreadSession(eventThreadId, chatId, userId, workingDir, agentId);
+      threadSession = sessionManager.getThreadSession(eventThreadId, agentId);
+    }
 
-    // 首次 @bot 时注入飞书聊天历史，拼入 user prompt
+    // Resume 策略：per-thread 优先，否则使用全局 session
+    const activeConversationId = eventThreadId
+      ? threadSession?.conversationId
+      : session.conversationId;
+    const activeConversationCwd = eventThreadId
+      ? threadSession?.conversationCwd
+      : session.conversationCwd;
+    const canResume = activeConversationId
+      && (!activeConversationCwd || activeConversationCwd === workingDir);
+    // 有图片时不 resume（AsyncIterable 与 resume 不兼容）
+    const resumeSessionId = (images?.length || !canResume) ? undefined : activeConversationId;
+
+    // 首次 @bot 时注入聊天历史（带 fork 语义），拼入 user prompt
     let effectivePrompt = rawPrompt;
-    if (!session.conversationId) {
-      const chatHistory = await buildChatHistoryContext(chatId, undefined, messageId);
+    if (!activeConversationId) {
+      const chatHistory = await buildDirectTaskHistory(chatId, eventThreadId, messageId);
       if (chatHistory) {
         effectivePrompt = chatHistory + '\n\n---\n\n' + rawPrompt;
       }
@@ -1194,12 +1214,15 @@ async function executeDirectTask(
         sessionManager.upsertThreadSession(threadId, chatId, userId, workingDir, agentId);
         sessionManager.setThreadConversationId(threadId, result.sessionId, workingDir, agentId);
       }
-      sessionManager.setConversationId(chatId, userId, result.sessionId, workingDir, agentId);
+      // 非话题时也保存到全局 session（主面板后续消息可 resume）
+      if (!eventThreadId) {
+        sessionManager.setConversationId(chatId, userId, result.sessionId, workingDir, agentId);
+      }
     }
 
     // 发送结果
     if (threadRootMsgId) {
-      // Agent 通过 start_discussion_thread 升级到话题模式
+      // 在话题内（用户直接在话题 @ 或 agent 通过 MCP 升级到话题）
       await sendResultCard(
         rawPrompt, result, result.durationMs, result.costUsd,
         threadRootMsgId, chatId,
@@ -1223,6 +1246,78 @@ async function executeDirectTask(
     } catch (err) {
       logger.error({ err, chatId, userId }, 'Failed to reset session status');
     }
+  }
+}
+
+// ============================================================
+// Direct 模式聊天历史构建（Fork 语义）
+// ============================================================
+
+const HISTORY_MAX_COUNT = 10;
+
+/**
+ * 构建 direct 模式的初始聊天上下文（fork 语义）。
+ *
+ * - 主聊天区（无 threadId）：取父群最近 max 条
+ * - 话题内：
+ *   - 话题消息 M < max → 补充父群消息至 max 条
+ *   - 话题消息 M ≥ max → 首条 + 最近 (max - 1) 条
+ *   - 话题为空 → 从父群 fork
+ */
+async function buildDirectTaskHistory(
+  chatId: string,
+  threadId?: string,
+  currentMessageId?: string,
+): Promise<string | undefined> {
+  if (!threadId) {
+    // 主聊天区：直接取父群最近消息
+    return buildChatHistoryContext(chatId, undefined, currentMessageId);
+  }
+
+  try {
+    // 1. 拉取话题内所有消息（上限宽松，保证能拿到首条）
+    const threadMsgs = await feishuClient.fetchRecentMessages(threadId, 'thread', 50);
+    const filtered = currentMessageId
+      ? threadMsgs.filter(m => m.messageId !== currentMessageId)
+      : threadMsgs;
+
+    let selected: typeof filtered;
+
+    if (filtered.length === 0) {
+      // 话题为空，从父群 fork
+      return buildChatHistoryContext(chatId, undefined, currentMessageId);
+    } else if (filtered.length <= HISTORY_MAX_COUNT) {
+      // 话题消息不足 max，补充父群消息
+      const remaining = HISTORY_MAX_COUNT - filtered.length;
+      if (remaining > 0) {
+        const parentMsgs = await feishuClient.fetchRecentMessages(chatId, 'chat', remaining);
+        selected = [...parentMsgs, ...filtered];
+      } else {
+        selected = filtered;
+      }
+    } else {
+      // 话题消息 > max：首条 + 最近 (max - 1) 条
+      const first = filtered[0];
+      const latest = filtered.slice(-(HISTORY_MAX_COUNT - 1));
+      selected = [first, ...latest];
+    }
+
+    // 格式化（与 buildChatHistoryContext 格式一致）
+    const lines = selected.map(m => {
+      const role = m.senderType === 'app' ? '[Bot]' : '[用户]';
+      const text = m.content.length > 500 ? m.content.slice(0, 500) + '...' : m.content;
+      return `${role}: ${text}`;
+    });
+
+    return [
+      '## 飞书聊天近期上下文',
+      '以下是用户 @bot 之前的聊天记录，帮助你理解当前对话的背景：',
+      '',
+      ...lines,
+    ].join('\n');
+  } catch (err) {
+    logger.error({ err, chatId, threadId }, 'Failed to build direct task history');
+    return undefined;
   }
 }
 
