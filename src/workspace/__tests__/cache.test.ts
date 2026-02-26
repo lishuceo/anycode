@@ -161,7 +161,7 @@ describe('ensureBareCache', () => {
 
     const result = ensureBareCache('https://github.com/foo/bar.git');
 
-    expect(result).toContain('/repos/cache/github.com/foo/bar.git');
+    expect(result.cachePath).toContain('/repos/cache/github.com/foo/bar.git');
 
     // Should call git clone --bare
     expect(mockExecFileSync).toHaveBeenCalledTimes(1);

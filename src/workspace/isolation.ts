@@ -58,13 +58,20 @@ export function isServiceOwnRepo(dir: string): boolean {
  * writable 模式下，clone 失败会抛出异常（不静默回退到共享目录）。
  * readonly 模式下，clone 失败回退到原路径（只读不影响源仓库）。
  */
+/** ensureIsolatedWorkspace 返回结果 */
+export interface IsolatedWorkspaceResult {
+  workingDir: string;
+  /** 非阻断性警告（如缓存 fetch 失败） */
+  warning?: string;
+}
+
 export function ensureIsolatedWorkspace(
   workingDir: string,
   mode: 'readonly' | 'writable' = 'writable',
-): string {
+): IsolatedWorkspaceResult {
   // 已在工作区目录下 → 已隔离
   if (isAutoWorkspacePath(workingDir)) {
-    return workingDir;
+    return { workingDir };
   }
 
   // 检查是否是 git 仓库
@@ -76,7 +83,7 @@ export function ensureIsolatedWorkspace(
         { originalDir: workingDir, workspacePath: result.workspacePath, branch: result.branch },
         'Isolated workspace created',
       );
-      return result.workspacePath;
+      return { workingDir: result.workspacePath, warning: result.warning };
     }
   } catch (err) {
     if (mode === 'writable') {
@@ -88,5 +95,5 @@ export function ensureIsolatedWorkspace(
     logger.warn({ err, workingDir }, 'Failed to create isolated workspace (readonly), using original path');
   }
 
-  return workingDir;
+  return { workingDir };
 }
