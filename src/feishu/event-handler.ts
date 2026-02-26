@@ -456,10 +456,15 @@ async function handleMessageEvent(data: MessageEventData, accountId: string = 'd
       : undefined;
 
     // 话题内消息：话题创建者 bot 无需 @mention 即可响应后续消息
+    // 仅限话题发起用户或 owner — 非 owner 的旁观者无 @mention 时静默忽略，
+    // 避免好奇路人的消息干扰 dev-bot 正在进行的工作
     let threadBypass = false;
     if (threadId && isThreadCreatorAgent(threadId, agentId)) {
-      threadBypass = true;
-      logger.debug({ threadId, agentId, accountId }, 'Thread creator bypass: responding without @mention');
+      const ts = sessionManager.getThreadSession(threadId, agentId);
+      if (ts && (isOwner(userId) || ts.userId === userId)) {
+        threadBypass = true;
+        logger.debug({ threadId, agentId, accountId }, 'Thread creator bypass: responding without @mention');
+      }
     }
 
     if (!threadBypass && !shouldRespond(chatType, mentions, botOpenId, allBotOpenIds, commanderOpenId)) {
