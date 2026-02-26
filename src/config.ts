@@ -88,6 +88,8 @@ export const config = {
       process.env.WORKSPACE_BASE_DIR ||
       `${process.env.DEFAULT_WORK_DIR || '/home/ubuntu/projects'}/anywhere-code-work-dir`,
     branchPrefix: process.env.WORKSPACE_BRANCH_PREFIX || 'feat/claude-session',
+    /** 工作区最大保留天数（过期后 thread session 和目录均会被清理） */
+    maxAgeDays: parseInt(process.env.WORKSPACE_MAX_AGE_DAYS || '3', 10),
   },
 
   // 仓库缓存配置
