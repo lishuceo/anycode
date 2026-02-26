@@ -1,4 +1,5 @@
-import { existsSync, rmSync } from 'node:fs';
+import { existsSync, readdirSync, statSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
 import { config } from '../config.js';
 import { logger } from '../utils/logger.js';
 import { SessionDatabase } from './database.js';
@@ -215,7 +216,7 @@ export class SessionManager {
     }
 
     // Thread session 清理：用统一 cutoff 原子化查询 + 删除，避免 TOCTOU
-    const threadMaxIdleMs = 30 * 24 * 60 * 60 * 1000; // 30 days
+    const threadMaxIdleMs = config.workspace.maxAgeDays * 24 * 60 * 60 * 1000;
     const cutoff = new Date(Date.now() - threadMaxIdleMs).toISOString();
     const expiredThreads = this.db.getExpiredThreadSessionsByCutoff(cutoff);
     const cleanedThreads = this.db.deleteExpiredThreadSessionsByCutoff(cutoff);
@@ -244,6 +245,55 @@ export class SessionManager {
       logger.info({ cleanedWorkspaces }, 'Cleaned up expired workspace directories');
     }
 
+    // 孤儿工作区清理：扫描 WORKSPACE_BASE_DIR 下不被任何活跃 thread session 引用的目录
+    cleanedWorkspaces += this.cleanupOrphanWorkspaces(threadMaxIdleMs);
+
+    return cleaned;
+  }
+
+  /**
+   * 扫描 WORKSPACE_BASE_DIR，删除不被任何活跃 thread session 引用且超过 maxAge 的孤儿目录
+   */
+  private cleanupOrphanWorkspaces(maxAgeMs: number): number {
+    const baseDir = config.workspace.baseDir;
+    if (!existsSync(baseDir)) return 0;
+
+    // 收集所有活跃 thread session 的工作目录
+    const allThreadSessions = this.db.getAllThreadSessions();
+    const activePaths = new Set(allThreadSessions.map((t) => t.workingDir));
+
+    let cleaned = 0;
+    const now = Date.now();
+    try {
+      const entries = readdirSync(baseDir, { withFileTypes: true });
+      for (const entry of entries) {
+        if (!entry.isDirectory()) continue;
+        const dirPath = join(baseDir, entry.name);
+        if (activePaths.has(dirPath)) continue;
+
+        // 只删除超过 maxAge 的目录
+        try {
+          const mtime = statSync(dirPath).mtimeMs;
+          if (now - mtime < maxAgeMs) continue;
+        } catch {
+          continue;
+        }
+
+        try {
+          rmSync(dirPath, { recursive: true, force: true });
+          cleaned++;
+          logger.debug({ workspacePath: dirPath }, 'Removed orphan workspace directory');
+        } catch (err) {
+          logger.warn({ err, workspacePath: dirPath }, 'Failed to remove orphan workspace');
+        }
+      }
+    } catch (err) {
+      logger.warn({ err, baseDir }, 'Failed to scan workspace base directory for orphans');
+    }
+
+    if (cleaned > 0) {
+      logger.info({ cleaned }, 'Cleaned up orphan workspace directories');
+    }
     return cleaned;
   }
 
