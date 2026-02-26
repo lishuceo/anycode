@@ -456,10 +456,13 @@ async function handleMessageEvent(data: MessageEventData, accountId: string = 'd
       : undefined;
 
     // 话题内消息：话题创建者 bot 无需 @mention 即可响应后续消息
+    // 前提：消息没有 @任何 bot —— 显式 @mention 是明确的意图信号，
+    //       @了别的 bot 时话题创建者不应抢答（@人类用户不算，可能只是 tag 提醒）
     // 仅限话题发起用户或 owner — 非 owner 的旁观者无 @mention 时静默忽略，
     // 避免好奇路人的消息干扰 dev-bot 正在进行的工作
+    const anyBotMentioned = mentions.some(m => allBotOpenIds.has(m.id.open_id ?? ''));
     let threadBypass = false;
-    if (threadId && isThreadCreatorAgent(threadId, agentId)) {
+    if (threadId && !anyBotMentioned && isThreadCreatorAgent(threadId, agentId)) {
       const ts = sessionManager.getThreadSession(threadId, agentId);
       if (ts && (isOwner(userId) || ts.userId === userId)) {
         threadBypass = true;
@@ -757,27 +760,42 @@ async function handleSlashCommand(
  * @param chatId - 群聊 ID
  * @param threadId - 话题 ID（话题内消息时传入）
  * @param currentMessageId - 当前消息 ID（用于过滤，避免把自己也算进历史）
- * @returns 格式化的聊天历史文本，无消息时返回 undefined
+ * @param afterMsgId - 增量去重锚点：只返回比此 ID 更新的消息（resume 时使用）
+ * @returns { text, newestMsgId }，无消息时 text 为 undefined
  */
 async function buildChatHistoryContext(
   chatId: string,
   threadId?: string,
   currentMessageId?: string,
-): Promise<string | undefined> {
+  afterMsgId?: string,
+): Promise<HistoryResult> {
   try {
     const containerId = threadId ?? chatId;
     const containerType = threadId ? 'thread' as const : 'chat' as const;
     const messages = await feishuClient.fetchRecentMessages(containerId, containerType, config.chat.historyMaxCount);
 
     // 过滤掉当前消息
-    const history = currentMessageId
+    let filtered = currentMessageId
       ? messages.filter(m => m.messageId !== currentMessageId)
       : messages;
 
-    return formatHistoryMessages(history, chatId);
+    // 记录最新 messageId（去重锚点，在过滤 afterMsgId 之前取）
+    const newestMsgId = filtered.length > 0 ? filtered[filtered.length - 1].messageId : undefined;
+
+    // 增量去重：只保留 afterMsgId 之后的新消息
+    if (afterMsgId && filtered.length > 0) {
+      const idx = filtered.findIndex(m => m.messageId === afterMsgId);
+      if (idx >= 0) {
+        filtered = filtered.slice(idx + 1);
+      }
+      // afterMsgId 不在列表中 → 可能消息已过期滚动，注入全部
+    }
+
+    const text = await formatHistoryMessages(filtered, chatId);
+    return { text: text ?? undefined, newestMsgId };
   } catch (err) {
     logger.error({ err, chatId, threadId }, 'Failed to build chat history context');
-    return undefined;
+    return {};
   }
 }
 
@@ -874,6 +892,12 @@ async function formatHistoryMessages(
   return parts.join('\n');
 }
 
+/** 历史去重缓存：sessionKey → 上次注入的最新 messageId。
+ *  resume 时只注入比这个 ID 更新的消息，避免重复。
+ *  进程重启时自动清空（conversationId 也丢，不会 resume）。
+ *  dev agent 和 chat agent 共享（sessionKey 含 agent 维度，不冲突）。 */
+const _historyDedup = new Map<string, string>();
+
 /**
  * 执行 Claude Agent SDK 任务
  * 支持 workspace 变更后自动 restart：第一次 query 触发 setup_workspace 后，
@@ -952,12 +976,18 @@ async function executeClaudeTask(
     historySummaries = combined;
   }
 
-  // 首次 @bot 时注入飞书聊天历史，拼入 user prompt（不是 system prompt）
+  // 每次都注入增量飞书聊天历史，拼入 user prompt（不是 system prompt）
+  // resume 时通过 afterMsgId 去重，只注入上次交互后新增的消息
+  // 确保 dev-bot 能看到中间 @其他bot 的对话等未直接参与的消息
   let effectivePrompt = prompt;
-  if (!activeConversationId && !historySummaries) {
-    const chatHistory = await buildChatHistoryContext(chatId, threadId, messageId);
-    if (chatHistory) {
-      effectivePrompt = chatHistory + '\n\n---\n\n' + prompt;
+  if (!historySummaries) {
+    const afterMsgId = activeConversationId ? _historyDedup.get(sessionKey) : undefined;
+    const history = await buildChatHistoryContext(chatId, threadId, messageId, afterMsgId);
+    if (history.text) {
+      effectivePrompt = history.text + '\n\n---\n\n' + prompt;
+    }
+    if (history.newestMsgId) {
+      _historyDedup.set(sessionKey, history.newestMsgId);
     }
   }
 
@@ -1223,11 +1253,6 @@ async function executeClaudeTask(
 // 不创建话题，不发进度卡片。
 // Agent 可通过 start_discussion_thread 工具升级为话题模式。
 // ============================================================
-
-/** 历史去重缓存：sessionKey → 上次注入的最新 messageId。
- *  resume 时只注入比这个 ID 更新的消息，避免重复。
- *  进程重启时自动清空（conversationId 也丢，不会 resume）。 */
-const _historyDedup = new Map<string, string>();
 
 /**
  * 直接回复模式执行（Chat Agent）
