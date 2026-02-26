@@ -46,6 +46,8 @@ export interface ExecuteInput extends ExecuteOptions {
   systemPromptMode?: 'append' | 'replace';
   /** 覆盖单步空闲超时秒数 (默认使用 CLAUDE_TIMEOUT 配置)。每收到一条 SDK 消息就重置，不限制总时长 */
   timeoutSeconds?: number;
+  /** 硬性总超时秒数（从开始计时，不因活动重置）。适用于 routing 等必须快速完成的短任务 */
+  hardTimeoutSeconds?: number;
   /** 图片附件（多模态输入） */
   images?: ImageAttachment[];
   /** 额外的 MCP servers（会合并到内部自动创建的 servers） */
@@ -199,6 +201,18 @@ export class ClaudeExecutor {
       }, idleTimeoutMs);
     };
     resetIdleTimer();
+
+    // 硬性总超时：从开始计时，不因活动重置（适用于 routing 等短任务）
+    let hardTimer: ReturnType<typeof setTimeout> | undefined;
+    if (input.hardTimeoutSeconds) {
+      const hardTimeoutMs = input.hardTimeoutSeconds * 1000;
+      hardTimer = setTimeout(() => {
+        timedOut = true;
+        abortController.abort();
+        logger.warn({ sessionKey, hardTimeoutMs, elapsedMs: Date.now() - startTime },
+          'Claude query hard timeout — total execution time exceeded, aborting');
+      }, hardTimeoutMs);
+    }
 
     // 确保工作目录存在，否则 spawn 会报 ENOENT
     // 自动创建的工作区目录（WORKSPACE_BASE_DIR 下）不应在此处兜底创建：
@@ -472,11 +486,14 @@ export class ClaudeExecutor {
       }
     } catch (err) {
       clearTimeout(idleTimer);
+      if (hardTimer) clearTimeout(hardTimer);
       this.runningQueries.delete(sessionKey);
 
       const durationMs = Date.now() - startTime;
       const errorMsg = timedOut
-        ? `Query idle timeout after ${idleTimeoutMs / 1000}s with no activity (total elapsed: ${Math.round(durationMs / 1000)}s)`
+        ? (input.hardTimeoutSeconds && durationMs >= input.hardTimeoutSeconds * 1000
+          ? `Query hard timeout after ${input.hardTimeoutSeconds}s total execution time`
+          : `Query idle timeout after ${idleTimeoutMs / 1000}s with no activity (total elapsed: ${Math.round(durationMs / 1000)}s)`)
         : (err instanceof Error ? err.message : String(err));
       logger.error({ sessionKey, err: errorMsg, timedOut }, 'Claude Agent SDK query error');
 
@@ -492,6 +509,7 @@ export class ClaudeExecutor {
     }
 
     clearTimeout(idleTimer);
+    if (hardTimer) clearTimeout(hardTimer);
 
     // 等待最后一个回调完成，防止与最终卡片更新竞态
     if (lastTurnPromise) await lastTurnPromise.catch(() => {});
