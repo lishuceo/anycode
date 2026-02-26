@@ -1153,6 +1153,11 @@ async function executeClaudeTask(
 // Agent 可通过 start_discussion_thread 工具升级为话题模式。
 // ============================================================
 
+/** 历史去重缓存：sessionKey → 上次注入的最新 messageId。
+ *  resume 时只注入比这个 ID 更新的消息，避免重复。
+ *  进程重启时自动清空（conversationId 也丢，不会 resume）。 */
+const _historyDedup = new Map<string, string>();
+
 /**
  * 直接回复模式执行（Chat Agent）
  *
@@ -1210,13 +1215,15 @@ async function executeDirectTask(
     // 有图片时不 resume（AsyncIterable 与 resume 不兼容）
     const resumeSessionId = (images?.length || !canResume) ? undefined : activeConversationId;
 
-    // 首次 @bot 时注入聊天历史（带 fork 语义），拼入 user prompt
+    // 每次 @bot 都注入最新聊天历史（resume 时通过 afterMsgId 去重，只注入新消息）
     let effectivePrompt = rawPrompt;
-    if (!activeConversationId) {
-      const chatHistory = await buildDirectTaskHistory(chatId, eventThreadId, messageId);
-      if (chatHistory) {
-        effectivePrompt = chatHistory + '\n\n---\n\n' + rawPrompt;
-      }
+    const afterMsgId = activeConversationId ? _historyDedup.get(sessionKey) : undefined;
+    const history = await buildDirectTaskHistory(chatId, eventThreadId, messageId, afterMsgId);
+    if (history.text) {
+      effectivePrompt = history.text + '\n\n---\n\n' + rawPrompt;
+    }
+    if (history.newestMsgId) {
+      _historyDedup.set(sessionKey, history.newestMsgId);
     }
 
     // discussion MCP server：允许 agent 动态创建话题
@@ -1285,59 +1292,88 @@ async function executeDirectTask(
 // Direct 模式聊天历史构建（Fork 语义）
 // ============================================================
 
+/** buildDirectTaskHistory 的返回值 */
+interface HistoryResult {
+  /** 格式化的历史文本（无新消息时为 undefined） */
+  text?: string;
+  /** 本次注入的最新 messageId（用于下次去重） */
+  newestMsgId?: string;
+}
+
 /**
- * 构建 direct 模式的初始聊天上下文（fork 语义）。
+ * 构建 direct 模式的聊天上下文（fork 语义 + 增量去重）。
  *
- * max 由环境变量 CHAT_HISTORY_MAX_COUNT 控制（默认 10）。
+ * max 由 CHAT_HISTORY_MAX_COUNT 控制（默认 10）。
  *
  * - 主聊天区（无 threadId）：取父群最近 max 条
  * - 话题内：
  *   - 话题消息 M < max → 补充父群消息至 max 条
  *   - 话题消息 M ≥ max → 首条 + 最近 (max - 1) 条
  *   - 话题为空 → 从父群 fork
+ *
+ * @param afterMsgId 上次注入的最新 messageId，有值时只返回比它更新的消息
  */
 async function buildDirectTaskHistory(
   chatId: string,
   threadId?: string,
   currentMessageId?: string,
-): Promise<string | undefined> {
-  if (!threadId) {
-    // 主聊天区：直接取父群最近消息
-    return buildChatHistoryContext(chatId, undefined, currentMessageId);
-  }
-
+  afterMsgId?: string,
+): Promise<HistoryResult> {
   try {
-    // 1. 拉取话题内所有消息（上限宽松，保证能拿到首条）
-    const threadMsgs = await feishuClient.fetchRecentMessages(threadId, 'thread', 50);
-    const filtered = currentMessageId
-      ? threadMsgs.filter(m => m.messageId !== currentMessageId)
-      : threadMsgs;
+    let messages: Array<{ messageId: string; senderType: 'user' | 'app'; content: string; msgType: string }>;
 
-    let selected: typeof filtered;
-
-    if (filtered.length === 0) {
-      // 话题为空，从父群 fork
-      return buildChatHistoryContext(chatId, undefined, currentMessageId);
-    } else if (filtered.length <= config.chat.historyMaxCount) {
-      // 话题消息不足 max，补充父群消息
-      const remaining = config.chat.historyMaxCount - filtered.length;
-      if (remaining > 0) {
-        const parentMsgs = await feishuClient.fetchRecentMessages(chatId, 'chat', remaining);
-        selected = [...parentMsgs, ...filtered];
-      } else {
-        selected = filtered;
-      }
+    if (!threadId) {
+      // 主聊天区：直接取父群最近消息
+      messages = await feishuClient.fetchRecentMessages(chatId, 'chat', config.chat.historyMaxCount);
     } else {
-      // 话题消息 > max：首条 + 最近 (max - 1) 条
-      const first = filtered[0];
-      const latest = filtered.slice(-(config.chat.historyMaxCount - 1));
-      selected = [first, ...latest];
+      // 话题模式：fork 语义
+      const threadMsgs = await feishuClient.fetchRecentMessages(threadId, 'thread', 50);
+      const filtered = currentMessageId
+        ? threadMsgs.filter(m => m.messageId !== currentMessageId)
+        : threadMsgs;
+
+      if (filtered.length === 0) {
+        // 话题为空，从父群 fork
+        messages = await feishuClient.fetchRecentMessages(chatId, 'chat', config.chat.historyMaxCount);
+      } else if (filtered.length <= config.chat.historyMaxCount) {
+        // 话题消息不足 max，补充父群消息
+        const remaining = config.chat.historyMaxCount - filtered.length;
+        if (remaining > 0) {
+          const parentMsgs = await feishuClient.fetchRecentMessages(chatId, 'chat', remaining);
+          messages = [...parentMsgs, ...filtered];
+        } else {
+          messages = filtered;
+        }
+      } else {
+        // 话题消息 > max：首条 + 最近 (max - 1) 条
+        const first = filtered[0];
+        const latest = filtered.slice(-(config.chat.historyMaxCount - 1));
+        messages = [first, ...latest];
+      }
     }
 
-    return formatHistoryMessages(selected);
+    // 过滤当前消息（主聊天区路径，话题路径已在上面过滤）
+    if (!threadId && currentMessageId) {
+      messages = messages.filter(m => m.messageId !== currentMessageId);
+    }
+
+    // 记录最新 messageId（去重锚点，在过滤 afterMsgId 之前取）
+    const newestMsgId = messages.length > 0 ? messages[messages.length - 1].messageId : undefined;
+
+    // 增量去重：只保留 afterMsgId 之后的新消息
+    if (afterMsgId && messages.length > 0) {
+      const idx = messages.findIndex(m => m.messageId === afterMsgId);
+      if (idx >= 0) {
+        messages = messages.slice(idx + 1);
+      }
+      // afterMsgId 不在列表中 → 可能消息已过期滚动，注入全部
+    }
+
+    const text = formatHistoryMessages(messages);
+    return { text: text ?? undefined, newestMsgId };
   } catch (err) {
     logger.error({ err, chatId, threadId }, 'Failed to build direct task history');
-    return undefined;
+    return {};
   }
 }
 

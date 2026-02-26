@@ -51,56 +51,68 @@ type SimpleMessage = {
   msgType: string;
 };
 
+interface HistoryResult {
+  text?: string;
+  newestMsgId?: string;
+}
+
 /**
  * Extracted from event-handler.ts buildDirectTaskHistory for testability.
+ * Supports afterMsgId for incremental dedup on resume.
  */
 async function buildDirectTaskHistory(
   chatId: string,
   threadId?: string,
   currentMessageId?: string,
-): Promise<string | undefined> {
+  afterMsgId?: string,
+): Promise<HistoryResult> {
   const { feishuClient } = await import('../feishu/client.js');
 
-  if (!threadId) {
-    // 主聊天区：直接取父群最近消息
-    const messages = await feishuClient.fetchRecentMessages(chatId, 'chat', 10);
-    const history = currentMessageId
-      ? messages.filter((m: SimpleMessage) => m.messageId !== currentMessageId)
-      : messages;
-    if (history.length === 0) return undefined;
-    return formatHistory(history);
-  }
-
   try {
-    const threadMsgs: SimpleMessage[] = await feishuClient.fetchRecentMessages(threadId, 'thread', 50);
-    const filtered = currentMessageId
-      ? threadMsgs.filter(m => m.messageId !== currentMessageId)
-      : threadMsgs;
+    let messages: SimpleMessage[];
 
-    let selected: SimpleMessage[];
-
-    if (filtered.length === 0) {
-      // 话题为空，从父群 fork
-      const parentMsgs = await feishuClient.fetchRecentMessages(chatId, 'chat', 10);
-      if (parentMsgs.length === 0) return undefined;
-      return formatHistory(parentMsgs);
-    } else if (filtered.length <= HISTORY_MAX_COUNT) {
-      const remaining = HISTORY_MAX_COUNT - filtered.length;
-      if (remaining > 0) {
-        const parentMsgs = await feishuClient.fetchRecentMessages(chatId, 'chat', remaining);
-        selected = [...parentMsgs, ...filtered];
-      } else {
-        selected = filtered;
+    if (!threadId) {
+      messages = await feishuClient.fetchRecentMessages(chatId, 'chat', 10);
+      if (currentMessageId) {
+        messages = messages.filter((m: SimpleMessage) => m.messageId !== currentMessageId);
       }
     } else {
-      const first = filtered[0];
-      const latest = filtered.slice(-(HISTORY_MAX_COUNT - 1));
-      selected = [first, ...latest];
+      const threadMsgs: SimpleMessage[] = await feishuClient.fetchRecentMessages(threadId, 'thread', 50);
+      const filtered = currentMessageId
+        ? threadMsgs.filter(m => m.messageId !== currentMessageId)
+        : threadMsgs;
+
+      if (filtered.length === 0) {
+        messages = await feishuClient.fetchRecentMessages(chatId, 'chat', 10);
+      } else if (filtered.length <= HISTORY_MAX_COUNT) {
+        const remaining = HISTORY_MAX_COUNT - filtered.length;
+        if (remaining > 0) {
+          const parentMsgs = await feishuClient.fetchRecentMessages(chatId, 'chat', remaining);
+          messages = [...parentMsgs, ...filtered];
+        } else {
+          messages = filtered;
+        }
+      } else {
+        const first = filtered[0];
+        const latest = filtered.slice(-(HISTORY_MAX_COUNT - 1));
+        messages = [first, ...latest];
+      }
     }
 
-    return formatHistory(selected);
+    const newestMsgId = messages.length > 0 ? messages[messages.length - 1].messageId : undefined;
+
+    // Incremental dedup: only keep messages after afterMsgId
+    if (afterMsgId && messages.length > 0) {
+      const idx = messages.findIndex(m => m.messageId === afterMsgId);
+      if (idx >= 0) {
+        messages = messages.slice(idx + 1);
+      }
+    }
+
+    const text = formatHistory(messages);
+    return { text: text ?? undefined, newestMsgId };
   } catch {
-    return undefined;
+    return {};
   }
 }
 
@@ -160,12 +172,12 @@ describe('buildDirectTaskHistory fork semantics', () => {
     const parentMsgs = [makeMsg('p1', 'hello'), makeMsg('p2', 'world')];
     mockFetchRecentMessages.mockResolvedValueOnce(parentMsgs);
 
-    const result = await buildDirectTaskHistory('chat1', undefined, 'current-msg');
+    const { text } = await buildDirectTaskHistory('chat1', undefined, 'current-msg');
 
     expect(mockFetchRecentMessages).toHaveBeenCalledWith('chat1', 'chat', 10);
     expect(mockFetchRecentMessages).toHaveBeenCalledTimes(1);
-    expect(result).toContain('[用户]: hello');
-    expect(result).toContain('[用户]: world');
+    expect(text).toContain('[用户]: hello');
+    expect(text).toContain('[用户]: world');
   });
 
   it('empty thread → fork from parent chat', async () => {
@@ -175,14 +187,14 @@ describe('buildDirectTaskHistory fork semantics', () => {
     const parentMsgs = [makeMsg('p1', 'parent msg 1'), makeMsg('p2', 'parent msg 2')];
     mockFetchRecentMessages.mockResolvedValueOnce(parentMsgs);
 
-    const result = await buildDirectTaskHistory('chat1', 'thread1', 'current-msg');
+    const { text } = await buildDirectTaskHistory('chat1', 'thread1', 'current-msg');
 
     // First call: thread messages
     expect(mockFetchRecentMessages).toHaveBeenNthCalledWith(1, 'thread1', 'thread', 50);
     // Second call: parent chat fallback
     expect(mockFetchRecentMessages).toHaveBeenNthCalledWith(2, 'chat1', 'chat', 10);
-    expect(result).toContain('parent msg 1');
-    expect(result).toContain('parent msg 2');
+    expect(text).toContain('parent msg 1');
+    expect(text).toContain('parent msg 2');
   });
 
   it('thread with 3 messages (< max) → pad with parent chat to reach max', async () => {
@@ -196,13 +208,13 @@ describe('buildDirectTaskHistory fork semantics', () => {
     const parentMsgs = Array.from({ length: 7 }, (_, i) => makeMsg(`p${i}`, `parent ${i}`));
     mockFetchRecentMessages.mockResolvedValueOnce(parentMsgs);
 
-    const result = await buildDirectTaskHistory('chat1', 'thread1', 'other-msg');
+    const { text } = await buildDirectTaskHistory('chat1', 'thread1', 'other-msg');
 
     expect(mockFetchRecentMessages).toHaveBeenNthCalledWith(2, 'chat1', 'chat', 7);
     // Parent messages come first, then thread messages
-    expect(result).toContain('parent 0');
-    expect(result).toContain('thread first');
-    expect(result).toContain('thread third');
+    expect(text).toContain('parent 0');
+    expect(text).toContain('thread first');
+    expect(text).toContain('thread third');
   });
 
   it('thread with 15 messages (> max) → first + last 9', async () => {
@@ -211,18 +223,18 @@ describe('buildDirectTaskHistory fork semantics', () => {
     );
     mockFetchRecentMessages.mockResolvedValueOnce(threadMsgs);
 
-    const result = await buildDirectTaskHistory('chat1', 'thread1');
+    const { text } = await buildDirectTaskHistory('chat1', 'thread1');
 
     // Should NOT call parent chat
     expect(mockFetchRecentMessages).toHaveBeenCalledTimes(1);
     // Should include first message
-    expect(result).toContain('thread msg 0');
+    expect(text).toContain('thread msg 0');
     // Should include last 9 messages (indices 6-14)
-    expect(result).toContain('thread msg 6');
-    expect(result).toContain('thread msg 14');
+    expect(text).toContain('thread msg 6');
+    expect(text).toContain('thread msg 14');
     // Should NOT include middle messages (e.g., index 1-5)
-    expect(result).not.toContain('[用户]: thread msg 1\n');
-    expect(result).not.toContain('[用户]: thread msg 5\n');
+    expect(text).not.toContain('[用户]: thread msg 1\n');
+    expect(text).not.toContain('[用户]: thread msg 5\n');
   });
 
   it('thread with exactly 10 messages → no padding needed', async () => {
@@ -231,13 +243,13 @@ describe('buildDirectTaskHistory fork semantics', () => {
     );
     mockFetchRecentMessages.mockResolvedValueOnce(threadMsgs);
 
-    const result = await buildDirectTaskHistory('chat1', 'thread1');
+    const { text } = await buildDirectTaskHistory('chat1', 'thread1');
 
     // No parent chat fetch needed
     expect(mockFetchRecentMessages).toHaveBeenCalledTimes(1);
     // All 10 messages included
-    expect(result).toContain('msg 0');
-    expect(result).toContain('msg 9');
+    expect(text).toContain('msg 0');
+    expect(text).toContain('msg 9');
   });
 
   it('filters out current message from thread', async () => {
@@ -250,26 +262,25 @@ describe('buildDirectTaskHistory fork semantics', () => {
     const parentMsgs = Array.from({ length: 9 }, (_, i) => makeMsg(`p${i}`, `parent ${i}`));
     mockFetchRecentMessages.mockResolvedValueOnce(parentMsgs);
 
-    const result = await buildDirectTaskHistory('chat1', 'thread1', 'current');
+    const { text } = await buildDirectTaskHistory('chat1', 'thread1', 'current');
 
-    expect(result).toContain('old msg');
-    expect(result).not.toContain('current msg');
+    expect(text).toContain('old msg');
+    expect(text).not.toContain('current msg');
     expect(mockFetchRecentMessages).toHaveBeenNthCalledWith(2, 'chat1', 'chat', 9);
   });
 
-  it('returns undefined when no messages at all', async () => {
-    // Main chat, empty
+  it('returns no text when no messages at all', async () => {
     mockFetchRecentMessages.mockResolvedValueOnce([]);
 
-    const result = await buildDirectTaskHistory('chat1', undefined);
-    expect(result).toBeUndefined();
+    const { text } = await buildDirectTaskHistory('chat1', undefined);
+    expect(text).toBeUndefined();
   });
 
-  it('returns undefined on fetch error', async () => {
+  it('returns empty result on fetch error', async () => {
     mockFetchRecentMessages.mockRejectedValueOnce(new Error('network error'));
 
     const result = await buildDirectTaskHistory('chat1', 'thread1');
-    expect(result).toBeUndefined();
+    expect(result.text).toBeUndefined();
   });
 
   it('includes bot messages with [Bot] prefix', async () => {
@@ -280,10 +291,51 @@ describe('buildDirectTaskHistory fork semantics', () => {
     mockFetchRecentMessages.mockResolvedValueOnce(msgs);
     mockFetchRecentMessages.mockResolvedValueOnce([]); // parent padding
 
-    const result = await buildDirectTaskHistory('chat1', 'thread1');
+    const { text } = await buildDirectTaskHistory('chat1', 'thread1');
 
-    expect(result).toContain('[用户]: user question');
-    expect(result).toContain('[Bot]: bot answer');
+    expect(text).toContain('[用户]: user question');
+    expect(text).toContain('[Bot]: bot answer');
+  });
+
+  it('returns newestMsgId for dedup tracking', async () => {
+    const msgs = [makeMsg('m1', 'first'), makeMsg('m2', 'second'), makeMsg('m3', 'third')];
+    mockFetchRecentMessages.mockResolvedValueOnce(msgs);
+
+    const { newestMsgId } = await buildDirectTaskHistory('chat1', undefined);
+    expect(newestMsgId).toBe('m3');
+  });
+
+  it('afterMsgId dedup: only returns new messages', async () => {
+    const msgs = [makeMsg('m1', 'old'), makeMsg('m2', 'seen'), makeMsg('m3', 'new msg')];
+    mockFetchRecentMessages.mockResolvedValueOnce(msgs);
+
+    const { text, newestMsgId } = await buildDirectTaskHistory('chat1', undefined, undefined, 'm2');
+
+    expect(text).toContain('new msg');
+    expect(text).not.toContain('[用户]: old');
+    expect(text).not.toContain('[用户]: seen');
+    expect(newestMsgId).toBe('m3'); // newestMsgId is from pre-filter list
+  });
+
+  it('afterMsgId dedup: returns no text when no new messages', async () => {
+    const msgs = [makeMsg('m1', 'old'), makeMsg('m2', 'latest')];
+    mockFetchRecentMessages.mockResolvedValueOnce(msgs);
+
+    const { text, newestMsgId } = await buildDirectTaskHistory('chat1', undefined, undefined, 'm2');
+
+    expect(text).toBeUndefined(); // no messages after m2
+    expect(newestMsgId).toBe('m2');
+  });
+
+  it('afterMsgId not found → inject all (messages may have scrolled)', async () => {
+    const msgs = [makeMsg('m5', 'msg 5'), makeMsg('m6', 'msg 6')];
+    mockFetchRecentMessages.mockResolvedValueOnce(msgs);
+
+    const { text } = await buildDirectTaskHistory('chat1', undefined, undefined, 'm1');
+
+    // m1 not in list → all messages injected
+    expect(text).toContain('msg 5');
+    expect(text).toContain('msg 6');
   });
 });
 
