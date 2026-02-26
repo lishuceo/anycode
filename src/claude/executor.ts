@@ -42,6 +42,8 @@ export interface ExecuteInput extends ExecuteOptions {
   historySummaries?: string;
   /** 覆盖 system prompt（用于 pipeline 各角色独立 prompt） */
   systemPromptOverride?: string;
+  /** 系统提示词模式：'append'（追加到 Claude Code 内置 prompt）| 'replace'（完整替换） */
+  systemPromptMode?: 'append' | 'replace';
   /** 覆盖单步空闲超时秒数 (默认使用 CLAUDE_TIMEOUT 配置)。每收到一条 SDK 消息就重置，不限制总时长 */
   timeoutSeconds?: number;
   /** 图片附件（多模态输入） */
@@ -361,12 +363,12 @@ export class ClaudeExecutor {
         // 会话续接
         ...(resumeSessionId ? { resume: resumeSessionId } : {}),
 
-        // 系统提示词：使用 Claude Code 默认 + 飞书场景附加 + 工作区管理指引
-        systemPrompt: {
-          type: 'preset',
-          preset: 'claude_code',
-          append: promptAppend,
-        },
+        // 系统提示词：
+        // - replace 模式：完整替换 Claude Code 内置 prompt（chat 等不需要开发指令的角色）
+        // - append 模式（默认）：在 Claude Code 内置 prompt 后追加
+        systemPrompt: input.systemPromptMode === 'replace'
+          ? promptAppend
+          : { type: 'preset', preset: 'claude_code', append: promptAppend },
 
         // 加载项目设置 (CLAUDE.md 等)；路由 agent 传 [] 避免加载
         settingSources: settingSourcesOverride ?? ['user', 'project'],
