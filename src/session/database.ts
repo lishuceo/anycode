@@ -66,6 +66,7 @@ export class SessionDatabase {
   private stmtSetThreadPipelineContext: Database.Statement;
   private stmtSetThreadApproved: Database.Statement;
   private stmtTouchThreadSession: Database.Statement;
+  private stmtGetAllThreadSessions: Database.Statement;
 
   constructor(dbPath: string) {
     dbPath = resolve(dbPath);
@@ -315,6 +316,10 @@ export class SessionDatabase {
       'UPDATE thread_sessions SET updated_at = ? WHERE thread_id = ?',
     );
 
+    this.stmtGetAllThreadSessions = this.db.prepare(
+      'SELECT * FROM thread_sessions',
+    );
+
     logger.info({ dbPath }, 'Session database initialized');
   }
 
@@ -420,6 +425,12 @@ export class SessionDatabase {
     const row = this.stmtGetThreadSession.get(threadId) as ThreadSessionRow | undefined;
     if (!row) return undefined;
     return this.rowToThreadSession(row);
+  }
+
+  /** 获取所有 thread sessions（用于孤儿工作区检测） */
+  getAllThreadSessions(): ThreadSession[] {
+    const rows = this.stmtGetAllThreadSessions.all() as ThreadSessionRow[];
+    return rows.map((r) => this.rowToThreadSession(r));
   }
 
   updateThreadConversationId(threadId: string, conversationId: string, cwd?: string): void {
