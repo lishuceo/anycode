@@ -228,6 +228,26 @@ async function handlePipelineRetry(pipelineId: string): Promise<Record<string, u
 }
 
 // ============================================================
+// 话题创建者判定：option B — 只有话题创建者 bot 自动响应无 @mention 的后续消息
+// ============================================================
+
+/**
+ * 判断指定 agent 是否为某话题的创建者（拥有最早的 thread session）。
+ * 被 @mention 后加入的 agent 只在显式 @mention 时响应。
+ */
+function isThreadCreatorAgent(threadId: string, agentId: string): boolean {
+  const mySession = sessionManager.getThreadSession(threadId, agentId);
+  if (!mySession) return false;
+
+  for (const otherId of agentRegistry.allIds()) {
+    if (otherId === agentId) continue;
+    const other = sessionManager.getThreadSession(threadId, otherId);
+    if (other && other.createdAt < mySession.createdAt) return false;
+  }
+  return true;
+}
+
+// ============================================================
 // 队列驱动：同一 thread 内串行执行，不同 thread 间可并行
 // queueKey = threadId 存在时用 `chatId:threadId`，否则用 `chatId`
 // ============================================================
@@ -421,6 +441,11 @@ async function handleMessageEvent(data: MessageEventData, accountId: string = 'd
 
   logger.info({ userId, chatId, chatType, rootId, threadId, accountId, text: text.slice(0, 100), hasImages: !!images?.length }, 'Received message');
 
+  // ── 多 Agent: Binding Router 选 agent 角色（提前解析，供 @mention 过滤使用） ──
+  const agentId: AgentId = isMultiBotMode()
+    ? resolveAgent(config.agent.bindings, { accountId, chatId, userId, chatType: chatType as 'group' | 'p2p' })
+    : 'dev'; // 单 bot 模式默认 dev agent
+
   // ── @mention 过滤（必须在所有副作用之前，避免对不该响应的消息发送错误提示） ──
   if (isMultiBotMode()) {
     const botOpenId = accountManager.getBotOpenId(accountId) ?? '';
@@ -430,29 +455,36 @@ async function handleMessageEvent(data: MessageEventData, accountId: string = 'd
       ? accountManager.getBotOpenId(groupConfig.commander)
       : undefined;
 
-    if (!shouldRespond(chatType, mentions, botOpenId, allBotOpenIds, commanderOpenId)) {
+    // 话题内消息：话题创建者 bot 无需 @mention 即可响应后续消息
+    // 仅限话题发起用户或 owner — 非 owner 的旁观者无 @mention 时静默忽略，
+    // 避免好奇路人的消息干扰 dev-bot 正在进行的工作
+    let threadBypass = false;
+    if (threadId && isThreadCreatorAgent(threadId, agentId)) {
+      const ts = sessionManager.getThreadSession(threadId, agentId);
+      if (ts && (isOwner(userId) || ts.userId === userId)) {
+        threadBypass = true;
+        logger.debug({ threadId, agentId, accountId }, 'Thread creator bypass: responding without @mention');
+      }
+    }
+
+    if (!threadBypass && !shouldRespond(chatType, mentions, botOpenId, allBotOpenIds, commanderOpenId)) {
       return;
     }
   } else {
     // 单 bot 模式：群聊中需要 @机器人 才响应
-    // 例外：图片消息无法携带 @mention，在已有活跃话题（bot 已参与交互）中放行
+    // 例外：话题内后续消息（文本或图片）有活跃 thread session 则放行
     if (chatType === 'group' && !mentionedBot) {
-      const allowImageInThread = images?.length && threadId && sessionManager.getThreadSession(threadId);
-      if (!allowImageInThread) {
+      const inActiveThread = threadId && sessionManager.getThreadSession(threadId);
+      if (!inActiveThread) {
         return;
       }
-      logger.debug({ messageId, threadId }, 'Image message allowed in group chat: active thread session exists');
+      logger.debug({ messageId, threadId }, 'Message allowed in group thread: active thread session exists');
     }
   }
 
   // root_id 单独出现（无 thread_id）= 主面板引用回复，不是话题内消息，正常处理即可
 
   const effectiveThreadId = threadId;
-
-  // ── 多 Agent: Binding Router 选 agent 角色 ──
-  const agentId: AgentId = isMultiBotMode()
-    ? resolveAgent(config.agent.bindings, { accountId, chatId, userId, chatType: chatType as 'group' | 'p2p' })
-    : 'dev'; // 单 bot 模式默认 dev agent
 
   const agentConfig = agentRegistry.get(agentId);
   logger.debug({ agentId, accountId }, 'Agent resolved');
