@@ -42,7 +42,7 @@ export interface MessagePort {
   }>;
 
   /** 在话题内回复 */
-  replyInThread(threadRootMsgId: string, content: MessageContent): Promise<string | undefined>;
+  replyInThread(threadReplyMsgId: string, content: MessageContent): Promise<string | undefined>;
 }
 
 // ─── 入站消息 ──────────────────────────────────────────────

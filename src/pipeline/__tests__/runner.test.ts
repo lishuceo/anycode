@@ -70,7 +70,7 @@ vi.mock('../reviewer.js', () => ({
 }));
 
 vi.mock('../../feishu/thread-utils.js', () => ({
-  ensureThread: vi.fn().mockResolvedValue({ threadRootMsgId: 'root1', greetingMsgId: 'greeting_1' }),
+  ensureThread: vi.fn().mockResolvedValue({ threadReplyMsgId: 'root1', greetingMsgId: 'greeting_1' }),
 }));
 
 // Use a dynamic import pattern to handle the store mock properly
@@ -144,7 +144,7 @@ describe('Pipeline Runner', () => {
   });
 
   describe('createPendingPipeline with pre-created thread', () => {
-    it('should skip ensureThread when threadRootMsgId is provided', async () => {
+    it('should skip ensureThread when threadReplyMsgId is provided', async () => {
       vi.mocked(ensureThread).mockClear();
 
       await createPendingPipeline({
@@ -154,13 +154,13 @@ describe('Pipeline Runner', () => {
         rootId: 'root1',
         prompt: 'task',
         workingDir: '/tmp/isolated-workspace',
-        threadRootMsgId: 'pre-created-root',
+        threadReplyMsgId: 'pre-created-root',
       });
 
       expect(ensureThread).not.toHaveBeenCalled();
     });
 
-    it('should call ensureThread when threadRootMsgId is not provided', async () => {
+    it('should call ensureThread when threadReplyMsgId is not provided', async () => {
       vi.mocked(ensureThread).mockClear();
 
       await createPendingPipeline({
@@ -174,21 +174,21 @@ describe('Pipeline Runner', () => {
       expect(ensureThread).toHaveBeenCalledWith('chat1', 'user1', 'msg2', undefined, undefined);
     });
 
-    it('should store pre-created threadRootMsgId in pipeline record', async () => {
+    it('should store pre-created threadReplyMsgId in pipeline record', async () => {
       const pipelineId = await createPendingPipeline({
         chatId: 'chat1',
         userId: 'user1',
         messageId: 'msg1',
         prompt: 'task',
         workingDir: '/tmp/isolated',
-        threadRootMsgId: 'my-thread-root',
+        threadReplyMsgId: 'my-thread-root',
       });
 
       const record = pipelineStore.get(pipelineId);
-      expect(record!.threadRootMsgId).toBe('my-thread-root');
+      expect(record!.threadReplyMsgId).toBe('my-thread-root');
     });
 
-    it('should use pre-created threadRootMsgId for confirm card reply', async () => {
+    it('should use pre-created threadReplyMsgId for confirm card reply', async () => {
       vi.mocked(feishuClient.replyCardInThread).mockClear();
 
       await createPendingPipeline({
@@ -197,7 +197,7 @@ describe('Pipeline Runner', () => {
         messageId: 'msg1',
         prompt: 'task',
         workingDir: '/tmp/isolated',
-        threadRootMsgId: 'my-thread-root',
+        threadReplyMsgId: 'my-thread-root',
       });
 
       expect(feishuClient.replyCardInThread).toHaveBeenCalledWith(
@@ -213,7 +213,7 @@ describe('Pipeline Runner', () => {
         messageId: 'msg1',
         prompt: 'build feature',
         workingDir: '/tmp/workspaces/my-repo-abc123',
-        threadRootMsgId: 'root1',
+        threadReplyMsgId: 'root1',
       });
 
       const record = pipelineStore.get(pipelineId);

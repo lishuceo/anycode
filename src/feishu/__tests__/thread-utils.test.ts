@@ -64,7 +64,7 @@ describe('ensureThread', () => {
         'dev',                 // agentId — default
       );
       // Reply target should be rootId (message_id for reply_in_thread)
-      expect(result.threadRootMsgId).toBe('om_root_msg_id');
+      expect(result.threadReplyMsgId).toBe('om_root_msg_id');
       expect(result.greetingMsgId).toBeUndefined();
     });
 
@@ -95,7 +95,7 @@ describe('ensureThread', () => {
         'msg-new',         // original user message as rootMessageId
         'dev',             // agentId — default
       );
-      expect(result.threadRootMsgId).toBe('msg-new');
+      expect(result.threadReplyMsgId).toBe('msg-new');
       expect(result.greetingMsgId).toBe('bot-card-msg-1');
     });
 
@@ -108,7 +108,7 @@ describe('ensureThread', () => {
         'chat1', 'user1', 'omt_stale', 'msg-new', 'dev',
       );
       expect(mockCreateThreadWithCard).not.toHaveBeenCalled();
-      expect(result.threadRootMsgId).toBe('msg-new');
+      expect(result.threadReplyMsgId).toBe('msg-new');
     });
 
     it('should fallback gracefully when thread creation fails', async () => {
@@ -119,7 +119,7 @@ describe('ensureThread', () => {
 
       const result = await ensureThread('chat1', 'user1', 'msg-new');
 
-      expect(result.threadRootMsgId).toBeUndefined();
+      expect(result.threadReplyMsgId).toBeUndefined();
       expect(result.greetingMsgId).toBeUndefined();
       expect(mockSessionSetThread).not.toHaveBeenCalled();
     });

@@ -773,23 +773,23 @@ async function simulateExecutePipelineTask(
   messageId: string,
   rootId: string | undefined,
   deps: {
-    ensureThread: (chatId: string, userId: string, messageId: string, rootId?: string) => Promise<{ threadRootMsgId?: string; greetingMsgId?: string }>;
+    ensureThread: (chatId: string, userId: string, messageId: string, rootId?: string) => Promise<{ threadReplyMsgId?: string; greetingMsgId?: string }>;
     routeWorkspace: (prompt: string, chatId: string, userId: string, rootId?: string) => Promise<{ decision: string; workdir?: string; mode?: string; question?: string }>;
   },
 ) {
   const { sessionManager } = await import('../../session/manager.js');
   const { feishuClient } = await import('../client.js');
 
-  let threadRootMsgId: string | undefined;
+  let threadReplyMsgId: string | undefined;
 
   try {
     // 1. ensureThread
     const threadResult = await deps.ensureThread(chatId, userId, messageId, rootId);
-    threadRootMsgId = threadResult.threadRootMsgId;
+    threadReplyMsgId = threadResult.threadReplyMsgId;
 
     // 2. Routing feedback
-    if (threadRootMsgId) {
-      await feishuClient.replyTextInThread(threadRootMsgId, '🔍 正在分析工作目录...');
+    if (threadReplyMsgId) {
+      await feishuClient.replyTextInThread(threadReplyMsgId, '🔍 正在分析工作目录...');
     }
 
     // 3. Route workspace
@@ -798,17 +798,17 @@ async function simulateExecutePipelineTask(
     // 4. Handle need_clarification — save routing state for follow-up
     if (decision.decision === 'need_clarification') {
       const question = decision.question || '请提供更多信息，我需要知道你想要操作哪个仓库或项目。';
-      if (threadRootMsgId) {
-        if (!sessionManager.getThreadSession(threadRootMsgId)) {
-          sessionManager.upsertThreadSession(threadRootMsgId, chatId, userId, '/tmp/work');
+      if (threadReplyMsgId) {
+        if (!sessionManager.getThreadSession(threadReplyMsgId)) {
+          sessionManager.upsertThreadSession(threadReplyMsgId, chatId, userId, '/tmp/work');
         }
-        sessionManager.setThreadRoutingState(threadRootMsgId, {
+        sessionManager.setThreadRoutingState(threadReplyMsgId, {
           status: 'pending_clarification',
           originalPrompt: prompt,
           question,
           retryCount: 0,
         });
-        await feishuClient.replyTextInThread(threadRootMsgId, question);
+        await feishuClient.replyTextInThread(threadReplyMsgId, question);
       } else {
         await feishuClient.replyText(messageId, question);
       }
@@ -823,8 +823,8 @@ async function simulateExecutePipelineTask(
       workingDir = isolated.workingDir;
     } catch (err) {
       const errorMsg = `❌ 无法创建隔离工作区: ${(err as Error).message}`;
-      if (threadRootMsgId) {
-        await feishuClient.replyTextInThread(threadRootMsgId, errorMsg);
+      if (threadReplyMsgId) {
+        await feishuClient.replyTextInThread(threadReplyMsgId, errorMsg);
       } else {
         await feishuClient.replyText(messageId, errorMsg);
       }
@@ -835,7 +835,7 @@ async function simulateExecutePipelineTask(
     return {
       aborted: false as const,
       pipelineParams: {
-        chatId, userId, messageId, rootId, prompt, workingDir, threadRootMsgId,
+        chatId, userId, messageId, rootId, prompt, workingDir, threadReplyMsgId,
       },
     };
   } catch (err) {
@@ -854,7 +854,7 @@ describe('executePipelineTask routing + isolation', () => {
       chatId: 'chat1', userId: 'user1', workingDir: '/tmp/work', status: 'idle',
       threadId: 'thread-1',
     });
-    mockEnsureThread.mockResolvedValue({ threadRootMsgId: 'root-msg-1', greetingMsgId: 'greeting-1' });
+    mockEnsureThread.mockResolvedValue({ threadReplyMsgId: 'root-msg-1', greetingMsgId: 'greeting-1' });
   });
 
   it('should send routing feedback before routing', async () => {
@@ -930,7 +930,7 @@ describe('executePipelineTask routing + isolation', () => {
 
     expect(result.aborted).toBe(false);
     expect(result.pipelineParams.workingDir).toBe('/tmp/workspaces/my-repo-abc');
-    expect(result.pipelineParams.threadRootMsgId).toBe('root-msg-1');
+    expect(result.pipelineParams.threadReplyMsgId).toBe('root-msg-1');
   });
 
   it('should handle isolation failure gracefully', async () => {
@@ -956,7 +956,7 @@ describe('executePipelineTask routing + isolation', () => {
     );
   });
 
-  it('should pass threadRootMsgId through to pipeline params', async () => {
+  it('should pass threadReplyMsgId through to pipeline params', async () => {
     mockRouteWs.mockResolvedValue({ decision: 'use_default', workdir: '/tmp/work' });
     mockExistsSync.mockReturnValue(false);
 
@@ -966,7 +966,7 @@ describe('executePipelineTask routing + isolation', () => {
     );
 
     expect(result.aborted).toBe(false);
-    expect(result.pipelineParams.threadRootMsgId).toBe('root-msg-1');
+    expect(result.pipelineParams.threadReplyMsgId).toBe('root-msg-1');
   });
 
   it('should use default workdir when routing returns no workdir', async () => {
@@ -982,8 +982,8 @@ describe('executePipelineTask routing + isolation', () => {
     expect(result.pipelineParams.workingDir).toBe('/tmp/work');
   });
 
-  it('should reply via replyText when no threadRootMsgId on need_clarification', async () => {
-    mockEnsureThread.mockResolvedValue({ threadRootMsgId: undefined });
+  it('should reply via replyText when no threadReplyMsgId on need_clarification', async () => {
+    mockEnsureThread.mockResolvedValue({ threadReplyMsgId: undefined });
     mockRouteWs.mockResolvedValue({
       decision: 'need_clarification',
       question: '哪个仓库？',

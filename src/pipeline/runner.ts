@@ -37,7 +37,7 @@ export interface CreatePipelineParams {
   prompt: string;
   workingDir: string;
   /** 预创建的话题锚点消息 ID（由调用方 ensureThread 后传入，跳过内部的 ensureThread） */
-  threadRootMsgId?: string;
+  threadReplyMsgId?: string;
 }
 
 /**
@@ -47,13 +47,13 @@ export async function createPendingPipeline(params: CreatePipelineParams): Promi
   const { chatId, userId, messageId, rootId, prompt, workingDir } = params;
   const pipelineId = generatePipelineId();
 
-  // 确保话题存在（如果调用方已提供 threadRootMsgId，跳过）
-  let threadRootMsgId: string | undefined;
-  if (params.threadRootMsgId) {
-    threadRootMsgId = params.threadRootMsgId;
+  // 确保话题存在（如果调用方已提供 threadReplyMsgId，跳过）
+  let threadReplyMsgId: string | undefined;
+  if (params.threadReplyMsgId) {
+    threadReplyMsgId = params.threadReplyMsgId;
   } else {
     const threadResult = await ensureThread(chatId, userId, messageId, rootId, params.threadId);
-    threadRootMsgId = threadResult.threadRootMsgId;
+    threadReplyMsgId = threadResult.threadReplyMsgId;
 
     // 更新问候卡片：显示话题 ID 和工作目录
     const session = sessionManager.getOrCreate(chatId, userId);
@@ -71,8 +71,8 @@ export async function createPendingPipeline(params: CreatePipelineParams): Promi
   // 发送确认卡片
   const confirmCard = buildPipelineConfirmCard(prompt, pipelineId, workingDir);
   let progressMsgId: string | undefined;
-  if (threadRootMsgId) {
-    progressMsgId = await feishuClient.replyCardInThread(threadRootMsgId, confirmCard);
+  if (threadReplyMsgId) {
+    progressMsgId = await feishuClient.replyCardInThread(threadReplyMsgId, confirmCard);
   }
   if (!progressMsgId) {
     progressMsgId = await feishuClient.sendCard(chatId, confirmCard);
@@ -89,7 +89,7 @@ export async function createPendingPipeline(params: CreatePipelineParams): Promi
     userId,
     messageId,
     threadId: resolvedThreadId,
-    threadRootMsgId,
+    threadReplyMsgId,
     progressMsgId,
     workingDir,
     prompt,
@@ -119,7 +119,7 @@ export async function startPipeline(pipelineId: string): Promise<void> {
     }
   }
 
-  const { chatId, userId, prompt, workingDir, progressMsgId, threadRootMsgId } = record;
+  const { chatId, userId, prompt, workingDir, progressMsgId, threadReplyMsgId } = record;
 
   // 获取会话锁
   if (!sessionManager.tryAcquire(chatId, userId)) {
@@ -134,7 +134,7 @@ export async function startPipeline(pipelineId: string): Promise<void> {
 
   // 将 workingDir 绑定到 thread session，确保后续普通消息使用同一工作区
   // 放在 tryAcquire 之后，避免锁获取失败时意外修改 thread session（setThreadWorkingDir 会清空 conversationId）
-  // 使用 record.threadId（omt_xxx）做 thread session key，而非 threadRootMsgId（om_xxx 消息 ID）
+  // 使用 record.threadId（omt_xxx）做 thread session key，而非 threadReplyMsgId（om_xxx 消息 ID）
   const pipelineThreadId = record.threadId;
   if (pipelineThreadId) {
     const existingTs = sessionManager.getThreadSession(pipelineThreadId);
@@ -276,22 +276,22 @@ export async function startPipeline(pipelineId: string): Promise<void> {
       if (!finalUpdated) {
         logger.warn({ pipelineId, progressMsgId }, 'Final card update failed or timed out, sending result as new message');
         // 回退：作为新消息发送最终卡片
-        if (threadRootMsgId) {
-          await feishuClient.replyCardInThread(threadRootMsgId, finalCard);
+        if (threadReplyMsgId) {
+          await feishuClient.replyCardInThread(threadReplyMsgId, finalCard);
         } else {
           await feishuClient.sendCard(chatId, finalCard);
         }
       }
-    } else if (threadRootMsgId) {
-      await feishuClient.replyCardInThread(threadRootMsgId, finalCard);
+    } else if (threadReplyMsgId) {
+      await feishuClient.replyCardInThread(threadReplyMsgId, finalCard);
     } else {
       await feishuClient.sendCard(chatId, finalCard);
     }
 
     // 如果摘要太长，额外发送完整文本
     if (pipelineResult.summary.length > 2500) {
-      if (threadRootMsgId) {
-        await feishuClient.replyTextInThread(threadRootMsgId, pipelineResult.summary);
+      if (threadReplyMsgId) {
+        await feishuClient.replyTextInThread(threadReplyMsgId, pipelineResult.summary);
       } else {
         await feishuClient.sendText(chatId, pipelineResult.summary);
       }
@@ -384,11 +384,11 @@ export async function retryPipeline(pipelineId: string): Promise<string | undefi
     chatId: record.chatId,
     userId: record.userId,
     messageId: record.messageId,
-    rootId: record.threadRootMsgId,
+    rootId: record.threadReplyMsgId,
     threadId: record.threadId,
     prompt: record.prompt,
     workingDir: record.workingDir,
-    threadRootMsgId: record.threadRootMsgId,
+    threadReplyMsgId: record.threadReplyMsgId,
   });
 }
 
