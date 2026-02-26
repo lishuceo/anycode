@@ -1,4 +1,4 @@
-import { existsSync, realpathSync } from 'node:fs';
+import { existsSync, realpathSync, readFileSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { config } from '../config.js';
 import { logger } from '../utils/logger.js';
@@ -25,6 +25,21 @@ export function isAutoWorkspacePath(dir: string): boolean {
       ? realpathSync(resolve(dir))
       : resolve(dir);
     return resolvedDir.startsWith(resolvedBase + '/');
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 判断工作目录是否是 anywhere-code 服务自身的仓库（自改自场景）。
+ * 通过 package.json name 字段匹配，比路径对比更鲁棒（worktree clone 也能识别）。
+ */
+export function isServiceOwnRepo(dir: string): boolean {
+  try {
+    const pkgPath = join(resolve(dir), 'package.json');
+    if (!existsSync(pkgPath)) return false;
+    const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'));
+    return pkg.name === 'feishu-claude-bridge';
   } catch {
     return false;
   }
