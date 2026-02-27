@@ -11,6 +11,7 @@ interface ThreadSessionRow {
   working_dir: string;
   conversation_id: string | null;
   conversation_cwd: string | null;
+  system_prompt_hash: string | null;
   routing_completed: number | null;
   routing_state: string | null;
   pipeline_context: string | null;
@@ -57,6 +58,7 @@ export class SessionDatabase {
   private stmtUpsertThreadSession: Database.Statement;
   private stmtGetThreadSession: Database.Statement;
   private stmtUpdateThreadConversationId: Database.Statement;
+  private stmtResetThreadConversation: Database.Statement;
   private stmtUpdateThreadWorkingDir: Database.Statement;
   private stmtDeleteExpiredThreadSessions: Database.Statement;
   private stmtGetExpiredThreadSessions: Database.Statement;
@@ -198,6 +200,15 @@ export class SessionDatabase {
       this.db.exec('UPDATE schema_version SET version = 9');
     }
 
+    // Migration v9 → v10: add system_prompt_hash column to thread_sessions
+    if (version < 10) {
+      const cols = this.db.prepare("PRAGMA table_info(thread_sessions)").all() as Array<{ name: string }>;
+      if (!cols.some((c) => c.name === 'system_prompt_hash')) {
+        this.db.exec('ALTER TABLE thread_sessions ADD COLUMN system_prompt_hash TEXT');
+      }
+      this.db.exec('UPDATE schema_version SET version = 10');
+    }
+
     this.stmtUpsert = this.db.prepare(`
       INSERT INTO sessions (key, chat_id, user_id, working_dir, conversation_id, conversation_cwd, thread_id, thread_root_message_id, status, created_at, last_active_at)
       VALUES (@key, @chat_id, @user_id, @working_dir, @conversation_id, @conversation_cwd, @thread_id, @thread_root_message_id, @status, @created_at, @last_active_at)
@@ -291,7 +302,11 @@ export class SessionDatabase {
     );
 
     this.stmtUpdateThreadConversationId = this.db.prepare(
-      'UPDATE thread_sessions SET conversation_id = ?, conversation_cwd = ?, updated_at = ? WHERE thread_id = ?',
+      'UPDATE thread_sessions SET conversation_id = ?, conversation_cwd = ?, system_prompt_hash = ?, updated_at = ? WHERE thread_id = ?',
+    );
+
+    this.stmtResetThreadConversation = this.db.prepare(
+      'UPDATE thread_sessions SET conversation_id = NULL, conversation_cwd = NULL, system_prompt_hash = NULL, updated_at = ? WHERE thread_id = ?',
     );
 
     this.stmtUpdateThreadWorkingDir = this.db.prepare(
@@ -447,8 +462,12 @@ export class SessionDatabase {
     return rows.map((r) => this.rowToThreadSession(r));
   }
 
-  updateThreadConversationId(threadId: string, conversationId: string, cwd?: string): void {
-    this.stmtUpdateThreadConversationId.run(conversationId, cwd ?? null, new Date().toISOString(), threadId);
+  updateThreadConversationId(threadId: string, conversationId: string, cwd?: string, systemPromptHash?: string): void {
+    this.stmtUpdateThreadConversationId.run(conversationId, cwd ?? null, systemPromptHash ?? null, new Date().toISOString(), threadId);
+  }
+
+  resetThreadConversation(threadId: string): void {
+    this.stmtResetThreadConversation.run(new Date().toISOString(), threadId);
   }
 
   updateThreadWorkingDir(threadId: string, workingDir: string): void {
@@ -534,6 +553,7 @@ export class SessionDatabase {
       workingDir: row.working_dir,
       conversationId: row.conversation_id ?? undefined,
       conversationCwd: row.conversation_cwd ?? undefined,
+      systemPromptHash: row.system_prompt_hash ?? undefined,
       routingCompleted: !!row.routing_completed,
       routingState,
       pipelineContext,

@@ -34,6 +34,8 @@ export interface ClaudeResult {
   costUsd?: number;
   /** 总轮数 */
   numTurns?: number;
+  /** System prompt 结构性哈希（不含 historySummaries），用于自动失效旧 session */
+  systemPromptHash?: string;
   /** 是否需要重启 (workspace 变更后) */
   needsRestart?: boolean;
   /** 重启目标工作目录 */
