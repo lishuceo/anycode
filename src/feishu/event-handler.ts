@@ -1039,7 +1039,7 @@ async function executeClaudeTask(
   try {
     // Resume 策略：activeConversationId/activeConversationCwd 已在上方提前计算
     // 额外检查 systemPromptHash：代码部署后 prompt 变化时自动使旧 session 失效
-    const activePromptHash = threadId ? threadSession?.systemPromptHash : undefined;
+    const activePromptHash = threadId ? threadSession?.systemPromptHash : session.systemPromptHash;
     const canResume = activeConversationId
       && (!activeConversationCwd || activeConversationCwd === workingDir);
     if (activeConversationId && !canResume) {
@@ -1150,7 +1150,7 @@ async function executeClaudeTask(
         if (threadId) {
           sessionManager.setThreadConversationId(threadId, restartResult.sessionId, result.newWorkingDir, agentId, restartResult.systemPromptHash);
         }
-        sessionManager.setConversationId(chatId, userId, restartResult.sessionId, result.newWorkingDir, agentId);
+        sessionManager.setConversationId(chatId, userId, restartResult.sessionId, result.newWorkingDir, agentId, restartResult.systemPromptHash);
       } else {
         logger.warn(
           { chatId, userId, threadId },
@@ -1217,7 +1217,7 @@ async function executeClaudeTask(
       if (threadId) {
         sessionManager.setThreadConversationId(threadId, result.sessionId, workingDir, agentId, result.systemPromptHash);
       }
-      sessionManager.setConversationId(chatId, userId, result.sessionId, workingDir, agentId);
+      sessionManager.setConversationId(chatId, userId, result.sessionId, workingDir, agentId, result.systemPromptHash);
     }
 
     // 进度卡片切换为完成态
@@ -1319,7 +1319,7 @@ async function executeDirectTask(
     const activeConversationCwd = eventThreadId
       ? threadSession?.conversationCwd
       : session.conversationCwd;
-    const activePromptHash = eventThreadId ? threadSession?.systemPromptHash : undefined;
+    const activePromptHash = eventThreadId ? threadSession?.systemPromptHash : session.systemPromptHash;
     const canResume = activeConversationId
       && (!activeConversationCwd || activeConversationCwd === workingDir);
     // 有图片时不 resume（AsyncIterable 与 resume 不兼容）
@@ -1376,7 +1376,7 @@ async function executeDirectTask(
       }
       // 非话题时也保存到全局 session（主面板后续消息可 resume）
       if (!eventThreadId) {
-        sessionManager.setConversationId(chatId, userId, result.sessionId, workingDir, agentId);
+        sessionManager.setConversationId(chatId, userId, result.sessionId, workingDir, agentId, result.systemPromptHash);
       }
     }
 
