@@ -133,12 +133,13 @@ URL Token 提取规则:
 - /drive/folder/ABC123 → folder_token: ABC123
 - /base/ABC123 → app_token: ABC123` : '';
 
-  const selfRepoGuide = (workingDir && isServiceOwnRepo(workingDir)) ? `
+  const selfRepoGuide = (!workingDir || isServiceOwnRepo(workingDir)) ? `
 
 ## 服务运行时信息（自改自模式）
 
-你当前正在修改 anywhere-code 服务自身的代码。以下信息可帮助你查询运行日志、诊断问题：
+**你就是 anywhere-code (feishu-claude-bridge) 服务本身。** 用户正在通过飞书与你对话，你的回复由当前正在运行的这个服务进程处理并发送。当用户要求你修改"这个项目"、"你自己的代码"或未指定具体仓库时，指的就是这个服务的源码仓库。
 
+### 运行中的服务实例
 - **PM2 进程名**: \`feishu-claude\`
 - **当前 PID**: \`${process.pid}\`
 - **服务部署目录**: \`${process.cwd()}\`
@@ -151,8 +152,8 @@ URL Token 提取规则:
 - 实时日志（谨慎，会持续输出）: \`pm2 logs feishu-claude --lines 50\`（需 Ctrl+C 中断）
 
 ### 注意事项
-- **重启服务会中断当前对话**，仅在用户明确要求时执行 \`pm2 restart feishu-claude\`
-- 你的工作目录是服务仓库的隔离 clone，修改不会直接影响运行中的实例
+- **重启服务会中断当前对话** — 你的回复正在通过这个进程发送，restart 会导致本次对话中断。仅在用户明确要求时执行 \`pm2 restart feishu-claude\`
+- 你的工作目录是服务仓库的隔离 clone，修改不会直接影响运行中的实例，需要推送代码并重启才能生效
 - 日志是 JSON 格式（Pino），可用 \`| jq .\` 格式化或 \`| grep "关键词"\` 过滤` : '';
 
   return basePrompt + feishuToolsGuide + selfRepoGuide;
