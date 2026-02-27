@@ -1124,9 +1124,10 @@ async function executeClaudeTask(
       // - 不传 resumeSessionId（Agent SDK 不支持跨 cwd resume，会 exit code 1）
       // - 不传 onWorkspaceChanged（不触发二次 restart）
       // - disableWorkspaceTool: 完全移除 setup_workspace MCP tool，防止无限循环
+      // - 使用 effectivePrompt（含聊天历史）而非裸 prompt，避免 restart 后丢失对话上下文
       const restartResult = await claudeExecutor.execute({
         sessionKey,
-        prompt,
+        prompt: effectivePrompt,
         workingDir: result.newWorkingDir,
         readOnly,
         model: agentCfg?.model,
