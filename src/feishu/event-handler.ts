@@ -1656,7 +1656,10 @@ async function parseMessage(data: MessageEventData): Promise<ParsedMessage | nul
   let images: ImageAttachment[] | undefined;
 
   if (message.message_type === 'post') {
-    // 富文本消息：解析 content 中的 text 和 img 元素
+    // 富文本消息：解析 content 中的 text、at、img 元素
+    // at 元素需要区分 bot（跳过）和人类（保留 @名字给 Claude）
+    const selfBotOpenId = feishuClient.botOpenId;
+    const postAllBotIds = isMultiBotMode() ? accountManager.getAllBotOpenIds() : new Set<string>();
     try {
       const content = JSON.parse(message.content);
       // post 内容结构有两种形式:
@@ -1682,11 +1685,21 @@ async function parseMessage(data: MessageEventData): Promise<ParsedMessage | nul
         for (const element of paragraph) {
           if (element.tag === 'text') {
             textParts.push(element.text as string || '');
+          } else if (element.tag === 'at') {
+            // @mention：人类用户保留为 @名字（让 Claude 看到），bot 的跳过
+            // post 中 at 元素不含 mention.key 占位符，后续 text.replace(mention.key) 不会清理
+            const atName = element.user_name as string || '';
+            // 通过 message.mentions 判断是否为 bot
+            const mentionOpenId = message.mentions?.find(m => m.name === atName)?.id.open_id ?? '';
+            const isBot = (selfBotOpenId && mentionOpenId === selfBotOpenId) || postAllBotIds.has(mentionOpenId);
+            if (!isBot && atName) {
+              textParts.push(`@${atName}`);
+            }
           } else if (element.tag === 'img') {
             const imageKey = element.image_key as string | undefined;
             if (imageKey) imageKeys.push(imageKey);
           }
-          // at/a/emotion 等标签忽略（@mention 通过 message.mentions 处理）
+          // a/emotion 等标签忽略
         }
       }
 
@@ -1753,17 +1766,24 @@ async function parseMessage(data: MessageEventData): Promise<ParsedMessage | nul
   }
 
   // 清理 @mention 标记，检测是否 @了机器人
+  // @自己 bot → 去掉（占位符无意义），@其他 bot → 去掉，@人类用户 → 替换成 @名字（保留语义给 Claude）
   let mentionedBot = false;
   const botOpenId = feishuClient.botOpenId;
+  const allBotIds = isMultiBotMode() ? accountManager.getAllBotOpenIds() : new Set<string>();
   if (message.mentions) {
+    logger.info({ mentionCount: message.mentions.length, mentions: message.mentions.map(m => ({ key: m.key, name: m.name, openId: m.id.open_id })), botOpenId, allBotIds: [...allBotIds], textBefore: text }, '@mention debug');
     for (const mention of message.mentions) {
-      text = text.replace(mention.key, '').trim();
-      if (botOpenId) {
-        // botOpenId 已知：精确匹配
-        if (mention.id.open_id === botOpenId) mentionedBot = true;
+      const openId = mention.id.open_id ?? '';
+      const isSelfBot = botOpenId ? openId === botOpenId : false;
+      const isAnyBot = isSelfBot || allBotIds.has(openId);
+
+      if (isAnyBot) {
+        // bot mention：去掉占位符
+        text = text.replace(mention.key, '').trim();
+        if (isSelfBot) mentionedBot = true;
       } else {
-        // botOpenId 未知（API 调用失败）：回退到旧行为
-        mentionedBot = true;
+        // 人类用户 @mention：替换为 @名字，让 Claude 看到被 @ 的人
+        text = text.replace(mention.key, `@${mention.name}`);
       }
     }
   }
