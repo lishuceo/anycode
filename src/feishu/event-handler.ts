@@ -1771,7 +1771,6 @@ async function parseMessage(data: MessageEventData): Promise<ParsedMessage | nul
   const botOpenId = feishuClient.botOpenId;
   const allBotIds = isMultiBotMode() ? accountManager.getAllBotOpenIds() : new Set<string>();
   if (message.mentions) {
-    logger.info({ mentionCount: message.mentions.length, mentions: message.mentions.map(m => ({ key: m.key, name: m.name, openId: m.id.open_id })), botOpenId, allBotIds: [...allBotIds], textBefore: text }, '@mention debug');
     for (const mention of message.mentions) {
       const openId = mention.id.open_id ?? '';
       const isSelfBot = botOpenId ? openId === botOpenId : false;
