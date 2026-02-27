@@ -688,3 +688,73 @@ function computeFinalScore(m: ScoredMemory): number {
 | event-handler.ts (对话结束) | 触发 extractor.extract() |
 | invoke_agent context | 可选从记忆中补充 context（"该用户偏好..."） |
 | /memory slash command | 走 event-handler.ts 命令路由，不进入 Agent 执行 |
+
+---
+
+## 十三、Review 发现与修正
+
+> 基于 4-Agent Swarm Review 的关键发现，对原方案进行以下修正。
+
+### Critical 修正
+
+1. **FTS5 content= 需要手动 trigger 同步**
+   - 原方案未定义同步 trigger，导致 FTS5 索引与主表不一致
+   - 修正: 补充 `AFTER INSERT / AFTER DELETE / AFTER UPDATE` 三个 trigger，确保主表变更时 FTS5 索引同步更新
+
+2. **"对话结束"触发时机不存在**
+   - SDK 无 "对话结束" 事件，无法可靠判断对话是否结束
+   - 修正: 改为 **每 N 轮对话或距上次抽取 M 分钟** 触发记忆抽取（Phase 0 暂不实现抽取触发，仅验证存储和检索）
+
+3. **对话消息收集无数据源**
+   - executor 当前不暴露完整对话消息流
+   - 修正: 后续需改造 executor 或使用 prompt+output 对作为数据源（Phase 0 不涉及）
+
+4. **Prompt injection → 记忆投毒**
+   - 用户可通过构造恶意消息注入虚假记忆
+   - 修正: 引入 **L0/L1/L2 置信度分层**，自动抽取的记忆为 L0（confidence 上限 0.7），用户确认后升级为 L1（上限 0.9），手动创建为 L2（上限 1.0）
+
+5. **跨会话信息泄露**
+   - 缺少 workspace 维度隔离，不同仓库的记忆可能互相泄露
+   - 修正: 增加 `workspace_dir` 隔离维度，检索时按 workspace 过滤
+
+### 成本修正
+
+- **抽取模型**: 从 Haiku 改为 **Qwen（DashScope）**，与 embedding 共用同一个 `DASHSCOPE_API_KEY`
+- **Embedding**: 使用 **text-embedding-v4（DashScope）**，维度 1024（非 OpenAI 的 1536）
+- **搜索延迟目标**: 修正为 <200ms (API 调用) / <100ms (本地 BM25-only)
+
+### 架构修正
+
+- **独立数据库文件**: `data/memories.db`，不与 sessions.db 共享连接（避免 DDL 干扰）
+- **两阶段写入**: Phase 1 同步写入 main + FTS5（trigger 自动同步），Phase 2 异步 fire-and-forget embedding + vec0
+- **sqlite-vec 运行时检测**: 加载失败时 `vectorEnabled = false`，所有 vec0 操作走 BM25-only fallback
+- **去除主表 embedding BLOB 列**: 向量仅存 vec0 虚拟表，主表不冗余
+
+---
+
+## 十四、技术原型验证（Phase 0）
+
+在 Phase 1 之前新增 **Phase 0 技术原型**，验证以下关键技术可行性后再实施完整系统：
+
+1. **sqlite-vec 在 Node.js/better-sqlite3 环境下是否可用** — 运行时动态加载 + graceful fallback
+2. **FTS5 external content + trigger 同步** — INSERT/DELETE/UPDATE 三向同步正确性
+3. **DashScope embedding API 兼容性** — 通过 OpenAI SDK compatible-mode 调用
+4. **混合检索 score fusion** — BM25 + vector 加权融合算法验证
+5. **BM25-only 降级** — sqlite-vec 不可用时纯 BM25 检索仍可工作
+
+### Phase 0 文件结构
+
+```
+src/memory/
+  types.ts           # 核心类型定义
+  embeddings.ts      # Embedding 提供者 (DashScope + Noop fallback)
+  database.ts        # 独立 SQLite 数据库 (schema + prepared statements)
+  store.ts           # CRUD + 两阶段写入
+  search.ts          # 混合检索 + 评分
+  index.ts           # 门面导出
+  __tests__/
+    database.test.ts
+    store.test.ts
+    search.test.ts
+    embeddings.test.ts
+```
