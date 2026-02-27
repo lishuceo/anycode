@@ -54,7 +54,7 @@ export async function executeCodexReview(
   try {
     // 预获取 git diff，内嵌到 prompt
     const diff = await getGitDiff(workingDir);
-    const prompt = `${content}\n\n## Git Diff\n\`\`\`diff\n${diff}\n\`\`\``;
+    const prompt = `${CODEX_CODE_REVIEW_PROMPT}\n\n---\n\n${content}\n\n## Git Diff\n\`\`\`diff\n${diff}\n\`\`\``;
 
     const { stdout } = await execFileAsync(
       config.codex.command,

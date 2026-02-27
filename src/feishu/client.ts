@@ -362,6 +362,34 @@ export class FeishuClient {
   }
 
   /**
+   * 获取群的所有成员列表
+   */
+  async getChatMembers(chatId: string): Promise<Array<{
+    memberId: string;
+    name: string;
+    memberIdType: string;
+    tenantKey?: string;
+  }>> {
+    const members: Array<{ memberId: string; name: string; memberIdType: string; tenantKey?: string }> = [];
+    for await (const page of await this.client.im.chatMembers.getWithIterator({
+      path: { chat_id: chatId },
+      params: { member_id_type: 'open_id', page_size: 100 },
+    })) {
+      for (const item of page?.items ?? []) {
+        if (item.member_id) {
+          members.push({
+            memberId: item.member_id,
+            name: item.name ?? '[未知]',
+            memberIdType: item.member_id_type ?? 'open_id',
+            tenantKey: item.tenant_key,
+          });
+        }
+      }
+    }
+    return members;
+  }
+
+  /**
    * 下载消息中的图片资源
    * 使用 im.messageResource.get API（支持下载用户发送的图片）
    */
