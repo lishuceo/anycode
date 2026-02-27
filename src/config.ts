@@ -51,6 +51,8 @@ export const config = {
       drive: process.env.FEISHU_TOOLS_DRIVE !== 'false',
       /** 多维表格工具 */
       bitable: process.env.FEISHU_TOOLS_BITABLE !== 'false',
+      /** 群成员工具 */
+      chat: process.env.FEISHU_TOOLS_CHAT !== 'false',
     },
   },
 

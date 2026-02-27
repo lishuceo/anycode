@@ -4,6 +4,7 @@ import { feishuDocTool } from './doc.js';
 import { feishuWikiTool } from './wiki.js';
 import { feishuDriveTool } from './drive.js';
 import { feishuBitableTool } from './bitable.js';
+import { feishuChatTool } from './chat.js';
 
 /**
  * 创建飞书工具 MCP 服务器
@@ -19,6 +20,7 @@ export function createFeishuToolsMcpServer(chatId?: string) {
   if (config.feishu.tools.wiki) tools.push(feishuWikiTool());
   if (config.feishu.tools.drive) tools.push(feishuDriveTool(chatId));
   if (config.feishu.tools.bitable) tools.push(feishuBitableTool());
+  if (config.feishu.tools.chat) tools.push(feishuChatTool(chatId));
 
   // 边界条件修复 (review 反馈): 四个子开关全 false 时不注入空 MCP 服务器
   if (tools.length === 0) return undefined;

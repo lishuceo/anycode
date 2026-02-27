@@ -122,6 +122,7 @@ function buildWorkspaceSystemPrompt(workingDir?: string): string {
 - **feishu_wiki**: 浏览知识库。链接格式: https://xxx.feishu.cn/wiki/TOKEN
 - **feishu_drive**: 浏览云空间文件。
 - **feishu_bitable**: 读写多维表格。链接格式: https://xxx.feishu.cn/base/TOKEN
+- **feishu_chat_members**: 获取当前群聊的成员列表 (open_id + 姓名)。在需要了解群内有谁、@某人、分配任务时使用。
 
 URL Token 提取规则:
 - /docx/ABC123 → doc_token: ABC123
@@ -361,8 +362,13 @@ export class ClaudeExecutor {
           }
           // 只读模式 MCP 工具权限：deny-by-default，仅放行已知只读 action
           if (readOnly && toolName.startsWith('mcp__')) {
-            // 飞书工具：仅放行已知的只读 action
-            if (toolName.includes('feishu-tools')) {
+            // 飞书工具：仅放行已知的只读 action 和只读工具（精确匹配 server 名，避免命名碰撞）
+            if (toolName.startsWith('mcp__feishu-tools__')) {
+              // feishu_chat_members 整体为只读工具（无 action 参数），精确匹配完整工具名
+              if (toolName === 'mcp__feishu-tools__feishu_chat_members') {
+                logger.info({ toolName, readOnly }, 'canUseTool allowed — read-only feishu_chat_members tool');
+                return { behavior: 'allow' as const, updatedInput: inputObj };
+              }
               const action = inputObj.action as string;
               const readOnlyActions = new Set([
                 'read', 'list_blocks',                              // doc
@@ -375,8 +381,8 @@ export class ClaudeExecutor {
                 return { behavior: 'allow' as const, updatedInput: inputObj };
               }
             }
-            // discussion-tools: Chat Agent 话题升级工具，readonly 下允许
-            if (toolName.includes('discussion-tools')) {
+            // discussion-tools: Chat Agent 话题升级工具，readonly 下允许（精确匹配 server 名前缀）
+            if (toolName.startsWith('mcp__discussion-tools__')) {
               logger.info({ toolName, readOnly }, 'canUseTool allowed — discussion tool in read-only mode');
               return { behavior: 'allow' as const, updatedInput: inputObj };
             }
