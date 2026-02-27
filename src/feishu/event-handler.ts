@@ -1689,9 +1689,9 @@ async function parseMessage(data: MessageEventData): Promise<ParsedMessage | nul
             // @mention：人类用户保留为 @名字（让 Claude 看到），bot 的跳过
             // post 中 at 元素不含 mention.key 占位符，后续 text.replace(mention.key) 不会清理
             const atName = element.user_name as string || '';
-            // 通过 message.mentions 判断是否为 bot
-            const mentionOpenId = message.mentions?.find(m => m.name === atName)?.id.open_id ?? '';
-            const isBot = (selfBotOpenId && mentionOpenId === selfBotOpenId) || postAllBotIds.has(mentionOpenId);
+            const atUserId = element.user_id as string || '';
+            // 直接用 user_id（open_id）判断是否为 bot，比 name 匹配更可靠
+            const isBot = (selfBotOpenId && atUserId === selfBotOpenId) || postAllBotIds.has(atUserId);
             if (!isBot && atName) {
               textParts.push(`@${atName}`);
             }
