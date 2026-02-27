@@ -1063,6 +1063,11 @@ async function executeClaudeTask(
     const customSystemPrompt = readPersonaFile(agentId);
     const knowledgeContent = loadKnowledgeContent(agentId);
 
+    // 后续消息（有 conversationId）不允许切换工作区：
+    // 首条消息的路由已确定 workingDir，后续切换会触发 restart 导致上下文丢失
+    // （Agent SDK 不支持跨 cwd resume，restart 只能起新 session）
+    const isFirstMessage = !activeConversationId;
+
     const result = await claudeExecutor.execute({
       sessionKey,
       prompt: effectivePrompt,
@@ -1078,11 +1083,12 @@ async function executeClaudeTask(
       resumeSessionId: images?.length ? undefined : (canResume ? activeConversationId : undefined),
       storedSystemPromptHash: activePromptHash,
       onProgress,
-      onWorkspaceChanged,
+      onWorkspaceChanged: isFirstMessage ? onWorkspaceChanged : undefined,
       onTurn,
       historySummaries,
       images,
       knowledgeContent,
+      disableWorkspaceTool: !isFirstMessage,
       ...(customSystemPrompt ? { systemPromptOverride: customSystemPrompt } : {}),
     });
 
@@ -1124,9 +1130,10 @@ async function executeClaudeTask(
       // - 不传 resumeSessionId（Agent SDK 不支持跨 cwd resume，会 exit code 1）
       // - 不传 onWorkspaceChanged（不触发二次 restart）
       // - disableWorkspaceTool: 完全移除 setup_workspace MCP tool，防止无限循环
+      // - 使用 effectivePrompt（含聊天历史）而非裸 prompt，避免 restart 后丢失对话上下文
       const restartResult = await claudeExecutor.execute({
         sessionKey,
-        prompt,
+        prompt: effectivePrompt,
         workingDir: result.newWorkingDir,
         readOnly,
         model: agentCfg?.model,
