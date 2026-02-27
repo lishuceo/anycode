@@ -24,8 +24,7 @@ import { resolveAgent, shouldRespond } from '../agent/router.js';
 import { agentRegistry } from '../agent/registry.js';
 import { accountManager } from './multi-account.js';
 import type { AgentId, AgentConfig } from '../agent/types.js';
-import { buildChatAgentPrompt } from '../agent/prompts/chat.js';
-import { readPersonaFile } from '../agent/config-loader.js';
+import { readPersonaFile, loadKnowledgeContent } from '../agent/config-loader.js';
 import { createDiscussionMcpServer } from '../agent/tools/discussion.js';
 
 // 注册审批通过后的消息重新入队回调（避免 approval.ts → event-handler.ts 循环依赖）
@@ -1052,6 +1051,7 @@ async function executeClaudeTask(
     const readOnly = agentCfg?.readOnly ?? !isOwner(userId);
     // 自定义 agent 支持 persona（dev agent 没配置时 → undefined → 使用默认 buildWorkspaceSystemPrompt）
     const customSystemPrompt = readPersonaFile(agentId);
+    const knowledgeContent = loadKnowledgeContent(agentId);
 
     const result = await claudeExecutor.execute({
       sessionKey,
@@ -1071,6 +1071,7 @@ async function executeClaudeTask(
       onTurn,
       historySummaries,
       images,
+      knowledgeContent,
       ...(customSystemPrompt ? { systemPromptOverride: customSystemPrompt } : {}),
     });
 
@@ -1126,6 +1127,7 @@ async function executeClaudeTask(
         onProgress,
         onTurn,
         historySummaries,
+        knowledgeContent,
         disableWorkspaceTool: true,
         ...(customSystemPrompt ? { systemPromptOverride: customSystemPrompt } : {}),
       });
@@ -1270,7 +1272,7 @@ async function executeDirectTask(
   userId: string,
   messageId: string,
   images?: ImageAttachment[],
-  agentId: AgentId = 'chat',
+  agentId: AgentId = 'pm',
   eventThreadId?: string,
   rootId?: string,
 ): Promise<void> {
@@ -1331,6 +1333,7 @@ async function executeDirectTask(
       },
     });
 
+    const personaPrompt = readPersonaFile(agentId);
     const result = await claudeExecutor.execute({
       sessionKey,
       prompt: effectivePrompt,
@@ -1342,7 +1345,8 @@ async function executeDirectTask(
       toolAllow: agentCfg.toolAllow,
       toolDeny: agentCfg.toolDeny,
       settingSources: agentCfg.settingSources,
-      systemPromptOverride: readPersonaFile(agentId) ?? buildChatAgentPrompt(),
+      knowledgeContent: loadKnowledgeContent(agentId),
+      ...(personaPrompt ? { systemPromptOverride: personaPrompt } : {}),
       resumeSessionId,
       images,
       // 不需要 workspace-manager 工具（Chat Agent 不切换工作区）
@@ -1652,7 +1656,10 @@ async function parseMessage(data: MessageEventData): Promise<ParsedMessage | nul
   let images: ImageAttachment[] | undefined;
 
   if (message.message_type === 'post') {
-    // 富文本消息：解析 content 中的 text 和 img 元素
+    // 富文本消息：解析 content 中的 text、at、img 元素
+    // at 元素需要区分 bot（跳过）和人类（保留 @名字给 Claude）
+    const selfBotOpenId = feishuClient.botOpenId;
+    const postAllBotIds = isMultiBotMode() ? accountManager.getAllBotOpenIds() : new Set<string>();
     try {
       const content = JSON.parse(message.content);
       // post 内容结构有两种形式:
@@ -1678,11 +1685,21 @@ async function parseMessage(data: MessageEventData): Promise<ParsedMessage | nul
         for (const element of paragraph) {
           if (element.tag === 'text') {
             textParts.push(element.text as string || '');
+          } else if (element.tag === 'at') {
+            // @mention：人类用户保留为 @名字（让 Claude 看到），bot 的跳过
+            // post 中 at 元素不含 mention.key 占位符，后续 text.replace(mention.key) 不会清理
+            const atName = element.user_name as string || '';
+            const atUserId = element.user_id as string || '';
+            // 直接用 user_id（open_id）判断是否为 bot，比 name 匹配更可靠
+            const isBot = (selfBotOpenId && atUserId === selfBotOpenId) || postAllBotIds.has(atUserId);
+            if (!isBot && atName) {
+              textParts.push(`@${atName}`);
+            }
           } else if (element.tag === 'img') {
             const imageKey = element.image_key as string | undefined;
             if (imageKey) imageKeys.push(imageKey);
           }
-          // at/a/emotion 等标签忽略（@mention 通过 message.mentions 处理）
+          // a/emotion 等标签忽略
         }
       }
 
@@ -1749,17 +1766,23 @@ async function parseMessage(data: MessageEventData): Promise<ParsedMessage | nul
   }
 
   // 清理 @mention 标记，检测是否 @了机器人
+  // @自己 bot → 去掉（占位符无意义），@其他 bot → 去掉，@人类用户 → 替换成 @名字（保留语义给 Claude）
   let mentionedBot = false;
   const botOpenId = feishuClient.botOpenId;
+  const allBotIds = isMultiBotMode() ? accountManager.getAllBotOpenIds() : new Set<string>();
   if (message.mentions) {
     for (const mention of message.mentions) {
-      text = text.replace(mention.key, '').trim();
-      if (botOpenId) {
-        // botOpenId 已知：精确匹配
-        if (mention.id.open_id === botOpenId) mentionedBot = true;
+      const openId = mention.id.open_id ?? '';
+      const isSelfBot = botOpenId ? openId === botOpenId : false;
+      const isAnyBot = isSelfBot || allBotIds.has(openId);
+
+      if (isAnyBot) {
+        // bot mention：去掉占位符
+        text = text.replace(mention.key, '').trim();
+        if (isSelfBot) mentionedBot = true;
       } else {
-        // botOpenId 未知（API 调用失败）：回退到旧行为
-        mentionedBot = true;
+        // 人类用户 @mention：替换为 @名字，让 Claude 看到被 @ 的人
+        text = text.replace(mention.key, `@${mention.name}`);
       }
     }
   }

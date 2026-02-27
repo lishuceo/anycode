@@ -432,7 +432,7 @@ async function simulateDirectTaskSessionLogic(params: {
   const { sessionManager } = await import('../session/manager.js');
   const { chatId, userId, eventThreadId } = params;
   const workingDir = '/tmp/work';
-  const agentId = 'chat';
+  const agentId = 'pm';
 
   mockSessionGetOrCreate.mockReturnValue({
     chatId, userId, workingDir, status: 'idle',
@@ -534,7 +534,7 @@ describe('executeDirectTask per-thread session & resume', () => {
     });
 
     expect(mockUpsertThreadSession).toHaveBeenCalledWith(
-      'thread-new', 'chat1', 'user1', '/tmp/work', 'chat',
+      'thread-new', 'chat1', 'user1', '/tmp/work', 'pm',
     );
   });
 
@@ -602,7 +602,7 @@ describe('executeDirectTask per-thread session & resume', () => {
     });
 
     expect(mockSetThreadConversationId).toHaveBeenCalledWith(
-      'thread-1', 'new-sess', '/tmp/work', 'chat',
+      'thread-1', 'new-sess', '/tmp/work', 'pm',
     );
     // Should NOT save to global session when in thread
     expect(mockSetConversationId).not.toHaveBeenCalled();
@@ -616,7 +616,7 @@ describe('executeDirectTask per-thread session & resume', () => {
     });
 
     expect(mockSetConversationId).toHaveBeenCalledWith(
-      'chat1', 'user1', 'new-sess', '/tmp/work', 'chat',
+      'chat1', 'user1', 'new-sess', '/tmp/work', 'pm',
     );
     expect(mockSetThreadConversationId).not.toHaveBeenCalled();
   });

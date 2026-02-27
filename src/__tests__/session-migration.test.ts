@@ -142,11 +142,10 @@ describe('SessionManager agent-aware keys', () => {
     const mgr = new SessionManager();
 
     expect(mgr.makeKey('chat1', 'user1')).toBe('agent:dev:chat1:user1');
-    expect(mgr.makeKey('chat1', 'user1', 'chat')).toBe('agent:chat:chat1:user1');
     expect(mgr.makeKey('chat1', 'user1', 'pm')).toBe('agent:pm:chat1:user1');
 
     expect(mgr.makeThreadKey('thread_abc')).toBe('agent:dev:thread_abc');
-    expect(mgr.makeThreadKey('thread_abc', 'chat')).toBe('agent:chat:thread_abc');
+    expect(mgr.makeThreadKey('thread_abc', 'pm')).toBe('agent:pm:thread_abc');
 
     mgr.close();
   });

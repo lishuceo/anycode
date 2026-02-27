@@ -36,12 +36,12 @@ describe('AccountManager', () => {
     const mgr = new AccountManager();
 
     await mgr.initialize([
-      { accountId: 'chat-bot', appId: 'cli_aaa', appSecret: 'sec_a', botName: 'ChatBot' },
+      { accountId: 'pm-bot', appId: 'cli_aaa', appSecret: 'sec_a', botName: 'ChatBot' },
       { accountId: 'dev-bot', appId: 'cli_bbb', appSecret: 'sec_b', botName: 'DevBot' },
     ]);
 
     expect(mgr.allAccounts()).toHaveLength(2);
-    expect(mgr.getClient('chat-bot')).toBeDefined();
+    expect(mgr.getClient('pm-bot')).toBeDefined();
     expect(mgr.getClient('dev-bot')).toBeDefined();
     expect(mgr.getClient('nonexistent')).toBeUndefined();
   });
@@ -51,10 +51,10 @@ describe('AccountManager', () => {
     const mgr = new AccountManager();
 
     await mgr.initialize([
-      { accountId: 'chat-bot', appId: 'cli_aaa', appSecret: 'sec_a', botName: 'ChatBot' },
+      { accountId: 'pm-bot', appId: 'cli_aaa', appSecret: 'sec_a', botName: 'ChatBot' },
     ]);
 
-    expect(mgr.resolveAccountId('cli_aaa')).toBe('chat-bot');
+    expect(mgr.resolveAccountId('cli_aaa')).toBe('pm-bot');
     expect(mgr.resolveAccountId('unknown')).toBeUndefined();
   });
 
