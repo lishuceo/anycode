@@ -617,17 +617,25 @@ async function handleSlashCommand(
     return true;
   }
 
-  // /reset - 重置会话
+  // /reset - 重置会话（清除所有 agent 的 session + thread conversation）
   if (trimmed === '/reset') {
     claudeExecutor.killSessionsForChat(chatId, userId);
-    // 先在旧话题内回复确认，再清除 session
-    const reply = '🔄 会话已重置';
+    // 重置所有 agent 的主 session
+    for (const aid of ['dev', 'pm'] as const) {
+      sessionManager.reset(chatId, userId, aid);
+    }
+    // 如果在话题内，额外清除 thread session 的 conversationId
+    if (effectiveThreadId) {
+      for (const aid of ['dev', 'pm'] as const) {
+        sessionManager.resetThreadConversation(effectiveThreadId, aid);
+      }
+    }
+    const reply = '🔄 会话已重置，下次消息将使用全新 session';
     if (threadReplyMsgId) {
       await feishuClient.replyTextInThread(threadReplyMsgId, reply);
     } else {
       await feishuClient.replyText(messageId, reply);
     }
-    sessionManager.reset(chatId, userId);
     return true;
   }
 
@@ -1030,6 +1038,8 @@ async function executeClaudeTask(
 
   try {
     // Resume 策略：activeConversationId/activeConversationCwd 已在上方提前计算
+    // 额外检查 systemPromptHash：代码部署后 prompt 变化时自动使旧 session 失效
+    const activePromptHash = threadId ? threadSession?.systemPromptHash : undefined;
     const canResume = activeConversationId
       && (!activeConversationCwd || activeConversationCwd === workingDir);
     if (activeConversationId && !canResume) {
@@ -1066,6 +1076,7 @@ async function executeClaudeTask(
       toolDeny: agentCfg?.toolDeny,
       // 有图片时不 resume（AsyncIterable prompt 模式与 resume 不兼容）
       resumeSessionId: images?.length ? undefined : (canResume ? activeConversationId : undefined),
+      storedSystemPromptHash: activePromptHash,
       onProgress,
       onWorkspaceChanged,
       onTurn,
@@ -1137,7 +1148,7 @@ async function executeClaudeTask(
       // （S1 的 session 是在旧 cwd 创建的，跨 cwd resume 会 exit code 1）
       if (restartResult.sessionId) {
         if (threadId) {
-          sessionManager.setThreadConversationId(threadId, restartResult.sessionId, result.newWorkingDir, agentId);
+          sessionManager.setThreadConversationId(threadId, restartResult.sessionId, result.newWorkingDir, agentId, restartResult.systemPromptHash);
         }
         sessionManager.setConversationId(chatId, userId, restartResult.sessionId, result.newWorkingDir, agentId);
       } else {
@@ -1204,7 +1215,7 @@ async function executeClaudeTask(
     // 即使失败也保存——下次 resume 可能成功（如超时但 session 数据完整）
     if (result.sessionId) {
       if (threadId) {
-        sessionManager.setThreadConversationId(threadId, result.sessionId, workingDir, agentId);
+        sessionManager.setThreadConversationId(threadId, result.sessionId, workingDir, agentId, result.systemPromptHash);
       }
       sessionManager.setConversationId(chatId, userId, result.sessionId, workingDir, agentId);
     }
@@ -1308,6 +1319,7 @@ async function executeDirectTask(
     const activeConversationCwd = eventThreadId
       ? threadSession?.conversationCwd
       : session.conversationCwd;
+    const activePromptHash = eventThreadId ? threadSession?.systemPromptHash : undefined;
     const canResume = activeConversationId
       && (!activeConversationCwd || activeConversationCwd === workingDir);
     // 有图片时不 resume（AsyncIterable 与 resume 不兼容）
@@ -1348,6 +1360,7 @@ async function executeDirectTask(
       knowledgeContent: loadKnowledgeContent(agentId),
       ...(personaPrompt ? { systemPromptOverride: personaPrompt } : {}),
       resumeSessionId,
+      storedSystemPromptHash: activePromptHash,
       images,
       // 不需要 workspace-manager 工具（Chat Agent 不切换工作区）
       disableWorkspaceTool: true,
@@ -1359,7 +1372,7 @@ async function executeDirectTask(
     if (result.sessionId) {
       if (threadId) {
         sessionManager.upsertThreadSession(threadId, chatId, userId, workingDir, agentId);
-        sessionManager.setThreadConversationId(threadId, result.sessionId, workingDir, agentId);
+        sessionManager.setThreadConversationId(threadId, result.sessionId, workingDir, agentId, result.systemPromptHash);
       }
       // 非话题时也保存到全局 session（主面板后续消息可 resume）
       if (!eventThreadId) {

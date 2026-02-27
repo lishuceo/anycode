@@ -1,6 +1,7 @@
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import type { Query, SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import { mkdirSync, existsSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { config } from '../config.js';
 import { logger } from '../utils/logger.js';
 import { createWorkspaceMcpServer } from '../workspace/tool.js';
@@ -56,6 +57,8 @@ export interface ExecuteInput extends ExecuteOptions {
   toolDeny?: string[];
   /** 知识文件内容（注入到 system prompt 最前层，优先于 persona/workspace prompt） */
   knowledgeContent?: string;
+  /** 上次保存的 system prompt hash（用于自动失效检测，hash 不匹配时跳过 resume） */
+  storedSystemPromptHash?: string;
 }
 
 /** 构建工作区管理系统提示词（注入实际目录路径） */
@@ -297,6 +300,22 @@ export class ClaudeExecutor {
     const withKnowledge = input.knowledgeContent
       ? input.knowledgeContent + '\n\n' + baseAppend
       : baseAppend;
+    // System prompt 结构性哈希：仅包含 knowledge + base prompt（不含 historySummaries）
+    // 代码部署后 prompt 变化时自动使旧 session 失效，避免 resume 旧 session 丢失新工具描述
+    // 排除运行时动态值（process.pid 等）——仅反映代码/配置变更
+    const hashInput = withKnowledge.replace(/\*\*当前 PID\*\*: `\d+`/, '**当前 PID**: `0`');
+    const systemPromptHash = createHash('sha256').update(hashInput).digest('hex').slice(0, 16);
+
+    // 自动失效：system prompt 变化后跳过 resume，起新 session（工具描述、persona 等会刷新）
+    let effectiveResumeId = resumeSessionId;
+    if (resumeSessionId && input.storedSystemPromptHash && input.storedSystemPromptHash !== systemPromptHash) {
+      logger.info(
+        { sessionKey, storedHash: input.storedSystemPromptHash, currentHash: systemPromptHash },
+        'System prompt changed since last session — skipping resume, starting fresh',
+      );
+      effectiveResumeId = undefined;
+    }
+
     const promptAppend = historySummaries
       ? withKnowledge + `\n\n## 历史会话摘要\n以下是该用户之前的会话记录，帮助你了解项目上下文：\n${historySummaries}`
       : withKnowledge;
@@ -407,7 +426,7 @@ export class ClaudeExecutor {
         maxBudgetUsd: maxBudgetUsd ?? config.claude.maxBudgetUsd,
 
         // 会话续接
-        ...(resumeSessionId ? { resume: resumeSessionId } : {}),
+        ...(effectiveResumeId ? { resume: effectiveResumeId } : {}),
 
         // 系统提示词：
         // - 有 systemPromptOverride → replace 模式（chat persona / pipeline 角色）
@@ -534,6 +553,7 @@ export class ClaudeExecutor {
         output,
         error: errorMsg,
         sessionId,
+        systemPromptHash,
         durationMs,
         needsRestart: workspaceChanged,
         newWorkingDir,
@@ -562,6 +582,7 @@ export class ClaudeExecutor {
           success: true,
           output,
           sessionId: resultMessage.session_id ?? sessionId,
+          systemPromptHash,
           durationMs: resultMessage.duration_ms ?? durationMs,
           durationApiMs: resultMessage.duration_api_ms,
           costUsd: resultMessage.total_cost_usd,
@@ -577,6 +598,7 @@ export class ClaudeExecutor {
           output,
           error: errors.join('\n') || `Query ended with: ${resultMessage.subtype}`,
           sessionId: resultMessage.session_id ?? sessionId,
+          systemPromptHash,
           durationMs: resultMessage.duration_ms ?? durationMs,
           durationApiMs: resultMessage.duration_api_ms,
           costUsd: resultMessage.total_cost_usd,
@@ -592,6 +614,7 @@ export class ClaudeExecutor {
       success: output.length > 0,
       output: output || '(无输出)',
       sessionId,
+      systemPromptHash,
       durationMs,
       needsRestart: workspaceChanged,
       newWorkingDir,
