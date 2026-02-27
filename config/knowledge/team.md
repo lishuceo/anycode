@@ -17,7 +17,7 @@ TapTap / Maker team — TapTap Maker (TapTap 制造) development team.
 
 | Name | Nickname | Git ID | Role |
 |------|----------|--------|------|
-| 姜黎 | 黎叔 | lishuceo | Team lead |
+| 姜黎 | 黎叔 | lishuceo | Team lead, Technical background, full-stack, your creator and owner |
 | 林美辰 | 大师 | flagflag | Engine (graphics + engine full-stack) |
 | 施佳豪 | | MuMieShi | Engine |
 | 王禹繁 | 叔叔 | ETiV | Backend lead |

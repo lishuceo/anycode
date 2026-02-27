@@ -7,7 +7,7 @@ describe('resolveAgent', () => {
     // 特定群 → dev
     { agentId: 'dev', match: { accountId: 'dev-bot', peer: { kind: 'group', id: 'group_123' } } },
     // 按账号路由
-    { agentId: 'pm', match: { accountId: 'chat-bot' } },
+    { agentId: 'pm', match: { accountId: 'pm-bot' } },
     { agentId: 'dev', match: { accountId: 'dev-bot' } },
     // 兜底
     { agentId: 'pm', match: { accountId: '*' } },
@@ -22,7 +22,7 @@ describe('resolveAgent', () => {
 
   it('matches accountId binding', () => {
     const inbound: InboundContext = {
-      accountId: 'chat-bot', chatId: 'group_456', userId: 'u1', chatType: 'group',
+      accountId: 'pm-bot', chatId: 'group_456', userId: 'u1', chatType: 'group',
     };
     expect(resolveAgent(bindings, inbound)).toBe('pm');
   });
@@ -47,10 +47,10 @@ describe('resolveAgent', () => {
       { agentId: 'pm', match: { accountId: '*' } },
     ];
     expect(resolveAgent(userBindings, {
-      accountId: 'chat-bot', chatId: 'c1', userId: 'admin_user', chatType: 'p2p',
+      accountId: 'pm-bot', chatId: 'c1', userId: 'admin_user', chatType: 'p2p',
     })).toBe('dev');
     expect(resolveAgent(userBindings, {
-      accountId: 'chat-bot', chatId: 'c1', userId: 'other_user', chatType: 'p2p',
+      accountId: 'pm-bot', chatId: 'c1', userId: 'other_user', chatType: 'p2p',
     })).toBe('pm');
   });
 });
