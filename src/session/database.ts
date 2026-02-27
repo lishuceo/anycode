@@ -184,6 +184,20 @@ export class SessionDatabase {
       this.db.exec('UPDATE schema_version SET version = 8');
     }
 
+    // Migration v8 → v9: rename agent id 'chat' → 'pm'
+    if (version < 9) {
+      const threadCount = this.db.prepare(
+        "UPDATE thread_sessions SET thread_id = REPLACE(thread_id, 'agent:chat:', 'agent:pm:') WHERE thread_id LIKE 'agent:chat:%'",
+      ).run().changes;
+      const sessionCount = this.db.prepare(
+        "UPDATE sessions SET key = REPLACE(key, 'agent:chat:', 'agent:pm:') WHERE key LIKE 'agent:chat:%'",
+      ).run().changes;
+      if (threadCount > 0 || sessionCount > 0) {
+        logger.info({ threadCount, sessionCount }, 'Migrated agent:chat: keys to agent:pm:');
+      }
+      this.db.exec('UPDATE schema_version SET version = 9');
+    }
+
     this.stmtUpsert = this.db.prepare(`
       INSERT INTO sessions (key, chat_id, user_id, working_dir, conversation_id, conversation_cwd, thread_id, thread_root_message_id, status, created_at, last_active_at)
       VALUES (@key, @chat_id, @user_id, @working_dir, @conversation_id, @conversation_cwd, @thread_id, @thread_root_message_id, @status, @created_at, @last_active_at)

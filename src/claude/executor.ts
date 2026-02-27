@@ -54,6 +54,8 @@ export interface ExecuteInput extends ExecuteOptions {
   toolAllow?: string[];
   /** 工具禁止列表（优先级最高，支持 glob 前缀） */
   toolDeny?: string[];
+  /** 知识文件内容（注入到 system prompt 最前层，优先于 persona/workspace prompt） */
+  knowledgeContent?: string;
 }
 
 /** 构建工作区管理系统提示词（注入实际目录路径） */
@@ -288,11 +290,15 @@ export class ClaudeExecutor {
     }
 
     // 构建 systemPrompt.append 内容
+    // 注入层次：knowledge → persona/workspace prompt → 历史会话摘要
     // pipeline 模式使用独立的 system prompt，不需要工作区管理指引
     const baseAppend = systemPromptOverride ?? buildWorkspaceSystemPrompt(workingDir);
-    const promptAppend = historySummaries
-      ? baseAppend + `\n\n## 历史会话摘要\n以下是该用户之前的会话记录，帮助你了解项目上下文：\n${historySummaries}`
+    const withKnowledge = input.knowledgeContent
+      ? input.knowledgeContent + '\n\n' + baseAppend
       : baseAppend;
+    const promptAppend = historySummaries
+      ? withKnowledge + `\n\n## 历史会话摘要\n以下是该用户之前的会话记录，帮助你了解项目上下文：\n${historySummaries}`
+      : withKnowledge;
 
     // 只读提示放入 user prompt（而非 system prompt），避免 per-user 差异导致 cache miss
     const readOnlyPrefix = readOnly

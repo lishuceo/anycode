@@ -7,10 +7,10 @@ describe('resolveAgent', () => {
     // 特定群 → dev
     { agentId: 'dev', match: { accountId: 'dev-bot', peer: { kind: 'group', id: 'group_123' } } },
     // 按账号路由
-    { agentId: 'chat', match: { accountId: 'chat-bot' } },
+    { agentId: 'pm', match: { accountId: 'pm-bot' } },
     { agentId: 'dev', match: { accountId: 'dev-bot' } },
     // 兜底
-    { agentId: 'chat', match: { accountId: '*' } },
+    { agentId: 'pm', match: { accountId: '*' } },
   ];
 
   it('matches specific peer binding first', () => {
@@ -22,16 +22,16 @@ describe('resolveAgent', () => {
 
   it('matches accountId binding', () => {
     const inbound: InboundContext = {
-      accountId: 'chat-bot', chatId: 'group_456', userId: 'u1', chatType: 'group',
+      accountId: 'pm-bot', chatId: 'group_456', userId: 'u1', chatType: 'group',
     };
-    expect(resolveAgent(bindings, inbound)).toBe('chat');
+    expect(resolveAgent(bindings, inbound)).toBe('pm');
   });
 
   it('falls through to wildcard', () => {
     const inbound: InboundContext = {
       accountId: 'unknown-bot', chatId: 'group_789', userId: 'u1', chatType: 'group',
     };
-    expect(resolveAgent(bindings, inbound)).toBe('chat');
+    expect(resolveAgent(bindings, inbound)).toBe('pm');
   });
 
   it('returns dev as default when no bindings', () => {
@@ -44,14 +44,14 @@ describe('resolveAgent', () => {
   it('matches userId binding', () => {
     const userBindings: AgentBinding[] = [
       { agentId: 'dev', match: { userId: 'admin_user' } },
-      { agentId: 'chat', match: { accountId: '*' } },
+      { agentId: 'pm', match: { accountId: '*' } },
     ];
     expect(resolveAgent(userBindings, {
-      accountId: 'chat-bot', chatId: 'c1', userId: 'admin_user', chatType: 'p2p',
+      accountId: 'pm-bot', chatId: 'c1', userId: 'admin_user', chatType: 'p2p',
     })).toBe('dev');
     expect(resolveAgent(userBindings, {
-      accountId: 'chat-bot', chatId: 'c1', userId: 'other_user', chatType: 'p2p',
-    })).toBe('chat');
+      accountId: 'pm-bot', chatId: 'c1', userId: 'other_user', chatType: 'p2p',
+    })).toBe('pm');
   });
 });
 
@@ -114,7 +114,7 @@ describe('validateBindings', () => {
   it('no warnings for safe config', () => {
     const bindings: AgentBinding[] = [
       { agentId: 'dev', match: { accountId: 'dev-bot' } },
-      { agentId: 'chat', match: { accountId: '*' } },
+      { agentId: 'pm', match: { accountId: '*' } },
     ];
     expect(validateBindings(bindings)).toEqual([]);
   });

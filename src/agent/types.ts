@@ -8,7 +8,7 @@
 // ─── Agent 标识 ──────────────────────────────────────────
 
 /** 内置 agent 角色 */
-export type BuiltinAgentId = 'chat' | 'dev';
+export type BuiltinAgentId = 'pm' | 'dev';
 
 /** agent 标识（内置 + 自定义） */
 export type AgentId = BuiltinAgentId | (string & {});
@@ -55,6 +55,8 @@ export interface AgentConfig {
   replyMode: ReplyMode;
   /** 人格提示词文件路径（每次 query 重新读取，支持热更新）。有 persona → replace 模式；无 → append 模式 */
   persona?: string;
+  /** 知识文件列表（相对于 knowledgeDir 的文件名，每次 query 重新读取） */
+  knowledge?: string[];
   /** 工具允许列表（在 toolPolicy 基础上额外允许，支持 glob 如 'mcp__*'） */
   toolAllow?: string[];
   /** 工具禁止列表（优先级高于 allow，支持 glob） */

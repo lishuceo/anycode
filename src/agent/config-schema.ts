@@ -47,6 +47,8 @@ export const AgentConfigInputSchema = z.object({
   replyMode: z.enum(['direct', 'thread']).optional(),
   /** 人格提示词文件路径（每次 query 重新读取）。有 persona → replace 模式；无 → append 模式 */
   persona: z.string().optional(),
+  /** 知识文件列表（相对于 knowledgeDir 的文件名）。agent 级完整覆盖 defaults */
+  knowledge: z.array(z.string()).optional(),
 });
 
 // ─── Defaults（全部 optional） ──────────────────────────────
@@ -60,11 +62,14 @@ export const AgentDefaultsSchema = z.object({
   requiresApproval: z.boolean().optional(),
   replyMode: z.enum(['direct', 'thread']).optional(),
   persona: z.string().optional(),
+  knowledge: z.array(z.string()).optional(),
 });
 
 // ─── 顶层配置文件 ──────────────────────────────────────────
 
 export const AgentConfigFileSchema = z.object({
+  /** 知识文件根目录（相对于配置文件所在目录） */
+  knowledgeDir: z.string().optional(),
   defaults: AgentDefaultsSchema.optional(),
   agents: z.array(AgentConfigInputSchema).min(1),
 });

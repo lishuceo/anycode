@@ -43,7 +43,7 @@ describe('AgentConfigFileSchema', () => {
         maxTurns: 100,
       },
       agents: [
-        { id: 'chat', displayName: 'ChatBot', replyMode: 'direct' },
+        { id: 'pm', displayName: '土豆儿', replyMode: 'direct' },
         { id: 'dev', displayName: 'DevBot', model: 'claude-opus-4-6', toolPolicy: 'all', maxBudgetUsd: 50 },
       ],
     });
@@ -124,8 +124,12 @@ describe('AgentConfigFileSchema', () => {
 describe('AgentRegistry.replaceAll', () => {
   it('replaces all agents atomically', async () => {
     const { agentRegistry } = await import('../agent/registry.js');
-    // Verify builtins exist
-    expect(agentRegistry.get('chat')).toBeDefined();
+    // Seed agents (registry starts empty)
+    agentRegistry.replaceAll([
+      { id: 'pm', displayName: '土豆儿', model: 'claude-sonnet-4-6', toolPolicy: 'readonly', readOnly: true, settingSources: ['user', 'project'], maxBudgetUsd: 5, maxTurns: 100, requiresApproval: false, replyMode: 'direct' },
+      { id: 'dev', displayName: 'DevBot', model: 'claude-opus-4-6', toolPolicy: 'all', readOnly: false, settingSources: ['user', 'project'], maxBudgetUsd: 50, maxTurns: 500, requiresApproval: true, replyMode: 'thread' },
+    ]);
+    expect(agentRegistry.get('pm')).toBeDefined();
     expect(agentRegistry.get('dev')).toBeDefined();
 
     // Replace with custom agents
@@ -147,7 +151,7 @@ describe('AgentRegistry.replaceAll', () => {
     expect(agentRegistry.get('custom')).toBeDefined();
     expect(agentRegistry.get('custom')!.displayName).toBe('Custom');
     // Old agents should be gone
-    expect(agentRegistry.get('chat')).toBeUndefined();
+    expect(agentRegistry.get('pm')).toBeUndefined();
     expect(agentRegistry.get('dev')).toBeUndefined();
 
     // allIds should only contain new agents
@@ -156,8 +160,8 @@ describe('AgentRegistry.replaceAll', () => {
     // Restore builtins for other tests — replaceAll with original defaults
     agentRegistry.replaceAll([
       {
-        id: 'chat',
-        displayName: 'ChatBot',
+        id: 'pm',
+        displayName: '土豆儿',
         model: 'claude-sonnet-4-6',
         toolPolicy: 'readonly',
         readOnly: true,
@@ -193,7 +197,7 @@ describe('AgentRegistry.replaceAll', () => {
 
     // Restore
     agentRegistry.replaceAll([
-      { id: 'chat', displayName: 'ChatBot', model: 'claude-sonnet-4-6', toolPolicy: 'readonly', readOnly: true, settingSources: ['user', 'project'], maxBudgetUsd: 5, maxTurns: 100, requiresApproval: false, replyMode: 'direct' },
+      { id: 'pm', displayName: '土豆儿', model: 'claude-sonnet-4-6', toolPolicy: 'readonly', readOnly: true, settingSources: ['user', 'project'], maxBudgetUsd: 5, maxTurns: 100, requiresApproval: false, replyMode: 'direct' },
       { id: 'dev', displayName: 'DevBot', model: 'claude-opus-4-6', toolPolicy: 'all', readOnly: false, settingSources: ['user', 'project'], maxBudgetUsd: 50, maxTurns: 500, requiresApproval: true, replyMode: 'thread' },
     ]);
   });
@@ -206,11 +210,11 @@ describe('AgentRegistry.replaceAll', () => {
 
     expect(agentRegistry.get('pm')!.displayName).toBe('PM');
     expect(agentRegistry.getOrThrow('pm').maxBudgetUsd).toBe(3);
-    expect(() => agentRegistry.getOrThrow('chat')).toThrow('Unknown agent: chat');
+    expect(() => agentRegistry.getOrThrow('dev')).toThrow('Unknown agent: dev');
 
     // Restore
     agentRegistry.replaceAll([
-      { id: 'chat', displayName: 'ChatBot', model: 'claude-sonnet-4-6', toolPolicy: 'readonly', readOnly: true, settingSources: ['user', 'project'], maxBudgetUsd: 5, maxTurns: 100, requiresApproval: false, replyMode: 'direct' },
+      { id: 'pm', displayName: '土豆儿', model: 'claude-sonnet-4-6', toolPolicy: 'readonly', readOnly: true, settingSources: ['user', 'project'], maxBudgetUsd: 5, maxTurns: 100, requiresApproval: false, replyMode: 'direct' },
       { id: 'dev', displayName: 'DevBot', model: 'claude-opus-4-6', toolPolicy: 'all', readOnly: false, settingSources: ['user', 'project'], maxBudgetUsd: 50, maxTurns: 500, requiresApproval: true, replyMode: 'thread' },
     ]);
   });
@@ -282,7 +286,7 @@ describe('config-loader', () => {
 
       // Restore
       agentRegistry.replaceAll([
-        { id: 'chat', displayName: 'ChatBot', model: 'claude-sonnet-4-6', toolPolicy: 'readonly', readOnly: true, settingSources: ['user', 'project'], maxBudgetUsd: 5, maxTurns: 100, requiresApproval: false, replyMode: 'direct' },
+        { id: 'pm', displayName: '土豆儿', model: 'claude-sonnet-4-6', toolPolicy: 'readonly', readOnly: true, settingSources: ['user', 'project'], maxBudgetUsd: 5, maxTurns: 100, requiresApproval: false, replyMode: 'direct' },
         { id: 'dev', displayName: 'DevBot', model: 'claude-opus-4-6', toolPolicy: 'all', readOnly: false, settingSources: ['user', 'project'], maxBudgetUsd: 50, maxTurns: 500, requiresApproval: true, replyMode: 'thread' },
       ]);
     });
@@ -314,7 +318,7 @@ describe('config-loader', () => {
       // Restore
       const { agentRegistry } = await import('../agent/registry.js');
       agentRegistry.replaceAll([
-        { id: 'chat', displayName: 'ChatBot', model: 'claude-sonnet-4-6', toolPolicy: 'readonly', readOnly: true, settingSources: ['user', 'project'], maxBudgetUsd: 5, maxTurns: 100, requiresApproval: false, replyMode: 'direct' },
+        { id: 'pm', displayName: '土豆儿', model: 'claude-sonnet-4-6', toolPolicy: 'readonly', readOnly: true, settingSources: ['user', 'project'], maxBudgetUsd: 5, maxTurns: 100, requiresApproval: false, replyMode: 'direct' },
         { id: 'dev', displayName: 'DevBot', model: 'claude-opus-4-6', toolPolicy: 'all', readOnly: false, settingSources: ['user', 'project'], maxBudgetUsd: 50, maxTurns: 500, requiresApproval: true, replyMode: 'thread' },
       ]);
     });
@@ -408,7 +412,7 @@ describe('merge logic (via schema + registry)', () => {
     // Cleanup
     rmSync(tmpDir2, { recursive: true, force: true });
     agentRegistry.replaceAll([
-      { id: 'chat', displayName: 'ChatBot', model: 'claude-sonnet-4-6', toolPolicy: 'readonly', readOnly: true, settingSources: ['user', 'project'], maxBudgetUsd: 5, maxTurns: 100, requiresApproval: false, replyMode: 'direct' },
+      { id: 'pm', displayName: '土豆儿', model: 'claude-sonnet-4-6', toolPolicy: 'readonly', readOnly: true, settingSources: ['user', 'project'], maxBudgetUsd: 5, maxTurns: 100, requiresApproval: false, replyMode: 'direct' },
       { id: 'dev', displayName: 'DevBot', model: 'claude-opus-4-6', toolPolicy: 'all', readOnly: false, settingSources: ['user', 'project'], maxBudgetUsd: 50, maxTurns: 500, requiresApproval: true, replyMode: 'thread' },
     ]);
   });
