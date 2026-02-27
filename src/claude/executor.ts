@@ -308,8 +308,9 @@ export class ClaudeExecutor {
     const systemPromptHash = createHash('sha256').update(hashInput).digest('hex').slice(0, 16);
 
     // 自动失效：system prompt 变化后跳过 resume，起新 session（工具描述、persona 等会刷新）
+    // 注意：storedHash 为空（旧 session 迁移前创建）也视为不匹配，强制起新 session
     let effectiveResumeId = resumeSessionId;
-    if (resumeSessionId && input.storedSystemPromptHash && input.storedSystemPromptHash !== systemPromptHash) {
+    if (resumeSessionId && input.storedSystemPromptHash !== systemPromptHash) {
       logger.info(
         { sessionKey, storedHash: input.storedSystemPromptHash, currentHash: systemPromptHash },
         'System prompt changed since last session — skipping resume, starting fresh',
