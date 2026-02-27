@@ -35,6 +35,8 @@ const BUILTIN_DEFAULTS: AgentDefaults = {
 let configFilePath: string | undefined;
 /** 配置文件所在目录（用于解析相对路径） */
 let configFileDir: string | undefined;
+/** 知识文件根目录（resolved absolute path） */
+let knowledgeDirPath: string | undefined;
 /** 文件监听是否活跃 */
 let watcherActive = false;
 /** 重载防抖定时器 */
@@ -88,6 +90,7 @@ function mergeAgentConfig(input: AgentConfigInput, defaults: AgentDefaults): Age
     requiresApproval: input.requiresApproval ?? defaults.requiresApproval ?? BUILTIN_DEFAULTS.requiresApproval!,
     replyMode: input.replyMode ?? defaults.replyMode ?? BUILTIN_DEFAULTS.replyMode! as 'direct' | 'thread',
     persona: input.persona ?? defaults.persona,
+    knowledge: input.knowledge ?? defaults.knowledge,
     toolAllow,
     toolDeny,
   };
@@ -165,6 +168,16 @@ export function reloadAgentConfig(): LoadResult {
     const configFile = result.data;
     const defaults = configFile.defaults ?? {};
 
+    // 保存 knowledgeDir（相对于配置文件目录解析）
+    if (configFile.knowledgeDir) {
+      const baseDir = configFileDir ?? process.cwd();
+      knowledgeDirPath = configFile.knowledgeDir.startsWith('/')
+        ? configFile.knowledgeDir
+        : resolve(baseDir, configFile.knowledgeDir);
+    } else {
+      knowledgeDirPath = undefined;
+    }
+
     // 合并每个 agent
     const agents = configFile.agents.map(input => mergeAgentConfig(input, defaults));
 
@@ -220,6 +233,51 @@ export function readPersonaFile(agentId: string): string | undefined {
     );
     return undefined;
   }
+}
+
+// ─── Knowledge 文件读取 ──────────────────────────────────────
+
+/**
+ * 加载 agent 的知识文件内容。
+ * 每次 query 调用（不缓存），修改文件即生效。
+ * 按 knowledge 列表顺序拼接，文件缺失跳过并 warn。
+ * 返回 undefined 表示该 agent 无知识文件配置。
+ */
+export function loadKnowledgeContent(agentId: string): string | undefined {
+  const agentCfg = agentRegistry.get(agentId);
+  const files = agentCfg?.knowledge;
+  if (!files || files.length === 0) return undefined;
+  if (!knowledgeDirPath) {
+    logger.warn({ agentId }, 'Agent has knowledge list but knowledgeDir is not configured');
+    return undefined;
+  }
+
+  const resolvedKnowledgeDir = resolve(knowledgeDirPath);
+  const parts: string[] = [];
+
+  for (const file of files) {
+    const filePath = resolve(knowledgeDirPath, file);
+
+    // 路径安全校验：必须在 knowledgeDir 内
+    if (!filePath.startsWith(resolvedKnowledgeDir + '/')) {
+      logger.warn(
+        { agentId, file, filePath, knowledgeDir: resolvedKnowledgeDir },
+        'Knowledge file path escapes knowledgeDir, rejected',
+      );
+      continue;
+    }
+
+    try {
+      parts.push(readFileSync(filePath, 'utf-8'));
+    } catch (err) {
+      logger.warn(
+        { agentId, file, path: filePath, err: (err as Error).message },
+        'Failed to read knowledge file, skipping',
+      );
+    }
+  }
+
+  return parts.length > 0 ? parts.join('\n\n') : undefined;
 }
 
 // ─── 热重载 Watcher ────────────────────────────────────────

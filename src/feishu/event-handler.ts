@@ -24,7 +24,7 @@ import { resolveAgent, shouldRespond } from '../agent/router.js';
 import { agentRegistry } from '../agent/registry.js';
 import { accountManager } from './multi-account.js';
 import type { AgentId, AgentConfig } from '../agent/types.js';
-import { readPersonaFile } from '../agent/config-loader.js';
+import { readPersonaFile, loadKnowledgeContent } from '../agent/config-loader.js';
 import { createDiscussionMcpServer } from '../agent/tools/discussion.js';
 
 // 注册审批通过后的消息重新入队回调（避免 approval.ts → event-handler.ts 循环依赖）
@@ -1051,6 +1051,7 @@ async function executeClaudeTask(
     const readOnly = agentCfg?.readOnly ?? !isOwner(userId);
     // 自定义 agent 支持 persona（dev agent 没配置时 → undefined → 使用默认 buildWorkspaceSystemPrompt）
     const customSystemPrompt = readPersonaFile(agentId);
+    const knowledgeContent = loadKnowledgeContent(agentId);
 
     const result = await claudeExecutor.execute({
       sessionKey,
@@ -1070,6 +1071,7 @@ async function executeClaudeTask(
       onTurn,
       historySummaries,
       images,
+      knowledgeContent,
       ...(customSystemPrompt ? { systemPromptOverride: customSystemPrompt } : {}),
     });
 
@@ -1125,6 +1127,7 @@ async function executeClaudeTask(
         onProgress,
         onTurn,
         historySummaries,
+        knowledgeContent,
         disableWorkspaceTool: true,
         ...(customSystemPrompt ? { systemPromptOverride: customSystemPrompt } : {}),
       });
@@ -1342,6 +1345,7 @@ async function executeDirectTask(
       toolAllow: agentCfg.toolAllow,
       toolDeny: agentCfg.toolDeny,
       settingSources: agentCfg.settingSources,
+      knowledgeContent: loadKnowledgeContent(agentId),
       ...(personaPrompt ? { systemPromptOverride: personaPrompt } : {}),
       resumeSessionId,
       images,
