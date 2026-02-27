@@ -116,8 +116,20 @@ export function loadAgentConfig(): LoadResult {
       // 显式配置但文件不存在 → 错误
       return { loaded: false, error: `AGENT_CONFIG_PATH file not found: ${candidatePath}` };
     }
-    // 无显式配置，默认路径也不存在 → 使用内置默认值
-    logger.info('No config/agents.json found, using builtin agent defaults');
+    // 无显式配置，默认路径也不存在 → 注册最小可用的 dev agent 兜底
+    logger.warn('No config/agents.json found, registering minimal fallback dev agent');
+    agentRegistry.replaceAll([{
+      id: 'dev',
+      displayName: 'DevBot',
+      model: config.claude.model,
+      toolPolicy: 'all',
+      readOnly: false,
+      settingSources: ['user', 'project'] as ('user' | 'project')[],
+      maxBudgetUsd: config.claude.maxBudgetUsd,
+      maxTurns: config.claude.maxTurns,
+      requiresApproval: false,
+      replyMode: 'thread',
+    }]);
     return { loaded: false };
   }
 

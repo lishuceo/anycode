@@ -8,7 +8,7 @@
 // ─── Agent 标识 ──────────────────────────────────────────
 
 /** 内置 agent 角色 */
-export type BuiltinAgentId = 'chat' | 'dev';
+export type BuiltinAgentId = 'pm' | 'dev';
 
 /** agent 标识（内置 + 自定义） */
 export type AgentId = BuiltinAgentId | (string & {});

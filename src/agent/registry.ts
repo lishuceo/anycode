@@ -1,53 +1,14 @@
 /**
  * Agent 注册表 — 角色 → 配置映射
  *
- * 支持两种初始化模式：
- * 1. 无配置文件 → createBuiltinAgents() 硬编码默认值（向后兼容）
- * 2. 有 config/agents.json → config-loader 调用 replaceAll() 热加载
+ * 启动时为空，由 config-loader 从 config/agents.json 加载填充。
+ * 无配置文件时 config-loader 注册一个最小可用的 dev agent 兜底。
  */
-import { config } from '../config.js';
 import { logger } from '../utils/logger.js';
 import type { AgentId, AgentConfig } from './types.js';
 
-/** 内置 agent 配置（无配置文件时的 fallback） */
-function createBuiltinAgents(): Map<AgentId, AgentConfig> {
-  const map = new Map<AgentId, AgentConfig>();
-
-  map.set('chat', {
-    id: 'chat',
-    displayName: 'ChatBot',
-    model: 'claude-sonnet-4-6',
-    toolPolicy: 'readonly',
-    readOnly: true,
-    settingSources: ['user', 'project'],
-    maxBudgetUsd: 5,
-    maxTurns: 100,
-    requiresApproval: false,
-    replyMode: 'direct',
-  });
-
-  map.set('dev', {
-    id: 'dev',
-    displayName: 'DevBot',
-    model: config.claude.model,
-    toolPolicy: 'all',
-    readOnly: false,
-    settingSources: ['user', 'project'],
-    maxBudgetUsd: config.claude.maxBudgetUsd,
-    maxTurns: config.claude.maxTurns,
-    requiresApproval: true,
-    replyMode: 'thread',
-  });
-
-  return map;
-}
-
 class AgentRegistry {
-  private agents: Map<AgentId, AgentConfig>;
-
-  constructor() {
-    this.agents = createBuiltinAgents();
-  }
+  private agents = new Map<AgentId, AgentConfig>();
 
   /** 获取 agent 配置 */
   get(agentId: AgentId): AgentConfig | undefined {

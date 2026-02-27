@@ -14,10 +14,12 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // ============================================================
 
 describe('AgentConfig replyMode', () => {
-  it('chat agent has direct replyMode', async () => {
-    // agentRegistry is a singleton, import fresh to avoid stale state
+  it('pm agent has direct replyMode', async () => {
     const { agentRegistry } = await import('../agent/registry.js');
-    const chatConfig = agentRegistry.get('chat');
+    // Registry starts empty; load config to populate agents
+    const { loadAgentConfig } = await import('../agent/config-loader.js');
+    loadAgentConfig();
+    const chatConfig = agentRegistry.get('pm');
     expect(chatConfig).toBeDefined();
     expect(chatConfig!.replyMode).toBe('direct');
   });
@@ -82,7 +84,7 @@ describe('createDiscussionMcpServer', () => {
       chatId: 'chat1',
       userId: 'user1',
       messageId: 'msg1',
-      agentId: 'chat',
+      agentId: 'pm',
       onThreadCreated,
     });
 
@@ -105,7 +107,7 @@ describe('createDiscussionMcpServer', () => {
       chatId: 'chat1',
       userId: 'user1',
       messageId: 'msg1',
-      agentId: 'chat',
+      agentId: 'pm',
       onThreadCreated,
     });
 

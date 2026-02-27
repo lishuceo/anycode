@@ -24,7 +24,6 @@ import { resolveAgent, shouldRespond } from '../agent/router.js';
 import { agentRegistry } from '../agent/registry.js';
 import { accountManager } from './multi-account.js';
 import type { AgentId, AgentConfig } from '../agent/types.js';
-import { buildChatAgentPrompt } from '../agent/prompts/chat.js';
 import { readPersonaFile } from '../agent/config-loader.js';
 import { createDiscussionMcpServer } from '../agent/tools/discussion.js';
 
@@ -1270,7 +1269,7 @@ async function executeDirectTask(
   userId: string,
   messageId: string,
   images?: ImageAttachment[],
-  agentId: AgentId = 'chat',
+  agentId: AgentId = 'pm',
   eventThreadId?: string,
   rootId?: string,
 ): Promise<void> {
@@ -1331,6 +1330,7 @@ async function executeDirectTask(
       },
     });
 
+    const personaPrompt = readPersonaFile(agentId);
     const result = await claudeExecutor.execute({
       sessionKey,
       prompt: effectivePrompt,
@@ -1342,7 +1342,7 @@ async function executeDirectTask(
       toolAllow: agentCfg.toolAllow,
       toolDeny: agentCfg.toolDeny,
       settingSources: agentCfg.settingSources,
-      systemPromptOverride: readPersonaFile(agentId) ?? buildChatAgentPrompt(),
+      ...(personaPrompt ? { systemPromptOverride: personaPrompt } : {}),
       resumeSessionId,
       images,
       // 不需要 workspace-manager 工具（Chat Agent 不切换工作区）

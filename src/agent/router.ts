@@ -71,7 +71,7 @@ export function validateBindings(bindings: AgentBinding[]): string[] {
   if (lastBinding.match.accountId === '*' && lastBinding.agentId === 'dev') {
     warnings.push(
       'Wildcard binding (accountId: "*") points to "dev" agent (write access). ' +
-      'Consider pointing it to "chat" (read-only) for safety.',
+      'Consider pointing it to "pm" (read-only) for safety.',
     );
   }
 

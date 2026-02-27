@@ -10,10 +10,10 @@
   },
   "agents": [
     {
-      "id": "chat",
-      "displayName": "ChatBot",
+      "id": "pm",
+      "displayName": "土豆儿",
       "replyMode": "direct",
-      "persona": "./personas/chat.md"
+      "persona": "./personas/pm.md"
     },
     {
       "id": "dev",
