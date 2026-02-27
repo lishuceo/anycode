@@ -13,8 +13,7 @@
       "id": "chat",
       "displayName": "ChatBot",
       "replyMode": "direct",
-      "systemPromptFile": "./prompts/chat.md",
-      "systemPromptMode": "replace"
+      "persona": "./personas/chat.md"
     },
     {
       "id": "dev",
