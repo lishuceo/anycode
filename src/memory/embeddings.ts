@@ -19,12 +19,17 @@ export interface EmbeddingProvider {
 /**
  * DashScope embedding provider using OpenAI-compatible API.
  * Uses the `openai` npm package to call DashScope's compatible-mode endpoint.
+ * Client initialization is async; embed calls await readiness.
  */
 export class DashScopeEmbeddingProvider implements EmbeddingProvider {
-  private client: import('openai').default | null = null;
   private readonly model: string;
+  private readonly clientReady: Promise<import('openai').default | null>;
+  private _available: boolean;
   readonly dimension: number;
-  readonly available: boolean;
+
+  get available(): boolean {
+    return this._available;
+  }
 
   constructor(
     apiKey: string,
@@ -34,20 +39,21 @@ export class DashScopeEmbeddingProvider implements EmbeddingProvider {
   ) {
     this.model = model;
     this.dimension = dimension;
-    this.available = !!apiKey;
+    this._available = !!apiKey;
 
-    if (this.available) {
-      // Lazy-import openai to avoid hard dependency when not used
-      import('openai').then((mod) => {
-        const OpenAI = mod.default;
-        this.client = new OpenAI({
-          apiKey,
-          baseURL: baseUrl,
+    if (this._available) {
+      this.clientReady = import('openai')
+        .then((mod) => {
+          const OpenAI = mod.default;
+          return new OpenAI({ apiKey, baseURL: baseUrl });
+        })
+        .catch(() => {
+          logger.warn('Failed to import openai SDK, embedding unavailable');
+          this._available = false;
+          return null;
         });
-      }).catch((err) => {
-        logger.warn({ err }, 'Failed to import openai SDK, embedding unavailable');
-        (this as { available: boolean }).available = false;
-      });
+    } else {
+      this.clientReady = Promise.resolve(null);
     }
   }
 
@@ -57,11 +63,12 @@ export class DashScopeEmbeddingProvider implements EmbeddingProvider {
   }
 
   async embedBatch(texts: string[]): Promise<number[][]> {
-    if (!this.client) {
+    const client = await this.clientReady;
+    if (!client) {
       throw new Error('DashScope embedding provider not available');
     }
 
-    const response = await this.client.embeddings.create({
+    const response = await client.embeddings.create({
       model: this.model,
       input: texts,
       dimensions: this.dimension,

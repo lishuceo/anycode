@@ -77,6 +77,26 @@ describe('DashScopeEmbeddingProvider', () => {
       1024,
     );
 
-    await expect(provider.embed('test')).rejects.toThrow();
+    await expect(provider.embed('test')).rejects.toThrow('not available');
+  });
+
+  it('should await client readiness before embed call', async () => {
+    // Provider with key — client init is async via import('openai')
+    const provider = new DashScopeEmbeddingProvider(
+      'sk-test-key',
+      'https://dashscope.aliyuncs.com/compatible-mode/v1',
+      'text-embedding-v4',
+      1024,
+    );
+
+    // embed() should not throw "not available" — it should await clientReady
+    // It will fail because the API key is fake, but the error should be from
+    // the API call, not from missing client
+    try {
+      await provider.embed('test');
+    } catch (err) {
+      // Should NOT be "not available" error (that would mean race condition)
+      expect((err as Error).message).not.toContain('not available');
+    }
   });
 });

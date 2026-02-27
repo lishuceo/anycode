@@ -75,6 +75,26 @@ describe('MemoryStore', () => {
     });
   });
 
+  describe('input validation', () => {
+    it('should reject empty content', () => {
+      expect(() => store.create(makeInput({ content: '' }))).toThrow('cannot be empty');
+    });
+
+    it('should reject whitespace-only content', () => {
+      expect(() => store.create(makeInput({ content: '   ' }))).toThrow('cannot be empty');
+    });
+
+    it('should reject content exceeding max length', () => {
+      const longContent = 'x'.repeat(100_001);
+      expect(() => store.create(makeInput({ content: longContent }))).toThrow('max length');
+    });
+
+    it('should reject too many tags', () => {
+      const tags = Array.from({ length: 51 }, (_, i) => `tag${i}`);
+      expect(() => store.create(makeInput({ tags }))).toThrow('Too many tags');
+    });
+  });
+
   describe('confidence level caps', () => {
     it('should cap L0 confidence at 0.7', () => {
       const memory = store.create(makeInput({
@@ -157,6 +177,20 @@ describe('MemoryStore', () => {
     });
   });
 
+  describe('findConflicting()', () => {
+    it('should return empty array when vector is not available', async () => {
+      // NoopProvider.available = false, so findConflicting returns []
+      const conflicts = await store.findConflicting('some content', 'fact', 'agent1');
+      expect(conflicts).toEqual([]);
+    });
+  });
+
+  describe('flush()', () => {
+    it('should resolve when no pending embeddings', async () => {
+      await expect(store.flush()).resolves.toBeUndefined();
+    });
+  });
+
   describe('two-phase write with embedding failure', () => {
     it('should still succeed BM25 search when embedding fails', async () => {
       // Create a mock provider that is "available" but fails on embed
@@ -167,11 +201,17 @@ describe('MemoryStore', () => {
         embedBatch: vi.fn().mockRejectedValue(new Error('API timeout')),
       };
 
+      // Mock vectorEnabled to true so the embed path is actually exercised
+      Object.defineProperty(db, 'vectorEnabled', { value: true, writable: true });
+
       const storeWithFailing = new MemoryStore(db, failingProvider);
       const mem = storeWithFailing.create(makeInput({ content: 'resilient memory' }));
 
-      // Wait a tick for the async embed to fail
-      await new Promise((r) => setTimeout(r, 50));
+      // Wait for the async embed to fail
+      await storeWithFailing.flush();
+
+      // embed should have been called
+      expect(failingProvider.embed).toHaveBeenCalledOnce();
 
       // BM25 search should still work
       const ftsResults = db.searchFts('resilient', 10);

@@ -2,6 +2,7 @@
 // Memory System — Hybrid Search + Scoring
 // ============================================================
 
+import { logger } from '../utils/logger.js';
 import { MemoryDatabase } from './database.js';
 import type { EmbeddingProvider } from './embeddings.js';
 import type { MemoryType, Memory, MemorySearchResult, MemorySearchQuery } from './types.js';
@@ -23,6 +24,9 @@ const DECAY_RATE: Record<MemoryType, number> = {
   decision: 0.002,   // ~347 day half-life
   relation: 0.003,   // ~231 day half-life
 };
+
+/** Max allowed search limit to prevent resource exhaustion */
+const MAX_SEARCH_LIMIT = 100;
 
 function computeRecencyDecay(type: MemoryType, daysSinceCreated: number): number {
   return Math.exp(-DECAY_RATE[type] * daysSinceCreated);
@@ -56,7 +60,7 @@ export class HybridSearch {
   }
 
   async search(query: MemorySearchQuery): Promise<MemorySearchResult[]> {
-    const limit = query.limit ?? 10;
+    const limit = Math.min(query.limit ?? 10, MAX_SEARCH_LIMIT);
     const now = new Date();
     const candidateLimit = Math.max(limit * 10, 200);
 
@@ -68,6 +72,7 @@ export class HybridSearch {
     // ── Step 1: BM25 search (always) ──
     const bm25Map = new Map<string, { memory: Memory; bm25Score: number }>();
     try {
+      // FTS5 query is sanitized inside searchFts()
       const ftsResults = this.db.searchFts(query.query, candidateLimit);
       for (const row of ftsResults) {
         const memory = MemoryDatabase.rowToMemory(row);
@@ -76,8 +81,8 @@ export class HybridSearch {
           bm25Score: normalizeBm25Rank(row.rank),
         });
       }
-    } catch {
-      // FTS5 query syntax error (e.g., special chars) — skip BM25 results
+    } catch (err) {
+      logger.warn({ err, query: query.query }, 'FTS5 search failed, skipping BM25 results');
     }
 
     // ── Step 2: Vector search (if available) ──
@@ -90,8 +95,8 @@ export class HybridSearch {
           // Convert cosine distance to similarity score (0~1)
           vecMap.set(vr.memory_id, Math.max(0, 1 - vr.distance));
         }
-      } catch {
-        // Embedding failed — continue with BM25 only
+      } catch (err) {
+        logger.warn({ err }, 'Vector search failed, continuing with BM25 only');
       }
     }
 
@@ -150,10 +155,8 @@ export class HybridSearch {
     candidates.sort((a, b) => b.finalScore - a.finalScore);
     const results = candidates.slice(0, limit);
 
-    // Update last_accessed_at for returned results
-    for (const r of results) {
-      this.db.updateLastAccessed(r.memory.id);
-    }
+    // Update last_accessed_at in a single transaction
+    this.db.updateLastAccessedBatch(results.map((r) => r.memory.id));
 
     return results;
   }

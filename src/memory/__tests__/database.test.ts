@@ -12,7 +12,7 @@ vi.mock('../../utils/logger.js', () => ({
   },
 }));
 
-import { MemoryDatabase } from '../database.js';
+import { MemoryDatabase, sanitizeFtsQuery } from '../database.js';
 import type { MemoryRow } from '../database.js';
 
 function makeRow(overrides: Partial<MemoryRow> = {}): MemoryRow {
@@ -249,6 +249,90 @@ describe('MemoryDatabase', () => {
 
       const results = db.searchVec(embedding, 10);
       expect(results.every((r) => r.memory_id !== 'mem_vec_2')).toBe(true);
+    });
+  });
+
+  describe('sanitizeFtsQuery', () => {
+    it('should wrap tokens in double quotes', () => {
+      expect(sanitizeFtsQuery('hello world')).toBe('"hello" "world"');
+    });
+
+    it('should strip FTS5 special characters', () => {
+      // ':' and '*' are stripped, leaving two separate tokens
+      expect(sanitizeFtsQuery('content:secret*')).toBe('"content" "secret"');
+    });
+
+    it('should handle query with only special chars', () => {
+      expect(sanitizeFtsQuery('***')).toBe('""');
+    });
+
+    it('should handle empty string', () => {
+      expect(sanitizeFtsQuery('')).toBe('""');
+    });
+
+    it('should strip double quotes to prevent injection', () => {
+      expect(sanitizeFtsQuery('"hello" OR "world"')).toBe('"hello" "OR" "world"');
+    });
+
+    it('should strip parentheses', () => {
+      expect(sanitizeFtsQuery('(NOT secret)')).toBe('"NOT" "secret"');
+    });
+  });
+
+  describe('updateMemory nullable fields', () => {
+    it('should allow clearing invalid_at with explicit null', () => {
+      const row = makeRow({ id: 'mem_null_1' });
+      db.insertMemory(row);
+
+      // First set invalid_at
+      db.supersedeMemory('mem_null_1', 'mem_other');
+      expect(db.getMemory('mem_null_1')!.invalid_at).not.toBeNull();
+
+      // Now clear it via updateMemory with explicit null
+      db.updateMemory({
+        id: 'mem_null_1',
+        invalid_at: null,
+        superseded_by: null,
+        updated_at: new Date().toISOString(),
+      });
+
+      const result = db.getMemory('mem_null_1');
+      expect(result!.invalid_at).toBeNull();
+      expect(result!.superseded_by).toBeNull();
+    });
+  });
+
+  describe('updateLastAccessedBatch', () => {
+    it('should update last_accessed_at for multiple memories in one transaction', () => {
+      const row1 = makeRow({ id: 'mem_batch_1' });
+      const row2 = makeRow({ id: 'mem_batch_2' });
+      db.insertMemory(row1);
+      db.insertMemory(row2);
+
+      expect(db.getMemory('mem_batch_1')!.last_accessed_at).toBeNull();
+      expect(db.getMemory('mem_batch_2')!.last_accessed_at).toBeNull();
+
+      db.updateLastAccessedBatch(['mem_batch_1', 'mem_batch_2']);
+
+      expect(db.getMemory('mem_batch_1')!.last_accessed_at).not.toBeNull();
+      expect(db.getMemory('mem_batch_2')!.last_accessed_at).not.toBeNull();
+    });
+
+    it('should handle empty array', () => {
+      // Should not throw
+      db.updateLastAccessedBatch([]);
+    });
+  });
+
+  describe('dimension validation', () => {
+    it('should reject invalid dimension', async () => {
+      await expect(MemoryDatabase.create(join(tempDir, 'bad.db'), -1))
+        .rejects.toThrow('Invalid embedding dimension');
+    });
+
+    it('should reject non-integer dimension', async () => {
+      await expect(MemoryDatabase.create(join(tempDir, 'bad.db'), 1.5))
+        .rejects.toThrow('Invalid embedding dimension');
     });
   });
 

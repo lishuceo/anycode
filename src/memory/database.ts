@@ -44,6 +44,19 @@ export interface VecResultRow {
   distance: number;
 }
 
+/**
+ * Sanitize user input for FTS5 MATCH queries.
+ * Strips FTS5 operators and wraps each token in double quotes for literal matching.
+ */
+export function sanitizeFtsQuery(raw: string): string {
+  // Remove FTS5 special characters: * " ( ) { } ^ :
+  const cleaned = raw.replace(/[*"(){}^:]/g, ' ');
+  // Split into tokens, wrap each in quotes for literal matching
+  const tokens = cleaned.split(/\s+/).filter(Boolean);
+  if (tokens.length === 0) return '""';
+  return tokens.map((t) => `"${t}"`).join(' ');
+}
+
 export class MemoryDatabase {
   readonly db: Database.Database;
   readonly vectorEnabled: boolean;
@@ -60,6 +73,7 @@ export class MemoryDatabase {
   private stmtSearchVec: Database.Statement | null = null;
   private stmtUpdateLastAccessed: Database.Statement;
   private stmtUpdateEvidence: Database.Statement;
+  private txnUpdateLastAccessedBatch: (ids: string[]) => void;
 
   private constructor(db: Database.Database, vectorEnabled: boolean) {
     this.db = db;
@@ -126,6 +140,14 @@ export class MemoryDatabase {
       WHERE id = @id
     `);
 
+    // Batch update last_accessed_at in a single transaction
+    this.txnUpdateLastAccessedBatch = db.transaction((ids: string[]) => {
+      const now = new Date().toISOString();
+      for (const id of ids) {
+        this.stmtUpdateLastAccessed.run({ id, last_accessed_at: now });
+      }
+    });
+
     // vec0 statements (only if enabled)
     if (vectorEnabled) {
       this.stmtInsertVec = db.prepare(`
@@ -148,6 +170,10 @@ export class MemoryDatabase {
    * sets up schema and returns MemoryDatabase instance.
    */
   static async create(dbPath: string, dimension: number = 1024): Promise<MemoryDatabase> {
+    if (!Number.isInteger(dimension) || dimension <= 0 || dimension > 65536) {
+      throw new Error(`Invalid embedding dimension: ${dimension}`);
+    }
+
     dbPath = resolve(dbPath);
     mkdirSync(dirname(dbPath), { recursive: true, mode: 0o700 });
 
@@ -221,12 +247,12 @@ export class MemoryDatabase {
       CREATE INDEX IF NOT EXISTS idx_memories_workspace ON memories(workspace_dir);
     `);
 
-    // vec0 virtual table (conditional)
+    // vec0 virtual table (conditional, with cosine distance)
     if (vectorEnabled) {
       db.exec(`
         CREATE VIRTUAL TABLE IF NOT EXISTS memories_vec USING vec0(
           memory_id TEXT PRIMARY KEY,
-          embedding float[${dimension}]
+          embedding float[${dimension}] distance_metric=cosine
         );
       `);
     }
@@ -256,8 +282,8 @@ export class MemoryDatabase {
       confidence: row.confidence ?? existing.confidence,
       confidence_level: row.confidence_level ?? existing.confidence_level,
       evidence_count: row.evidence_count ?? existing.evidence_count,
-      invalid_at: row.invalid_at ?? existing.invalid_at,
-      superseded_by: row.superseded_by ?? existing.superseded_by,
+      invalid_at: 'invalid_at' in row ? row.invalid_at : existing.invalid_at,
+      superseded_by: 'superseded_by' in row ? row.superseded_by : existing.superseded_by,
       updated_at: row.updated_at,
     });
   }
@@ -284,6 +310,11 @@ export class MemoryDatabase {
     });
   }
 
+  updateLastAccessedBatch(ids: string[]): void {
+    if (ids.length === 0) return;
+    this.txnUpdateLastAccessedBatch(ids);
+  }
+
   updateEvidence(id: string): void {
     this.stmtUpdateEvidence.run({
       id,
@@ -294,7 +325,8 @@ export class MemoryDatabase {
   // ── FTS5 Search ──
 
   searchFts(query: string, limit: number = 20): FtsResultRow[] {
-    return this.stmtSearchFts.all({ query, limit }) as FtsResultRow[];
+    const sanitized = sanitizeFtsQuery(query);
+    return this.stmtSearchFts.all({ query: sanitized, limit }) as FtsResultRow[];
   }
 
   // ── Vector Operations (conditional) ──
@@ -303,7 +335,7 @@ export class MemoryDatabase {
     if (!this.stmtInsertVec) return;
     this.stmtInsertVec.run({
       memory_id: memoryId,
-      embedding: Buffer.from(embedding.buffer),
+      embedding: Buffer.from(embedding.buffer, embedding.byteOffset, embedding.byteLength),
     });
   }
 
@@ -315,7 +347,7 @@ export class MemoryDatabase {
   searchVec(embedding: Float32Array, limit: number = 20): VecResultRow[] {
     if (!this.stmtSearchVec) return [];
     return this.stmtSearchVec.all({
-      embedding: Buffer.from(embedding.buffer),
+      embedding: Buffer.from(embedding.buffer, embedding.byteOffset, embedding.byteLength),
       limit,
     }) as VecResultRow[];
   }

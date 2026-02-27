@@ -10,6 +10,13 @@ import type { Memory, MemoryCreateInput, ConfidenceLevel } from './types.js';
 import { CONFIDENCE_CAPS } from './types.js';
 import type { MemoryRow } from './database.js';
 
+/** Max content length (characters) */
+const MAX_CONTENT_LENGTH = 100_000;
+/** Max number of tags per memory */
+const MAX_TAGS = 50;
+/** Max metadata JSON size (bytes) */
+const MAX_METADATA_SIZE = 50_000;
+
 function generateMemoryId(): string {
   return `mem_${Date.now()}_${randomBytes(4).toString('hex')}`;
 }
@@ -23,6 +30,7 @@ function clampConfidence(confidence: number, level: ConfidenceLevel): number {
 export class MemoryStore {
   private readonly db: MemoryDatabase;
   private readonly embeddingProvider: EmbeddingProvider;
+  private pendingEmbeddings: Promise<void>[] = [];
 
   constructor(db: MemoryDatabase, embeddingProvider: EmbeddingProvider) {
     this.db = db;
@@ -35,6 +43,21 @@ export class MemoryStore {
    * Phase 2 (async fire-and-forget): embed content → INSERT into vec0
    */
   create(input: MemoryCreateInput): Memory {
+    // Input validation
+    if (!input.content.trim()) {
+      throw new Error('Memory content cannot be empty');
+    }
+    if (input.content.length > MAX_CONTENT_LENGTH) {
+      throw new Error(`Memory content exceeds max length (${MAX_CONTENT_LENGTH})`);
+    }
+    if (input.tags && input.tags.length > MAX_TAGS) {
+      throw new Error(`Too many tags (max ${MAX_TAGS})`);
+    }
+    const metadataStr = JSON.stringify(input.metadata ?? {});
+    if (metadataStr.length > MAX_METADATA_SIZE) {
+      throw new Error(`Metadata too large (max ${MAX_METADATA_SIZE} bytes)`);
+    }
+
     const id = generateMemoryId();
     const now = new Date().toISOString();
     const level = input.confidenceLevel ?? 'L0';
@@ -49,7 +72,7 @@ export class MemoryStore {
       type: input.type,
       content: input.content,
       tags: JSON.stringify(input.tags ?? []),
-      metadata: JSON.stringify(input.metadata ?? {}),
+      metadata: metadataStr,
       confidence,
       confidence_level: level,
       evidence_count: 1,
@@ -69,8 +92,12 @@ export class MemoryStore {
 
     // Phase 2: async embedding + vec0 (fire-and-forget)
     if (this.embeddingProvider.available && this.db.vectorEnabled) {
-      this.embedAndStore(id, input.content).catch((err) => {
+      const p = this.embedAndStore(id, input.content).catch((err) => {
         logger.warn({ err, memoryId: id }, 'Failed to embed memory (non-blocking)');
+      });
+      this.pendingEmbeddings.push(p);
+      p.finally(() => {
+        this.pendingEmbeddings = this.pendingEmbeddings.filter((x) => x !== p);
       });
     }
 
@@ -149,8 +176,15 @@ export class MemoryStore {
     }
   }
 
+  /** Wait for all pending async embedding operations to complete */
+  async flush(): Promise<void> {
+    await Promise.allSettled(this.pendingEmbeddings);
+  }
+
   private async embedAndStore(memoryId: string, content: string): Promise<void> {
     const embedding = await this.embeddingProvider.embed(content);
+    // Verify memory still exists before inserting vector (avoid orphans)
+    if (!this.db.getMemory(memoryId)) return;
     this.db.insertVec(memoryId, new Float32Array(embedding));
   }
 }

@@ -2,7 +2,7 @@
 // Memory System — Public API
 // ============================================================
 
-export { MemoryDatabase } from './database.js';
+export { MemoryDatabase, sanitizeFtsQuery } from './database.js';
 export type { MemoryRow, FtsResultRow, VecResultRow } from './database.js';
 
 export { MemoryStore } from './store.js';
