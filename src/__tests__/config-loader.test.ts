@@ -102,9 +102,9 @@ describe('AgentConfigFileSchema', () => {
     expect(result.success).toBe(false);
   });
 
-  it('accepts systemPromptFile', () => {
+  it('accepts persona', () => {
     const result = AgentConfigFileSchema.safeParse({
-      agents: [{ id: 'test', systemPromptFile: './prompts/test.md' }],
+      agents: [{ id: 'test', persona: './personas/test.md' }],
     });
     expect(result.success).toBe(true);
   });
@@ -288,18 +288,18 @@ describe('config-loader', () => {
     });
   });
 
-  describe('readSystemPromptFile', () => {
-    it('returns undefined when no systemPromptFile configured', async () => {
+  describe('readPersonaFile', () => {
+    it('returns undefined when no persona configured', async () => {
       const loader = await import('../agent/config-loader.js');
-      const result = loader.readSystemPromptFile('dev');
-      // dev agent has no systemPromptFile by default
+      const result = loader.readPersonaFile('dev');
+      // dev agent has no persona by default
       expect(result).toBeUndefined();
     });
 
     it('reads file content when configured', async () => {
       writeFileSync(promptPath, 'Test prompt content');
       writeFileSync(configPath, JSON.stringify({
-        agents: [{ id: 'prompt-test', systemPromptFile: promptPath }],
+        agents: [{ id: 'prompt-test', persona: promptPath }],
       }));
 
       const { config } = await import('../config.js');
@@ -308,7 +308,7 @@ describe('config-loader', () => {
       const loader = await import('../agent/config-loader.js');
       loader.loadAgentConfig();
 
-      const content = loader.readSystemPromptFile('prompt-test');
+      const content = loader.readPersonaFile('prompt-test');
       expect(content).toBe('Test prompt content');
 
       // Restore

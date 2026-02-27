@@ -45,10 +45,8 @@ export const AgentConfigInputSchema = z.object({
   requiresApproval: z.boolean().optional(),
   /** 默认回复模式 */
   replyMode: z.enum(['direct', 'thread']).optional(),
-  /** 系统提示词文件路径（每次 query 重新读取） */
-  systemPromptFile: z.string().optional(),
-  /** 系统提示词模式：'append'（追加到 Claude Code 内置 prompt）| 'replace'（完整替换） */
-  systemPromptMode: z.enum(['append', 'replace']).optional(),
+  /** 人格提示词文件路径（每次 query 重新读取）。有 persona → replace 模式；无 → append 模式 */
+  persona: z.string().optional(),
 });
 
 // ─── Defaults（全部 optional） ──────────────────────────────
@@ -61,8 +59,7 @@ export const AgentDefaultsSchema = z.object({
   maxTurns: z.number().int().positive().max(10000).optional(),
   requiresApproval: z.boolean().optional(),
   replyMode: z.enum(['direct', 'thread']).optional(),
-  systemPromptFile: z.string().optional(),
-  systemPromptMode: z.enum(['append', 'replace']).optional(),
+  persona: z.string().optional(),
 });
 
 // ─── 顶层配置文件 ──────────────────────────────────────────
