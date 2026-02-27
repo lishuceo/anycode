@@ -135,8 +135,16 @@ export class SessionManager {
   /**
    * 保存 thread 对应的 Claude Code session ID
    */
-  setThreadConversationId(threadId: string, conversationId: string, cwd: string, agentId: string = 'dev'): void {
-    this.db.updateThreadConversationId(this.makeThreadKey(threadId, agentId), conversationId, cwd);
+  setThreadConversationId(threadId: string, conversationId: string, cwd: string, agentId: string = 'dev', systemPromptHash?: string): void {
+    this.db.updateThreadConversationId(this.makeThreadKey(threadId, agentId), conversationId, cwd, systemPromptHash);
+  }
+
+  /**
+   * 清空 thread 的 conversationId（强制下次消息起新 session）
+   */
+  resetThreadConversation(threadId: string, agentId: string = 'dev'): void {
+    this.db.resetThreadConversation(this.makeThreadKey(threadId, agentId));
+    logger.info({ threadId, agentId }, 'Thread conversation reset');
   }
 
   /**

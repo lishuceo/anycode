@@ -50,6 +50,8 @@ export interface ThreadSession {
   conversationId?: string;
   /** 创建 conversationId 时的 cwd（用于 cwd 匹配校验） */
   conversationCwd?: string;
+  /** 创建 conversationId 时的 system prompt hash（用于自动失效检测） */
+  systemPromptHash?: string;
   /** 路由是否已完成（首条消息路由后设为 true） */
   routingCompleted?: boolean;
   /** 路由状态（need_clarification 时非空） */
