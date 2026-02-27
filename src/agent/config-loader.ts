@@ -87,8 +87,7 @@ function mergeAgentConfig(input: AgentConfigInput, defaults: AgentDefaults): Age
     maxTurns: input.maxTurns ?? defaults.maxTurns ?? BUILTIN_DEFAULTS.maxTurns!,
     requiresApproval: input.requiresApproval ?? defaults.requiresApproval ?? BUILTIN_DEFAULTS.requiresApproval!,
     replyMode: input.replyMode ?? defaults.replyMode ?? BUILTIN_DEFAULTS.replyMode! as 'direct' | 'thread',
-    systemPromptFile: input.systemPromptFile ?? defaults.systemPromptFile,
-    systemPromptMode: input.systemPromptMode ?? defaults.systemPromptMode,
+    persona: input.persona ?? defaults.persona,
     toolAllow,
     toolDeny,
   };
@@ -172,22 +171,22 @@ export function reloadAgentConfig(): LoadResult {
   }
 }
 
-// ─── System Prompt 文件读取 ─────────────────────────────────
+// ─── Persona 文件读取 ────────────────────────────────────────
 
 /**
- * 读取 agent 的系统提示词文件。
+ * 读取 agent 的人格提示词文件。
  * 每次 query 调用（不缓存），修改文件即生效。
  * 返回 undefined 时调用方应 fallback 到硬编码 prompt。
  */
-export function readSystemPromptFile(agentId: string): string | undefined {
+export function readPersonaFile(agentId: string): string | undefined {
   const agentCfg = agentRegistry.get(agentId);
-  const promptFile = agentCfg?.systemPromptFile;
-  if (!promptFile) return undefined;
+  const personaFile = agentCfg?.persona;
+  if (!personaFile) return undefined;
 
   const baseDir = configFileDir ?? process.cwd();
-  const resolvedPath = promptFile.startsWith('/')
-    ? promptFile
-    : resolve(baseDir, promptFile);
+  const resolvedPath = personaFile.startsWith('/')
+    ? personaFile
+    : resolve(baseDir, personaFile);
 
   // 安全：限制路径在配置目录或项目目录内，防止路径穿越读取敏感文件
   const allowedDir = resolve(baseDir);
@@ -195,7 +194,7 @@ export function readSystemPromptFile(agentId: string): string | undefined {
   if (!resolvedPath.startsWith(allowedDir + '/') && !resolvedPath.startsWith(projectDir + '/')) {
     logger.warn(
       { agentId, path: resolvedPath, allowedDir, projectDir },
-      'systemPromptFile path escapes allowed directories, rejected',
+      'persona file path escapes allowed directories, rejected',
     );
     return undefined;
   }
@@ -205,7 +204,7 @@ export function readSystemPromptFile(agentId: string): string | undefined {
   } catch (err) {
     logger.warn(
       { agentId, path: resolvedPath, err: (err as Error).message },
-      'Failed to read systemPromptFile, falling back to default',
+      'Failed to read persona file, falling back to default',
     );
     return undefined;
   }

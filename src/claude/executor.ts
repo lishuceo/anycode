@@ -40,10 +40,8 @@ export interface ExecuteInput extends ExecuteOptions {
   onStreamUpdate?: (text: string) => Promise<void>;
   onTurn?: (turn: TurnInfo) => Promise<void>;
   historySummaries?: string;
-  /** 覆盖 system prompt（用于 pipeline 各角色独立 prompt） */
+  /** 覆盖 system prompt（用于 pipeline 各角色独立 prompt 或 persona）。有值 → replace 模式；无 → append 模式 */
   systemPromptOverride?: string;
-  /** 系统提示词模式：'append'（追加到 Claude Code 内置 prompt）| 'replace'（完整替换） */
-  systemPromptMode?: 'append' | 'replace';
   /** 覆盖单步空闲超时秒数 (默认使用 CLAUDE_TIMEOUT 配置)。每收到一条 SDK 消息就重置，不限制总时长 */
   timeoutSeconds?: number;
   /** 硬性总超时秒数（从开始计时，不因活动重置）。适用于 routing 等必须快速完成的短任务 */
@@ -400,9 +398,9 @@ export class ClaudeExecutor {
         ...(resumeSessionId ? { resume: resumeSessionId } : {}),
 
         // 系统提示词：
-        // - replace 模式：完整替换 Claude Code 内置 prompt（chat 等不需要开发指令的角色）
-        // - append 模式（默认）：在 Claude Code 内置 prompt 后追加
-        systemPrompt: input.systemPromptMode === 'replace'
+        // - 有 systemPromptOverride → replace 模式（chat persona / pipeline 角色）
+        // - 无 systemPromptOverride → append 模式（dev agent 等保持 Claude Code 原味）
+        systemPrompt: input.systemPromptOverride != null
           ? promptAppend
           : { type: 'preset', preset: 'claude_code', append: promptAppend },
 
