@@ -489,13 +489,11 @@ async function handleMessageEvent(data: MessageEventData, accountId: string = 'd
   // ── 无需 @mention 的斜杠命令（在 @mention 过滤之前拦截） ──
   if (text) {
     const trimmedText = text.trim();
-    if (trimmedText === '/auth' || trimmedText === '授权' || trimmedText.startsWith('/auth ') || trimmedText.startsWith('授权 ')) {
+    if (trimmedText === '/auth' || trimmedText.startsWith('/auth ')) {
       // /auth 命令：多 bot 模式下仅 dev-bot 处理，避免重复响应
       if (!isMultiBotMode() || agentId === 'dev') {
         const rootReplyId = rootId || undefined;
-        const codeArg = trimmedText.startsWith('/auth ') ? trimmedText.slice('/auth '.length).trim()
-          : trimmedText.startsWith('授权 ') ? trimmedText.slice('授权 '.length).trim()
-          : '';
+        const codeArg = trimmedText.startsWith('/auth ') ? trimmedText.slice('/auth '.length).trim() : '';
         if (codeArg) {
           try {
             await handleManualCode(codeArg, userId, chatId);
