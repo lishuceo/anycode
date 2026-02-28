@@ -721,10 +721,11 @@ export class ClaudeExecutor {
   async waitForRunningTasks(timeoutMs = 15000): Promise<void> {
     if (this.runningTasks.size === 0) return;
     logger.info({ count: this.runningTasks.size }, 'Waiting for running tasks to finish...');
+    let timer: ReturnType<typeof setTimeout>;
     await Promise.race([
       Promise.allSettled([...this.runningTasks]),
-      new Promise<void>(resolve => setTimeout(resolve, timeoutMs)),
-    ]);
+      new Promise<void>(resolve => { timer = setTimeout(resolve, timeoutMs); }),
+    ]).finally(() => clearTimeout(timer!));
     logger.info({ remaining: this.runningTasks.size }, 'Running tasks wait completed');
   }
 
