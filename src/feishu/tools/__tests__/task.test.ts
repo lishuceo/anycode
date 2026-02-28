@@ -33,6 +33,11 @@ vi.mock('../../client.js', () => ({
   },
 }));
 
+const mockWithUserAccessToken = vi.fn((token: string) => ({ _userAccessToken: token }));
+vi.mock('@larksuiteoapi/node-sdk', () => ({
+  withUserAccessToken: (token: string) => mockWithUserAccessToken(token),
+}));
+
 let capturedHandler: (args: Record<string, unknown>) => Promise<unknown>;
 vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
   tool: (_name: string, _desc: string, _schema: unknown, handler: unknown) => {
@@ -421,12 +426,14 @@ describe('feishu_task tool with getUserToken', () => {
     expect(parsed.items).toHaveLength(1);
     expect(parsed.items[0].guid).toBe('T1');
 
-    // Should use client.request with user token header, not client.task.v1.task.list
-    expect(mockRequest).toHaveBeenCalledWith(expect.objectContaining({
-      method: 'GET',
-      url: '/open-apis/task/v2/tasks',
-      headers: { Authorization: 'Bearer u-test-access-token' },
-    }));
+    // Should use client.request with lark.withUserAccessToken, not client.task.v1.task.list
+    expect(mockRequest).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: 'GET',
+        url: '/open-apis/task/v2/tasks',
+      }),
+      expect.objectContaining({ _userAccessToken: 'u-test-access-token' }),
+    );
     expect(mockTaskList).not.toHaveBeenCalled();
   });
 

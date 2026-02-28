@@ -1,5 +1,6 @@
 import { tool } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
+import * as lark from '@larksuiteoapi/node-sdk';
 import { feishuClient } from '../client.js';
 import { logger } from '../../utils/logger.js';
 import { validateToken } from './validation.js';
@@ -226,8 +227,7 @@ export function feishuTaskTool(getUserToken?: () => Promise<string | undefined>)
                 method: 'GET',
                 url: '/open-apis/task/v2/tasks',
                 params: v2Params,
-                headers: { Authorization: `Bearer ${userToken}` },
-              });
+              }, lark.withUserAccessToken(userToken));
               if (resp.code !== 0) throw new Error(`查询任务列表失败 (${resp.code}): ${resp.msg}`);
 
               const items = (resp.data?.items ?? []).map((item) => ({
