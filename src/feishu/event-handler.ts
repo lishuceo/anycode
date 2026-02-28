@@ -541,7 +541,12 @@ async function handleMessageEvent(data: MessageEventData, accountId: string = 'd
     //       @了别的 bot 时话题创建者不应抢答（@人类用户不算，可能只是 tag 提醒）
     // 仅限话题发起用户或 owner — 非 owner 的旁观者无 @mention 时静默忽略，
     // 避免好奇路人的消息干扰 dev-bot 正在进行的工作
-    const anyBotMentioned = mentions.some(m => allBotOpenIds.has(m.id.open_id ?? ''));
+    // allBotOpenIds 仅包含各 bot 自身 fetchBotInfo 返回的 open_id（同一 app 视角）。
+    // 但飞书 open_id 是 app 级别的：pm-bot 收到的 @张全栈 mention 的 open_id ≠ dev-bot 自己的 open_id。
+    // 补充 chatBotRegistry 中通过被动收集（sender_type=app）记录的跨 app bot open_id。
+    const registryBotIds = chatBotRegistry.getBots(chatId).map(b => b.openId);
+    const knownBotIds = new Set([...allBotOpenIds, ...registryBotIds]);
+    const anyBotMentioned = mentions.some(m => knownBotIds.has(m.id.open_id ?? ''));
     let threadBypass = false;
     if (threadId && !anyBotMentioned && isThreadCreatorAgent(threadId, agentId)) {
       const ts = sessionManager.getThreadSession(threadId, agentId);
@@ -551,7 +556,7 @@ async function handleMessageEvent(data: MessageEventData, accountId: string = 'd
       }
     }
 
-    if (!threadBypass && !shouldRespond(chatType, mentions, botOpenId, allBotOpenIds, commanderOpenId)) {
+    if (!threadBypass && !shouldRespond(chatType, mentions, botOpenId, knownBotIds, commanderOpenId)) {
       return;
     }
   } else {
@@ -1891,6 +1896,13 @@ async function parseMessage(data: MessageEventData): Promise<ParsedMessage | nul
   let mentionedBot = false;
   const botOpenId = feishuClient.botOpenId;
   const allBotIds = isMultiBotMode() ? accountManager.getAllBotOpenIds() : new Set<string>();
+  // 补充 chatBotRegistry 的跨 app bot open_id（与 handleMessageEvent 中的 anyBotMentioned 逻辑一致）
+  const chatId = message.chat_id;
+  if (chatId) {
+    for (const b of chatBotRegistry.getBots(chatId)) {
+      allBotIds.add(b.openId);
+    }
+  }
   if (message.mentions) {
     for (const mention of message.mentions) {
       const openId = mention.id.open_id ?? '';
