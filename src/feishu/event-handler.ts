@@ -1921,7 +1921,8 @@ async function parseMessage(data: MessageEventData): Promise<ParsedMessage | nul
   }
 
   // 纯文本消息需要有文字内容；图片消息允许 text 为空
-  if (!text.trim() && !images?.length) return null;
+  // 例外：@bot 的空消息不丢弃（上下文会自动加载，bot 可以基于历史消息回复）
+  if (!text.trim() && !images?.length && !mentionedBot) return null;
 
   return {
     text: text.trim(),

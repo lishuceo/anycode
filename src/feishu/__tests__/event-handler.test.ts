@@ -1012,3 +1012,42 @@ describe('executePipelineTask routing + isolation', () => {
     expect(result.reason).toBe('error');
   });
 });
+
+// ============================================================
+// parseMessage empty @mention 测试
+//
+// 验证：纯 @bot 消息（无附带文字）不应被丢弃。
+// parseMessage 是私有函数，这里提取其空消息判断逻辑进行测试。
+// ============================================================
+
+describe('parseMessage empty @mention handling', () => {
+  /**
+   * 模拟 parseMessage 中清理 mention 后的空消息判断逻辑
+   * (从 event-handler.ts 提取)
+   */
+  function shouldDropMessage(text: string, images: unknown[] | undefined, mentionedBot: boolean): boolean {
+    // 对应 event-handler.ts 中的:
+    // if (!text.trim() && !images?.length && !mentionedBot) return null;
+    return !text.trim() && !images?.length && !mentionedBot;
+  }
+
+  it('should drop message with no text, no images, no bot mention', () => {
+    expect(shouldDropMessage('', undefined, false)).toBe(true);
+  });
+
+  it('should NOT drop message when bot is mentioned even if text is empty', () => {
+    expect(shouldDropMessage('', undefined, true)).toBe(false);
+  });
+
+  it('should NOT drop message with text content', () => {
+    expect(shouldDropMessage('hello', undefined, false)).toBe(false);
+  });
+
+  it('should NOT drop message with images', () => {
+    expect(shouldDropMessage('', [{ data: 'base64...', mediaType: 'image/png' }], false)).toBe(false);
+  });
+
+  it('should NOT drop whitespace-only message when bot is mentioned', () => {
+    expect(shouldDropMessage('   ', undefined, true)).toBe(false);
+  });
+});
