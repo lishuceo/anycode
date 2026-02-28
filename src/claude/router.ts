@@ -258,6 +258,7 @@ export async function routeWorkspace(
       workingDir: config.claude.defaultWorkDir,
       systemPromptOverride: buildRoutingSystemPrompt(projects),
       disableWorkspaceTool: true,
+      disableThinking: true,
       model: 'claude-sonnet-4-6',
       settingSources: [],
       maxTurns: 10,

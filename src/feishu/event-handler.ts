@@ -936,6 +936,22 @@ async function executeClaudeTask(
 
   if (resolved.status !== 'resolved') return;
 
+  // clarification 恢复后发现原始请求是 /dev pipeline → 转交 pipeline 执行
+  if (resolved.pipelineMode) {
+    const { workingDir, threadReplyMsgId, prompt } = resolved.ctx;
+    await createPendingPipeline({
+      chatId,
+      userId,
+      messageId,
+      rootId,
+      threadId: eventThreadId,
+      prompt,
+      workingDir,
+      threadReplyMsgId,
+    });
+    return;
+  }
+
   const { threadReplyMsgId, workingDir, threadId, threadSession, prompt } = resolved.ctx;
   const session = sessionManager.getOrCreate(chatId, userId, agentId);
 
@@ -1611,6 +1627,7 @@ async function executePipelineTask(
       messageId,
       rootId,
       threadId: eventThreadId,
+      pipelineMode: true,
     });
 
     if (resolved.status !== 'resolved') return;

@@ -36,7 +36,7 @@ export interface ThreadContext {
 }
 
 export type ResolveResult =
-  | { status: 'resolved'; ctx: ThreadContext }
+  | { status: 'resolved'; ctx: ThreadContext; pipelineMode?: boolean }
   | { status: 'pending' }   // 路由待澄清，已回复用户
   | { status: 'stale' }     // 工作区已过期，已回复用户
   | { status: 'error' };    // 工作区创建失败，已回复用户
@@ -52,6 +52,8 @@ export interface ResolveParams {
   threadId?: string;
   /** agent 角色标识（多 agent 模式下传入，默认 'dev'） */
   agentId?: string;
+  /** 是否为 /dev pipeline 模式（存入 routing state，clarification 后恢复） */
+  pipelineMode?: boolean;
 }
 
 /**
@@ -91,6 +93,7 @@ export async function resolveThreadContext(params: ResolveParams): Promise<Resol
   // 3. 路由状态机：决定工作目录
   let workingDir: string;
   let warning: string | undefined;
+  let restoredPipelineMode: boolean | undefined;
   const needsRouting = (threadId && threadSession?.routingState?.status === 'pending_clarification')
     || (threadId && !threadSession?.routingCompleted);
 
@@ -130,6 +133,7 @@ export async function resolveThreadContext(params: ResolveParams): Promise<Resol
           originalPrompt: threadSession.routingState.originalPrompt,
           question,
           retryCount: retryCount + 1,
+          pipelineMode: threadSession.routingState.pipelineMode,
         }, agentId);
         if (threadReplyMsgId) {
           await feishuClient.replyTextInThread(threadReplyMsgId, question);
@@ -168,6 +172,7 @@ export async function resolveThreadContext(params: ResolveParams): Promise<Resol
       }
       // 路由成功后恢复原始请求作为主查询 prompt
       prompt = threadSession.routingState.originalPrompt;
+      restoredPipelineMode = threadSession.routingState.pipelineMode;
       sessionManager.clearThreadRoutingState(threadId, agentId);
       sessionManager.setThreadWorkingDir(threadId, workingDir, agentId);
       sessionManager.markThreadRoutingCompleted(threadId, agentId);
@@ -186,6 +191,7 @@ export async function resolveThreadContext(params: ResolveParams): Promise<Resol
         originalPrompt: prompt,
         question,
         retryCount: 0,
+        pipelineMode: params.pipelineMode || undefined,
       }, agentId);
       if (threadReplyMsgId) {
         await feishuClient.replyTextInThread(threadReplyMsgId, question);
@@ -271,5 +277,6 @@ export async function resolveThreadContext(params: ResolveParams): Promise<Resol
       threadSession,
       prompt,
     },
+    pipelineMode: restoredPipelineMode,
   };
 }

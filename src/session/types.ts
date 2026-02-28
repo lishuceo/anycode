@@ -36,6 +36,8 @@ export interface RoutingState {
   question: string;
   /** 已追问次数（防止无限循环） */
   retryCount: number;
+  /** 是否为 /dev pipeline 模式（clarification 恢复后需要走 pipeline 而非普通执行） */
+  pipelineMode?: boolean;
 }
 
 /** Thread 级别的 Claude Code 会话（threadId → conversationId 映射） */
