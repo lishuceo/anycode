@@ -59,6 +59,8 @@ export interface ExecuteInput extends ExecuteOptions {
   knowledgeContent?: string;
   /** 上次保存的 system prompt hash（用于自动失效检测，hash 不匹配时跳过 resume） */
   storedSystemPromptHash?: string;
+  /** 强制禁用 thinking（仅影响本次调用，不改变全局配置） */
+  disableThinking?: boolean;
 }
 
 /** 构建工作区管理系统提示词（注入实际目录路径） */
@@ -418,9 +420,11 @@ export class ClaudeExecutor {
 
         // 模型 + thinking + effort
         model: modelOverride ?? config.claude.model,
-        thinking: config.claude.thinking === 'adaptive'
-          ? { type: 'adaptive' as const }
-          : { type: 'disabled' as const },
+        thinking: input.disableThinking
+          ? { type: 'disabled' as const }
+          : config.claude.thinking === 'adaptive'
+            ? { type: 'adaptive' as const }
+            : { type: 'disabled' as const },
         effort: config.claude.effort,
 
         // 预算和限制 — 默认值从 config 读取，调用方可覆盖
