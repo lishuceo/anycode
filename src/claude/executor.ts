@@ -43,6 +43,8 @@ export interface ExecuteInput extends ExecuteOptions {
   /** 活动状态变更回调（同步，仅存储状态，不触发卡片更新） */
   onActivityChange?: (status: import('./types.js').ActivityStatus) => void;
   historySummaries?: string;
+  /** 记忆系统注入的上下文片段（由 event-handler 通过 injector 生成） */
+  memoryContext?: string;
   /** 覆盖 system prompt（用于 pipeline 各角色独立 prompt 或 persona）。有值 → replace 模式；无 → append 模式 */
   systemPromptOverride?: string;
   /** 覆盖单步空闲超时秒数 (默认使用 CLAUDE_TIMEOUT 配置)。每收到一条 SDK 消息就重置，不限制总时长 */
@@ -308,10 +310,14 @@ export class ClaudeExecutor {
     // 注入层次：knowledge → persona/workspace prompt → 历史会话摘要
     // pipeline 模式使用独立的 system prompt，不需要工作区管理指引
     const baseAppend = systemPromptOverride ?? buildWorkspaceSystemPrompt(workingDir);
+    // 注入层次：knowledge → persona/workspace → 记忆 → 历史摘要
     const withKnowledge = input.knowledgeContent
       ? input.knowledgeContent + '\n\n' + baseAppend
       : baseAppend;
-    // System prompt 结构性哈希：仅包含 knowledge + base prompt（不含 historySummaries）
+    const withMemory = input.memoryContext
+      ? withKnowledge + input.memoryContext
+      : withKnowledge;
+    // System prompt 结构性哈希：仅包含 knowledge + base prompt（不含记忆和 historySummaries）
     // 代码部署后 prompt 变化时自动使旧 session 失效，避免 resume 旧 session 丢失新工具描述
     // 排除运行时动态值（process.pid 等）——仅反映代码/配置变更
     const hashInput = withKnowledge.replace(/\*\*当前 PID\*\*: `\d+`/, '**当前 PID**: `0`');
@@ -329,8 +335,8 @@ export class ClaudeExecutor {
     }
 
     const promptAppend = historySummaries
-      ? withKnowledge + `\n\n## 历史会话摘要\n以下是该用户之前的会话记录，帮助你了解项目上下文：\n${historySummaries}`
-      : withKnowledge;
+      ? withMemory + `\n\n## 历史会话摘要\n以下是该用户之前的会话记录，帮助你了解项目上下文：\n${historySummaries}`
+      : withMemory;
 
     // 只读提示放入 user prompt（而非 system prompt），避免 per-user 差异导致 cache miss
     const readOnlyPrefix = readOnly

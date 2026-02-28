@@ -29,6 +29,8 @@ import type { AgentId, AgentConfig } from '../agent/types.js';
 import { readPersonaFile, loadKnowledgeContent } from '../agent/config-loader.js';
 import { createDiscussionMcpServer } from '../agent/tools/discussion.js';
 import { generateAuthUrl, isOAuthConfigured, hasCallbackUrl, handleManualCode } from './oauth.js';
+import { injectMemories } from '../memory/injector.js';
+import { extractMemories } from '../memory/extractor.js';
 
 // 注册审批通过后的消息重新入队回调（避免 approval.ts → event-handler.ts 循环依赖）
 setOnApproved((chatId, userId, text, messageId, rootId, threadId) => {
@@ -1176,6 +1178,11 @@ async function executeClaudeTask(
     // （Agent SDK 不支持跨 cwd resume，restart 只能起新 session）
     const isFirstMessage = !activeConversationId;
 
+    // 记忆注入：搜索相关记忆，格式化为 system prompt 片段
+    const memoryContext = config.memory.enabled
+      ? await injectMemories(rawPrompt, { agentId, userId, workspaceDir: workingDir })
+      : '';
+
     const result = await claudeExecutor.execute({
       sessionKey,
       prompt: effectivePrompt,
@@ -1194,6 +1201,7 @@ async function executeClaudeTask(
       onWorkspaceChanged: isFirstMessage ? onWorkspaceChanged : undefined,
       onTurn,
       historySummaries,
+      memoryContext,
       images,
       knowledgeContent,
       disableWorkspaceTool: !isFirstMessage,
@@ -1254,6 +1262,7 @@ async function executeClaudeTask(
         onTurn,
         historySummaries,
         knowledgeContent,
+        memoryContext,
         disableWorkspaceTool: true,
         ...(customSystemPrompt ? { systemPromptOverride: customSystemPrompt } : {}),
       });
@@ -1292,6 +1301,13 @@ async function executeClaudeTask(
         prompt, restartResult, totalDurationMs, totalCostUsd,
         threadReplyMsgId, chatId, threadReplyMsgId ? pendingTurn : undefined, turnCount,
       );
+
+      // 记忆抽取 (fire-and-forget, restart 路径)
+      if (config.memory.enabled && restartResult.success && restartResult.output) {
+        extractMemories(prompt, restartResult.output, {
+          agentId, userId, chatId, workspaceDir: result.newWorkingDir!, messageId,
+        }).catch((err) => logger.warn({ err }, 'Memory extraction failed'));
+      }
       return;
     }
 
@@ -1347,6 +1363,13 @@ async function executeClaudeTask(
       prompt, result, result.durationMs, result.costUsd,
       threadReplyMsgId, chatId, threadReplyMsgId ? pendingTurn : undefined, turnCount,
     );
+
+    // 记忆抽取 (fire-and-forget)
+    if (config.memory.enabled && result.success && result.output) {
+      extractMemories(rawPrompt, result.output, {
+        agentId, userId, chatId, workspaceDir: workingDir, messageId,
+      }).catch((err) => logger.warn({ err }, 'Memory extraction failed'));
+    }
 
   } catch (err) {
     logger.error({ err }, 'Error executing Claude Agent SDK query');
@@ -1461,6 +1484,12 @@ async function executeDirectTask(
     });
 
     const personaPrompt = readPersonaFile(agentId);
+
+    // 记忆注入
+    const memoryContext = config.memory.enabled
+      ? await injectMemories(rawPrompt, { agentId, userId, workspaceDir: workingDir })
+      : '';
+
     const result = await claudeExecutor.execute({
       sessionKey,
       prompt: effectivePrompt,
@@ -1473,6 +1502,7 @@ async function executeDirectTask(
       toolDeny: agentCfg.toolDeny,
       settingSources: agentCfg.settingSources,
       knowledgeContent: loadKnowledgeContent(agentId),
+      memoryContext,
       ...(personaPrompt ? { systemPromptOverride: personaPrompt } : {}),
       resumeSessionId,
       storedSystemPromptHash: activePromptHash,
@@ -1497,6 +1527,13 @@ async function executeDirectTask(
 
     // 发送结果（统一走轻量回复，话题内通过 threadReplyMsgId 路由）
     await sendDirectReply(messageId, chatId, result, threadReplyMsgId);
+
+    // 记忆抽取 (fire-and-forget)
+    if (config.memory.enabled && result.success && result.output) {
+      extractMemories(rawPrompt, result.output, {
+        agentId, userId, chatId, workspaceDir: workingDir, messageId,
+      }).catch((err) => logger.warn({ err }, 'Memory extraction failed'));
+    }
 
   } catch (err) {
     logger.error({ err }, 'Error in executeDirectTask');

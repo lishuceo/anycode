@@ -13,6 +13,7 @@ import { accountManager } from './feishu/multi-account.js';
 import { validateBindings } from './agent/router.js';
 import { loadAgentConfig, startConfigWatcher, stopConfigWatcher, reloadAgentConfig } from './agent/config-loader.js';
 import { chatBotRegistry } from './feishu/bot-registry.js';
+import { initializeMemory, closeMemory, runMemoryMaintenance } from './memory/init.js';
 
 async function main(): Promise<void> {
   logger.info('Starting Feishu Claude Code Bridge...');
@@ -53,6 +54,11 @@ async function main(): Promise<void> {
   // 启动时清理残留的 .tmp-* 临时目录和孤儿 Claude 子进程
   cleanupTmpDirs();
   killOrphanedClaudeProcesses();
+
+  // 初始化记忆系统（async: 加载 sqlite-vec，创建 DB）
+  if (config.memory.enabled) {
+    await initializeMemory();
+  }
 
   // 初始化 bot 账号
   if (isMultiBotMode()) {
@@ -95,6 +101,9 @@ async function main(): Promise<void> {
     pipelineStore.cleanExpired(30);
     cleanupExpiredApprovals();
     chatBotRegistry.cleanup();
+    if (config.memory.enabled) {
+      runMemoryMaintenance();
+    }
   }, 30 * 60 * 1000);
 
   // 优雅退出
@@ -116,6 +125,7 @@ async function main(): Promise<void> {
 
     pipelineStore.close();
     sessionManager.close();
+    closeMemory();
     process.exit(0);
   }
 

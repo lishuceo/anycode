@@ -1,7 +1,7 @@
 # Plan 5: Agent 记忆系统
 
 > 日期: 2026-02-27
-> 状态: **设计中**
+> 状态: **Phase 0 ✅ 已完成** | Phase 1 待实施
 > 前置依赖: Plan 4 Phase 1 (多 Agent 架构, 已实现)
 
 ---
@@ -564,22 +564,24 @@ TTL: 2 小时                  TTL: 按类型 (天~永久)
 
 ## 十一、分阶段实施
 
-### Phase 1: 基础记忆存储 + 自动抽取
+### ~~Phase 0: 技术原型验证~~ ✅ 已完成 (2026-02-28)
 
-**目标**：对话结束后自动提取记忆，下次对话注入
+> 详见第十四章。PR #73, 90 tests, 所有关键技术验证通过。
 
-新增文件 (6):
-1. `src/memory/types.ts` — 类型定义
-2. `src/memory/store.ts` — MemoryStore (CRUD + 查重 + supersede)
-3. `src/memory/search.ts` — HybridSearch (vector + BM25 + scoring)
-4. `src/memory/extractor.ts` — 对话结束时 LLM 抽取
-5. `src/memory/injector.ts` — 检索结果 → prompt 片段
-6. `src/memory/embeddings.ts` — Embedding 生成 (fallback chain)
+### Phase 1: 记忆抽取 + 注入集成
+
+**目标**：对话执行后自动提取记忆，下次对话注入
+
+**前置条件**：Phase 0 ✅
+
+新增文件 (2):
+1. `src/memory/extractor.ts` — 对话执行后调用 Qwen 抽取记忆
+2. `src/memory/injector.ts` — 检索结果 → system prompt 片段
 
 改造文件 (3):
-7. `src/session/database.ts` — 新增 memories / memories_vec / memories_fts 表
-8. `src/feishu/event-handler.ts` — 对话结束时触发 extractor
-9. `src/claude/executor.ts` — systemPrompt 注入记忆片段
+3. `src/feishu/event-handler.ts` — executor 执行完后触发 extractor
+4. `src/claude/executor.ts` — systemPrompt 注入记忆片段
+5. `src/index.ts` — 启动时初始化 memory 模块
 
 **验证标准**：
 - 对话中提到"我喜欢用 pnpm"→ 下次新对话 system prompt 中出现此偏好
@@ -688,3 +690,116 @@ function computeFinalScore(m: ScoredMemory): number {
 | event-handler.ts (对话结束) | 触发 extractor.extract() |
 | invoke_agent context | 可选从记忆中补充 context（"该用户偏好..."） |
 | /memory slash command | 走 event-handler.ts 命令路由，不进入 Agent 执行 |
+
+---
+
+## 十三、Review 发现与修正
+
+> 基于 4-Agent Swarm Review 的关键发现，对原方案进行以下修正。
+
+### Critical 修正
+
+1. **FTS5 content= 需要手动 trigger 同步**
+   - 原方案未定义同步 trigger，导致 FTS5 索引与主表不一致
+   - 修正: 补充 `AFTER INSERT / AFTER DELETE / AFTER UPDATE` 三个 trigger，确保主表变更时 FTS5 索引同步更新
+
+2. **"对话结束"触发时机不存在**
+   - SDK 无 "对话结束" 事件，无法可靠判断对话是否结束
+   - 修正: 改为 **每 N 轮对话或距上次抽取 M 分钟** 触发记忆抽取（Phase 0 暂不实现抽取触发，仅验证存储和检索）
+
+3. **对话消息收集无数据源**
+   - executor 当前不暴露完整对话消息流
+   - 修正: 后续需改造 executor 或使用 prompt+output 对作为数据源（Phase 0 不涉及）
+
+4. **Prompt injection → 记忆投毒**
+   - 用户可通过构造恶意消息注入虚假记忆
+   - 修正: 引入 **L0/L1/L2 置信度分层**，自动抽取的记忆为 L0（confidence 上限 0.7），用户确认后升级为 L1（上限 0.9），手动创建为 L2（上限 1.0）
+
+5. **跨会话信息泄露**
+   - 缺少 workspace 维度隔离，不同仓库的记忆可能互相泄露
+   - 修正: 增加 `workspace_dir` 隔离维度，检索时按 workspace 过滤
+
+### 成本修正
+
+- **抽取模型**: 从 Haiku 改为 **Qwen（DashScope）**，与 embedding 共用同一个 `DASHSCOPE_API_KEY`
+- **Embedding**: 使用 **text-embedding-v4（DashScope）**，维度 1024（非 OpenAI 的 1536）
+- **搜索延迟目标**: 修正为 <200ms (API 调用) / <100ms (本地 BM25-only)
+
+### 架构修正
+
+- **独立数据库文件**: `data/memories.db`，不与 sessions.db 共享连接（避免 DDL 干扰）
+- **两阶段写入**: Phase 1 同步写入 main + FTS5（trigger 自动同步），Phase 2 异步 fire-and-forget embedding + vec0
+- **sqlite-vec 运行时检测**: 加载失败时 `vectorEnabled = false`，所有 vec0 操作走 BM25-only fallback
+- **去除主表 embedding BLOB 列**: 向量仅存 vec0 虚拟表，主表不冗余
+
+---
+
+## 十四、技术原型验证（Phase 0）
+
+在 Phase 1 之前新增 **Phase 0 技术原型**，验证以下关键技术可行性后再实施完整系统：
+
+1. **sqlite-vec 在 Node.js/better-sqlite3 环境下是否可用** — 运行时动态加载 + graceful fallback
+2. **FTS5 external content + trigger 同步** — INSERT/DELETE/UPDATE 三向同步正确性
+3. **DashScope embedding API 兼容性** — 通过 OpenAI SDK compatible-mode 调用
+4. **混合检索 score fusion** — BM25 + vector 加权融合算法验证
+5. **BM25-only 降级** — sqlite-vec 不可用时纯 BM25 检索仍可工作
+
+### Phase 0 文件结构
+
+```
+src/memory/
+  types.ts           # 核心类型定义
+  embeddings.ts      # Embedding 提供者 (DashScope + Noop fallback)
+  database.ts        # 独立 SQLite 数据库 (schema + prepared statements)
+  store.ts           # CRUD + 两阶段写入
+  search.ts          # 混合检索 + 评分
+  index.ts           # 门面导出
+  __tests__/
+    database.test.ts
+    store.test.ts
+    search.test.ts
+    embeddings.test.ts
+    integration.test.ts  # 端到端集成测试 (需 DASHSCOPE_API_KEY)
+```
+
+### Phase 0 实施状态: ✅ 已完成 (2026-02-28)
+
+**实现 & Review:**
+- PR #73 (`feat/memory-system-phase0`)
+- 3-agent 并行 code review: 修复 3 Critical + 8 Warning + 5 Info
+- 90 tests 全部通过 (79 unit + 11 integration)
+
+**验证结果:**
+
+| 验证项 | 结果 |
+|--------|------|
+| sqlite-vec 动态加载 + fallback | ✅ vectorEnabled 运行时检测，BM25-only 降级正常 |
+| FTS5 external content trigger 同步 | ✅ INSERT/DELETE/UPDATE 三向同步正确 |
+| DashScope embedding API (text-embedding-v4) | ✅ 通过 OpenAI SDK compatible-mode 调用成功 |
+| BM25 + vector 混合检索 score fusion | ✅ 加权融合、type boost、recency decay 正确 |
+| 语义搜索 (关键词不匹配时) | ✅ "UI library upgrade" → 命中 React 迁移记忆 (vec: 0.48) |
+| 跨语言语义检索 | ✅ 中文 "项目用什么数据库" → 命中英文 PostgreSQL 记忆 (vec: 0.55) |
+| 置信度分层 (L0/L1/L2) | ✅ L0≤0.7, L1≤0.9, L2≤1.0 |
+| Agent / Workspace 隔离 | ✅ 不同 agent 和 workspace 的记忆互不可见 |
+| TTL 时效过滤 | ✅ 过期 state 记忆被排除 |
+| 事实纠正 (supersede) | ✅ 旧事实标记失效，新事实生效 |
+| FTS5 查询注入防护 | ✅ 特殊字符 strip + token 引号包裹 |
+| 搜索延迟 | ✅ BM25-only <50ms, hybrid (含 API) ~300-550ms |
+
+**配置方式 (生产环境):**
+```bash
+MEMORY_ENABLED=true
+DASHSCOPE_API_KEY=sk-xxx           # 必填，embedding + 后续抽取共用
+# 以下保持默认即可:
+# MEMORY_DB_PATH=./data/memories.db
+# MEMORY_EMBEDDING_MODEL=text-embedding-v4
+# MEMORY_EMBEDDING_DIM=1024
+# MEMORY_VECTOR_WEIGHT=0.7
+# MEMORY_MAX_INJECT_TOKENS=2000
+```
+
+**尚未集成的环节 (Phase 1 实施):**
+- 记忆抽取触发 (executor 执行完后调用 Qwen 从对话中提取记忆)
+- 记忆注入 (新对话开始时 search → 格式化 → 注入 systemPrompt)
+- 抽取模型配置 (`MEMORY_EXTRACTION_MODEL`, 如 `qwen-plus`)
+- `/memory` 用户管理命令
