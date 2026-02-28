@@ -486,6 +486,45 @@ async function handleMessageEvent(data: MessageEventData, accountId: string = 'd
     ? resolveAgent(config.agent.bindings, { accountId, chatId, userId, chatType: chatType as 'group' | 'p2p' })
     : 'dev'; // 单 bot 模式默认 dev agent
 
+  // ── 无需 @mention 的斜杠命令（在 @mention 过滤之前拦截） ──
+  if (text) {
+    const trimmedText = text.trim();
+    if (trimmedText === '/auth' || trimmedText === '授权' || trimmedText.startsWith('/auth ') || trimmedText.startsWith('授权 ')) {
+      // /auth 命令：多 bot 模式下仅 dev-bot 处理，避免重复响应
+      if (!isMultiBotMode() || agentId === 'dev') {
+        const rootReplyId = rootId || undefined;
+        const codeArg = trimmedText.startsWith('/auth ') ? trimmedText.slice('/auth '.length).trim()
+          : trimmedText.startsWith('授权 ') ? trimmedText.slice('授权 '.length).trim()
+          : '';
+        if (codeArg) {
+          try {
+            await handleManualCode(codeArg, userId, chatId);
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            if (rootReplyId) {
+              await feishuClient.replyTextInThread(rootReplyId, msg);
+            } else {
+              await feishuClient.replyText(messageId, msg);
+            }
+          }
+        } else {
+          const authUrl = generateAuthUrl(userId, chatId);
+          const reply = hasCallbackUrl()
+            ? `请点击以下链接授权，授权后即可查看个人任务：\n${authUrl}`
+            : `请点击以下链接授权：\n${authUrl}\n\n授权完成后，浏览器会跳转到一个打不开的页面，这是正常的。请复制地址栏中 code= 后面的那串字符，发送：\n/auth <code值>`;
+          if (rootReplyId) {
+            await feishuClient.replyTextInThread(rootReplyId, reply);
+          } else {
+            await feishuClient.replyText(messageId, reply);
+          }
+        }
+        return;
+      }
+      // 其他 bot 静默忽略 /auth
+      return;
+    }
+  }
+
   // ── @mention 过滤（必须在所有副作用之前，避免对不该响应的消息发送错误提示） ──
   if (isMultiBotMode()) {
     const botOpenId = accountManager.getBotOpenId(accountId) ?? '';
@@ -658,44 +697,7 @@ async function handleSlashCommand(
     return true;
   }
 
-  // /auth [code] 或 授权 [code] - 飞书 OAuth 用户授权
-  if (trimmed === '/auth' || trimmed === '授权' || trimmed.startsWith('/auth ') || trimmed.startsWith('授权 ')) {
-    // 提取可能的 code 参数
-    const codeArg = trimmed.startsWith('/auth ') ? trimmed.slice('/auth '.length).trim()
-      : trimmed.startsWith('授权 ') ? trimmed.slice('授权 '.length).trim()
-      : '';
-
-    if (codeArg) {
-      // 手动贴 code 模式：用户把授权后 URL 里的 code 参数贴回来
-      try {
-        await handleManualCode(codeArg, userId, chatId);
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        const reply = `${msg}`;
-        if (threadReplyMsgId) {
-          await feishuClient.replyTextInThread(threadReplyMsgId, reply);
-        } else {
-          await feishuClient.replyText(messageId, reply);
-        }
-      }
-      return true;
-    }
-
-    // 生成授权 URL
-    const authUrl = generateAuthUrl(userId, chatId);
-    let reply: string;
-    if (hasCallbackUrl()) {
-      reply = `请点击以下链接授权，授权后即可查看个人任务：\n${authUrl}`;
-    } else {
-      reply = `请点击以下链接授权：\n${authUrl}\n\n授权完成后，浏览器会跳转到一个打不开的页面，这是正常的。请复制地址栏中 code= 后面的那串字符，发送：\n/auth <code值>`;
-    }
-    if (threadReplyMsgId) {
-      await feishuClient.replyTextInThread(threadReplyMsgId, reply);
-    } else {
-      await feishuClient.replyText(messageId, reply);
-    }
-    return true;
-  }
+  // /auth 已在 @mention 过滤之前处理（无需 @ 即可触发），此处不再重复
 
   // /reset - 重置会话（清除所有 agent 的 session + thread conversation）
   if (trimmed === '/reset') {
