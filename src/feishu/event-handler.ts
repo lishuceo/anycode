@@ -7,6 +7,7 @@ import { claudeExecutor } from '../claude/executor.js';
 import { DEFAULT_IMAGE_PROMPT } from '../claude/types.js';
 import type { TurnInfo, ToolCallInfo, ImageAttachment } from '../claude/types.js';
 import { buildResultCard, buildStatusCard, buildCancelledCard, buildPipelineCard, buildPipelineConfirmCard, buildProgressCard, buildToolProgressCard, buildSimpleResultCard } from './message-builder.js';
+import { TOTAL_PHASES } from '../pipeline/types.js';
 import { feishuClient, runWithAccountId } from './client.js';
 import { config, isMultiBotMode } from '../config.js';
 import { setupWorkspace } from '../workspace/manager.js';
@@ -218,8 +219,10 @@ async function handlePipelineConfirm(pipelineId: string): Promise<Record<string,
     logger.error({ err, pipelineId }, 'Failed to start pipeline');
   });
 
-  // 立即返回初始进度卡片
-  return buildPipelineCard(record.prompt, 'plan', 1, 5, 0, undefined, undefined, pipelineId);
+  // 不返回卡片 — 让 startPipeline 通过 updateCard API 统一管理卡片状态。
+  // 如果这里返回卡片，card action response 可能在管道完成后才到达飞书服务端，
+  // 导致最终的"完成"卡片被覆盖为初始进度卡片（race condition）。
+  return {};
 }
 
 async function handlePipelineCancel(pipelineId: string): Promise<Record<string, unknown>> {
@@ -343,7 +346,7 @@ async function handlePipelineTextConfirm(
 
     // 更新确认卡片为初始进度卡片
     if (pending.progressMsgId) {
-      const progressCard = buildPipelineCard(pending.prompt, 'plan', 1, 5, 0, undefined, undefined, pending.id);
+      const progressCard = buildPipelineCard(pending.prompt, 'plan', 1, TOTAL_PHASES, 0, undefined, undefined, pending.id);
       await feishuClient.updateCard(pending.progressMsgId, progressCard);
     }
 
