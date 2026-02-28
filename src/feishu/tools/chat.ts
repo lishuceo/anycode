@@ -37,26 +37,30 @@ export function feishuChatTool(chatId?: string) {
 
       try {
         const members = await feishuClient.getChatMembers(targetChatId);
-        logger.info({ chatId: targetChatId, count: members.length }, 'feishu_chat_members tool invoked');
-
-        const lines = members.map((m, i) => `${i + 1}. ${m.name} (${m.memberId})`);
-
-        // 追加已知 Bot 信息
         const knownBots = chatBotRegistry.getBots(targetChatId);
-        let botSection = '';
-        if (knownBots.length > 0) {
-          const botLines = knownBots.map((b, i) =>
-            `${i + 1}. ${b.name ?? '[未知名称]'} (${b.openId}) [来源: ${b.source === 'event_added' ? '入群事件' : '消息检测'}]`
-          );
-          botSection = `\n\n已知 Bot 列表 (共 ${knownBots.length} 个，通过事件订阅和消息检测发现):\n${botLines.join('\n')}`;
-        } else {
-          botSection = '\n\n已知 Bot 列表: 暂无记录（Bot 发送消息或有新 Bot 入群后会自动发现）';
-        }
+        logger.info({ chatId: targetChatId, members: members.length, bots: knownBots.length }, 'feishu_chat_members tool invoked');
+
+        // 统一列表：人 + bot 合并，每条带 type 标记
+        let idx = 0;
+        const userLines = members.map((m) => {
+          idx++;
+          return `${idx}. [user] ${m.name} (${m.memberId})`;
+        });
+        const botLines = knownBots.map((b) => {
+          idx++;
+          const source = b.source === 'event_added' ? '入群事件' : '消息检测';
+          return `${idx}. [bot] ${b.name ?? '[未知名称]'} (${b.openId}) — 来源: ${source}`;
+        });
+
+        const allLines = [...userLines, ...botLines];
+        const summary = knownBots.length > 0
+          ? `群成员 (${members.length} 人 + ${knownBots.length} bot):`
+          : `群成员 (${members.length} 人, 暂未发现 bot — bot 发消息或入群后会自动识别):`;
 
         return {
           content: [{
             type: 'text' as const,
-            text: `群成员列表 (共 ${members.length} 人):\n${lines.join('\n')}${botSection}`,
+            text: `${summary}\n${allLines.join('\n')}`,
           }],
         };
       } catch (err) {
