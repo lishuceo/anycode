@@ -398,9 +398,206 @@ describe('场景6: 语义搜索', () => {
 });
 
 // ─────────────────────────────────────────────────────
-// Scenario 7: 综合汇总
+// Scenario 7: 记忆抽取（调真实 Qwen 模型）
 // ─────────────────────────────────────────────────────
-describe('场景7: 综合汇总', () => {
+describe('场景7: 记忆抽取 (Qwen)', () => {
+  it('应从对话中抽取结构化记忆', { timeout: 30000 }, async () => {
+    if (!HAS_KEY) {
+      console.log('⏭️  跳过: 需要 DASHSCOPE_API_KEY');
+      return;
+    }
+
+    // Dynamically import to avoid config mock issues
+    const OpenAI = (await import('openai')).default;
+    const client = new OpenAI({
+      apiKey: DASHSCOPE_API_KEY,
+      baseURL: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+    });
+
+    const extractionPrompt = `你是一个记忆提取器。从以下对话中提取值得长期记住的信息。
+
+## 输出格式
+返回 JSON 数组，每个元素:
+{
+  "type": "fact" | "preference" | "state" | "decision" | "relation",
+  "content": "简洁描述 (1-2 句话)",
+  "confidence": 0.0~1.0,
+  "tags": ["tag1", "tag2"],
+  "ttl": null,
+  "metadata": {}
+}
+
+## 提取规则
+- 只提取明确的、有长期价值的信息
+- 每次最多提取 5 条记忆
+- 如果没有值得记忆的信息，返回空数组 []
+
+## 对话内容
+`;
+
+    const conversation = `[用户]: 我们的项目决定从 Webpack 迁移到 Vite，我个人更喜欢用 Vitest 做测试。另外提一下，目前后端 API 都部署在 AWS Lambda 上。
+
+[助手]: 好的，我了解了这些信息：
+1. 构建工具从 Webpack 迁移到 Vite
+2. 测试框架偏好 Vitest
+3. 后端部署在 AWS Lambda
+
+我会在后续开发中注意这些约定。`;
+
+    const response = await client.chat.completions.create({
+      model: 'qwen3.5-plus',
+      messages: [
+        { role: 'system', content: extractionPrompt },
+        { role: 'user', content: conversation },
+      ],
+      temperature: 0.1,
+    });
+
+    const rawContent = response.choices?.[0]?.message?.content ?? '';
+    console.log('\n🧠 Qwen 抽取原始输出:');
+    console.log(`  ${rawContent.slice(0, 500)}`);
+
+    // Use the parseExtractionResponse function
+    const { parseExtractionResponse } = await import('../extractor.js');
+    const memories = parseExtractionResponse(rawContent);
+
+    console.log(`\n📝 解析出 ${memories.length} 条记忆:`);
+    for (const m of memories) {
+      console.log(`  [${m.type}] ${m.content} (confidence: ${m.confidence})`);
+    }
+
+    // Should extract at least 2 memories from this rich conversation
+    expect(memories.length).toBeGreaterThanOrEqual(2);
+
+    // Should identify at least one fact and one preference/decision
+    const types = new Set(memories.map((m) => m.type));
+    expect(types.size).toBeGreaterThanOrEqual(2);
+
+    // All should have valid types
+    const validTypes = new Set(['fact', 'preference', 'state', 'decision', 'relation']);
+    for (const m of memories) {
+      expect(validTypes.has(m.type)).toBe(true);
+      expect(m.content.length).toBeGreaterThan(0);
+    }
+
+    // Write extracted memories to store and verify they're searchable
+    for (const m of memories) {
+      store.create(mem({
+        type: m.type,
+        content: m.content,
+        confidence: m.confidence,
+        confidenceLevel: 'L0',
+        tags: m.tags,
+      }));
+    }
+
+    await store.flush();
+
+    // Search for one of the extracted memories
+    const results = await search.search({
+      query: 'Vite Webpack 构建工具',
+      agentId: 'dev-agent',
+      userId: 'user-test',
+    });
+
+    console.log('\n🔍 搜索抽取的记忆 "Vite Webpack 构建工具":');
+    for (const r of results.slice(0, 5)) {
+      console.log(`  [${r.memory.type}] ${r.memory.content} (score: ${r.finalScore.toFixed(4)})`);
+    }
+
+    expect(results.length).toBeGreaterThan(0);
+  });
+});
+
+// ─────────────────────────────────────────────────────
+// Scenario 8: 记忆注入（格式化 prompt 片段）
+// ─────────────────────────────────────────────────────
+describe('场景8: 记忆注入', () => {
+  it('应将搜索结果格式化为 system prompt 片段', async () => {
+    // Ensure we have memories from previous scenarios
+    const results = await search.search({
+      query: 'pnpm TypeScript',
+      agentId: 'dev-agent',
+      userId: 'user-test',
+      limit: 10,
+    });
+
+    if (results.length === 0) {
+      console.log('⏭️  跳过: 没有可注入的记忆');
+      return;
+    }
+
+    const { formatMemories } = await import('../injector.js');
+    const fragment = formatMemories(results);
+
+    console.log('\n💉 注入的 prompt 片段:');
+    console.log(fragment);
+
+    // Should have the header
+    expect(fragment).toContain('## 关于此用户的记忆');
+
+    // Should have at least one type section
+    const hasSomeSection = fragment.includes('### 偏好')
+      || fragment.includes('### 项目事实')
+      || fragment.includes('### 当前状态')
+      || fragment.includes('### 过往决策')
+      || fragment.includes('### 关系');
+    expect(hasSomeSection).toBe(true);
+
+    // Should contain actual memory content
+    expect(fragment).toContain('- ');
+
+    // Estimate token count (rough: 3 chars per token)
+    const estimatedTokens = Math.ceil(fragment.length / 3);
+    console.log(`  预估 token 数: ~${estimatedTokens}`);
+    expect(estimatedTokens).toBeLessThanOrEqual(4000);
+  });
+});
+
+// ─────────────────────────────────────────────────────
+// Scenario 9: 抽取→注入全链路
+// ─────────────────────────────────────────────────────
+describe('场景9: 抽取→注入全链路', () => {
+  it('抽取的记忆应能被后续注入检索到', async () => {
+    if (!HAS_KEY) {
+      console.log('⏭️  跳过: 需要 DASHSCOPE_API_KEY');
+      return;
+    }
+
+    // Step 1: Create a memory that simulates extraction result
+    store.create(mem({
+      type: 'preference',
+      content: '用户强烈偏好 Rust 而非 Go 进行系统编程',
+      confidenceLevel: 'L0', // auto-extracted
+      confidence: 0.7,
+      tags: ['language', 'systems-programming'],
+    }));
+
+    await store.flush();
+
+    // Step 2: Simulate next conversation — inject memories
+    const results = await search.search({
+      query: '系统编程用什么语言',
+      agentId: 'dev-agent',
+      userId: 'user-test',
+    });
+
+    const { formatMemories } = await import('../injector.js');
+    const fragment = formatMemories(results);
+
+    console.log('\n🔄 全链路: 抽取→搜索→注入');
+    console.log(`  搜索 "系统编程用什么语言" 命中 ${results.length} 条`);
+    console.log(`  注入片段:\n${fragment}`);
+
+    // The Rust preference should appear in the injected fragment
+    expect(fragment).toContain('Rust');
+  });
+});
+
+// ─────────────────────────────────────────────────────
+// Scenario 10: 综合汇总
+// ─────────────────────────────────────────────────────
+describe('场景10: 综合汇总', () => {
   it('打印数据库统计信息', () => {
     const stats = db.db.prepare(`
       SELECT
