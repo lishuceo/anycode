@@ -86,7 +86,7 @@ export function generateAuthUrl(userId: string, chatId: string): string {
   const redirectUri = encodeURIComponent(config.feishu.oauth.redirectUri || FALLBACK_REDIRECT_URI);
   const appId = config.feishu.appId;
 
-  return `https://accounts.feishu.cn/suite/passport/oauth/authorize?client_id=${appId}&redirect_uri=${redirectUri}&response_type=code&state=${state}`;
+  return `https://open.feishu.cn/open-apis/authen/v1/authorize?app_id=${appId}&redirect_uri=${redirectUri}&state=${state}`;
 }
 
 /**

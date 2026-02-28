@@ -53,10 +53,9 @@ describe('isOAuthConfigured', () => {
 describe('generateAuthUrl', () => {
   it('should return a valid URL with state', () => {
     const url = generateAuthUrl('ou_user123', 'oc_chat456');
-    expect(url).toContain('https://accounts.feishu.cn/suite/passport/oauth/authorize');
-    expect(url).toContain('client_id=cli_test_app_id');
+    expect(url).toContain('https://open.feishu.cn/open-apis/authen/v1/authorize');
+    expect(url).toContain('app_id=cli_test_app_id');
     expect(url).toContain('redirect_uri=');
-    expect(url).toContain('response_type=code');
     expect(url).toContain('state=');
   });
 });
