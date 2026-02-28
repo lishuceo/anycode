@@ -151,6 +151,29 @@ export const config = {
     historyMaxChars: parseInt(process.env.CHAT_HISTORY_MAX_CHARS || '4000', 10),
   },
 
+  // 记忆系统配置
+  memory: {
+    /** 记忆系统总开关 */
+    enabled: process.env.MEMORY_ENABLED === 'true',
+    /** 记忆数据库路径 */
+    dbPath: process.env.MEMORY_DB_PATH || './data/memories.db',
+    /** DashScope (阿里云百炼) API Key，embedding 和抽取模型共用 */
+    dashscopeApiKey: process.env.DASHSCOPE_API_KEY || '',
+    /** DashScope OpenAI-compatible base URL */
+    dashscopeBaseUrl:
+      process.env.DASHSCOPE_BASE_URL || 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+    /** Embedding 模型名称 */
+    embeddingModel: process.env.MEMORY_EMBEDDING_MODEL || 'text-embedding-v4',
+    /** Embedding 向量维度 */
+    embeddingDimension: parseInt(process.env.MEMORY_EMBEDDING_DIM || '1536', 10),
+    /** 记忆抽取模型名称 (DashScope Qwen，支持 JSON 结构化输出) */
+    extractionModel: process.env.MEMORY_EXTRACTION_MODEL || 'qwen3.5-flash',
+    /** 混合检索中向量权重 (0~1, BM25 权重 = 1 - vectorWeight) */
+    vectorWeight: parseFloat(process.env.MEMORY_VECTOR_WEIGHT || '0.7'),
+    /** 注入记忆的最大 token 数 */
+    maxInjectTokens: parseInt(process.env.MEMORY_MAX_INJECT_TOKENS || '4000', 10),
+  },
+
   // 服务配置
   server: {
     port: parseInt(process.env.PORT || '3000', 10),
