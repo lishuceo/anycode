@@ -132,7 +132,7 @@ describe('feishu_task tool', () => {
       expect(mockTaskCreate).toHaveBeenCalledWith(expect.objectContaining({
         data: expect.objectContaining({ summary: '开会' }),
         params: { user_id_type: 'open_id' },
-      }));
+      }), undefined);
     });
 
     it('should create a task with due date and description', async () => {
@@ -310,7 +310,7 @@ describe('feishu_task tool', () => {
           task: expect.objectContaining({ summary: '新标题' }),
           update_fields: ['summary'],
         }),
-      }));
+      }), undefined);
     });
 
     it('should update multiple fields', async () => {
@@ -472,6 +472,26 @@ describe('feishu_task tool with getUserToken', () => {
     const parsed = JSON.parse(result.content[0].text);
     expect(parsed._token_type).toBe('bot');
     expect(mockTaskList).toHaveBeenCalled();
+  });
+
+  it('should pass user token to create/update operations', async () => {
+    mockTaskCreate.mockResolvedValue({
+      code: 0,
+      data: { task: { guid: 'T_NEW', summary: '新任务' } },
+    });
+    mockTaskPatch.mockResolvedValue({ code: 0 });
+
+    await handlerWithToken({ action: 'create', summary: '新任务' });
+    expect(mockTaskCreate).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ summary: '新任务' }) }),
+      expect.objectContaining({ _userAccessToken: 'u-test-access-token' }),
+    );
+
+    await handlerWithToken({ action: 'update', task_guid: 'T_NEW', update_fields: 'summary', summary: '改名' });
+    expect(mockTaskPatch).toHaveBeenCalledWith(
+      expect.objectContaining({ path: { task_guid: 'T_NEW' } }),
+      expect.objectContaining({ _userAccessToken: 'u-test-access-token' }),
+    );
   });
 
   it('should fall back to v1 API when getUserToken returns undefined', async () => {

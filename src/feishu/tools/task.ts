@@ -145,6 +145,10 @@ export function feishuTaskTool(getUserToken?: () => Promise<string | undefined>)
       try {
         if (args.task_guid) validateToken(args.task_guid, 'task_guid');
 
+        // 获取 user_access_token（所有 Task v2 操作都需要用户授权）
+        const userToken = getUserToken ? await getUserToken() : undefined;
+        const userTokenOpt = userToken ? lark.withUserAccessToken(userToken) : undefined;
+
         switch (args.action) {
           case 'create': {
             if (!args.summary) throw new Error('create 操作需要 summary (任务标题)');
@@ -164,7 +168,7 @@ export function feishuTaskTool(getUserToken?: () => Promise<string | undefined>)
             const resp = await client.task.v2.task.create({
               data: data as { summary: string },
               params: { user_id_type: args.user_id_type ?? 'open_id' },
-            });
+            }, userTokenOpt);
             if (resp.code !== 0) throw new Error(`创建任务失败 (${resp.code}): ${resp.msg}`);
             const task = resp.data?.task;
             return {
@@ -185,7 +189,7 @@ export function feishuTaskTool(getUserToken?: () => Promise<string | undefined>)
             const resp = await client.task.v2.task.get({
               path: { task_guid: args.task_guid },
               params: { user_id_type: args.user_id_type ?? 'open_id' },
-            });
+            }, userTokenOpt);
             if (resp.code !== 0) throw new Error(`获取任务失败 (${resp.code}): ${resp.msg}`);
             return {
               content: [{
@@ -198,8 +202,6 @@ export function feishuTaskTool(getUserToken?: () => Promise<string | undefined>)
           case 'list': {
             // 优先使用 user_access_token 调用 Task v2 list（支持查看用户个人任务）。
             // 无 user token 时降级为 Task v1 list（仅 bot 创建的任务）。
-            const userToken = getUserToken ? await getUserToken() : undefined;
-
             if (userToken) {
               // ── Task v2 list with user_access_token ──
               // 权限不足 (99991679) 时自动降级到 v1 API，而不是直接报错。
@@ -324,7 +326,7 @@ export function feishuTaskTool(getUserToken?: () => Promise<string | undefined>)
                 update_fields: updateFieldsArr,
               },
               params: { user_id_type: args.user_id_type ?? 'open_id' },
-            });
+            }, userTokenOpt);
             if (resp.code !== 0) throw new Error(`更新任务失败 (${resp.code}): ${resp.msg}`);
             return {
               content: [{
