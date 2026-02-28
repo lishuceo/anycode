@@ -9,6 +9,7 @@ const mockTaskCreate = vi.fn();
 const mockTaskGet = vi.fn();
 const mockTaskList = vi.fn();
 const mockTaskPatch = vi.fn();
+const mockTaskDelete = vi.fn();
 const mockRequest = vi.fn();
 
 vi.mock('../../client.js', () => ({
@@ -25,6 +26,7 @@ vi.mock('../../client.js', () => ({
             create: (...args: unknown[]) => mockTaskCreate(...args),
             get: (...args: unknown[]) => mockTaskGet(...args),
             patch: (...args: unknown[]) => mockTaskPatch(...args),
+            delete: (...args: unknown[]) => mockTaskDelete(...args),
           },
         },
       },
@@ -386,11 +388,38 @@ describe('feishu_task tool', () => {
     });
   });
 
-  describe('unknown action', () => {
-    it('should return error for unknown action', async () => {
+  describe('delete', () => {
+    it('should delete a task', async () => {
+      mockTaskDelete.mockResolvedValue({ code: 0 });
+      const result = await capturedHandler({ action: 'delete', task_guid: 'TASK_001' });
+      expect(result.content[0].text).toBe('任务已删除');
+      expect(mockTaskDelete).toHaveBeenCalledWith(
+        expect.objectContaining({ path: { task_guid: 'TASK_001' } }),
+        undefined,
+      );
+    });
+
+    it('should require task_guid', async () => {
       const result = await capturedHandler({ action: 'delete' });
       expect(result.isError).toBe(true);
-      expect(result.content[0].text).toContain('未知 action');
+      expect(result.content[0].text).toContain('task_guid');
+    });
+  });
+
+  describe('update with completed_at', () => {
+    it('should set completed_at to current timestamp', async () => {
+      mockTaskPatch.mockResolvedValue({ code: 0 });
+      const before = Math.floor(Date.now() / 1000);
+      const result = await capturedHandler({
+        action: 'update',
+        task_guid: 'TASK_001',
+        update_fields: 'completed_at',
+      });
+      expect(result.content[0].text).toBe('任务已更新');
+      const callArgs = mockTaskPatch.mock.calls[0][0];
+      const completedAt = Number(callArgs.data.task.completed_at);
+      expect(completedAt).toBeGreaterThanOrEqual(before);
+      expect(callArgs.data.update_fields).toContain('completed_at');
     });
   });
 });
