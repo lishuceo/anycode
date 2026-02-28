@@ -325,8 +325,13 @@ export function feishuTaskTool(getUserToken?: () => Promise<string | undefined>)
           default:
             return { content: [{ type: 'text' as const, text: `未知 action: ${args.action}` }], isError: true };
         }
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
+      } catch (err: unknown) {
+        // Extract Feishu API error details from AxiosError response body
+        let msg = err instanceof Error ? err.message : String(err);
+        const axiosData = (err as { response?: { data?: { code?: number; msg?: string } } })?.response?.data;
+        if (axiosData?.msg) {
+          msg = `飞书 API 错误 (${axiosData.code}): ${axiosData.msg}`;
+        }
         logger.error({ err: msg, action: args.action }, 'feishu_task tool error');
         return { content: [{ type: 'text' as const, text: `错误: ${msg}` }], isError: true };
       }
