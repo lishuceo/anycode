@@ -307,6 +307,9 @@ function processQueue(queueKey: string, agentId: AgentId = 'dev'): void {
     ? executeDirectTask(task.message, task.chatId, task.userId, task.messageId, task.images, agentId, task.threadId, task.rootId)
     : executeClaudeTask(task.message, task.chatId, task.userId, task.messageId, task.rootId, task.threadId, task.images, agentId);
 
+  // 注册 task promise：graceful shutdown 时等待结果卡片发送完成
+  claudeExecutor.registerTask(executeFn);
+
   executeFn
     .then(() => task.resolve('done'))
     .catch((err) => task.reject(err instanceof Error ? err : new Error(String(err))))

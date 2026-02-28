@@ -203,6 +203,9 @@ export class ClaudeExecutor {
   /** 运行中的 query 实例 (用于 abort) */
   private runningQueries = new Map<string, Query>();
 
+  /** 运行中的 task promise（用于 graceful shutdown 等待结果发送） */
+  private runningTasks = new Set<Promise<unknown>>();
+
   /**
    * 执行 Claude Agent SDK query
    */
@@ -692,6 +695,15 @@ export class ClaudeExecutor {
   }
 
   /**
+   * 注册一个 task promise（用于 graceful shutdown 时等待完成）
+   * task 完成后自动从集合中移除
+   */
+  registerTask(promise: Promise<unknown>): void {
+    this.runningTasks.add(promise);
+    promise.finally(() => this.runningTasks.delete(promise));
+  }
+
+  /**
    * 中断所有运行中的查询
    */
   killAll(): void {
@@ -700,6 +712,20 @@ export class ClaudeExecutor {
       logger.info({ key }, 'Killed Claude Agent SDK query');
     }
     this.runningQueries.clear();
+  }
+
+  /**
+   * 等待所有运行中的 task 完成（用于 graceful shutdown）
+   * killAll() 关闭 stream 后，execute() 会返回，caller 发送结果卡片后 task 完成
+   */
+  async waitForRunningTasks(timeoutMs = 15000): Promise<void> {
+    if (this.runningTasks.size === 0) return;
+    logger.info({ count: this.runningTasks.size }, 'Waiting for running tasks to finish...');
+    await Promise.race([
+      Promise.allSettled([...this.runningTasks]),
+      new Promise<void>(resolve => setTimeout(resolve, timeoutMs)),
+    ]);
+    logger.info({ remaining: this.runningTasks.size }, 'Running tasks wait completed');
   }
 
   /**

@@ -100,7 +100,7 @@ async function main(): Promise<void> {
   // 优雅退出
   let shuttingDown = false;
 
-  function shutdown(signal: string): void {
+  async function shutdown(signal: string): Promise<void> {
     if (shuttingDown) return;
     shuttingDown = true;
 
@@ -110,17 +110,17 @@ async function main(): Promise<void> {
     claudeExecutor.killAll();
     pipelineStore.markRunningAsInterrupted();
 
-    // 延迟关闭 DB：killAll() 后 executeClaudeTask 的 catch/finally 仍需写 DB
-    // 先等 query handler 完成清理，再关闭连接
-    setTimeout(() => {
-      pipelineStore.close();
-      sessionManager.close();
-      process.exit(0);
-    }, 3000);
+    // 等待正在运行的 task 完成（发送结果卡片到飞书），最多等 15 秒
+    // killAll() 关闭 stream → execute() 返回 → executeClaudeTask 发结果卡片 → task 完成
+    await claudeExecutor.waitForRunningTasks(15000);
+
+    pipelineStore.close();
+    sessionManager.close();
+    process.exit(0);
   }
 
-  process.on('SIGINT', () => shutdown('SIGINT'));
-  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => { shutdown('SIGINT'); });
+  process.on('SIGTERM', () => { shutdown('SIGTERM'); });
 }
 
 main().catch((err) => {
