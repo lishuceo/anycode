@@ -398,12 +398,15 @@ export class ClaudeExecutor {
                 return { behavior: 'allow' as const, updatedInput: inputObj };
               }
               const action = inputObj.action as string;
+              // readOnly 模式下允许的飞书 action。
+              // 飞书工具操作的是飞书数据（文档/任务/表格），不是代码仓库，
+              // 且受飞书自身权限体系保护，因此 task 写操作也允许。
               const readOnlyActions = new Set([
                 'read', 'list_blocks',                              // doc
                 'list_spaces', 'list_nodes', 'get_node',            // wiki
                 'list', 'info',                                     // drive
                 'list_tables', 'list_fields', 'list_records', 'get_record', // bitable
-                'get',                                               // task (get 单条; list 已在 drive 中存在)
+                'get', 'create', 'update',                          // task (读写均允许，受飞书权限体系保护)
               ]);
               if (readOnlyActions.has(action)) {
                 logger.info({ toolName, action, readOnly }, 'canUseTool allowed — read-only feishu action');
