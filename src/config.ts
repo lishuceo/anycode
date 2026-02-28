@@ -167,7 +167,7 @@ export const config = {
     /** Embedding 向量维度 */
     embeddingDimension: parseInt(process.env.MEMORY_EMBEDDING_DIM || '1536', 10),
     /** 记忆抽取模型名称 (DashScope Qwen，支持 JSON 结构化输出) */
-    extractionModel: process.env.MEMORY_EXTRACTION_MODEL || 'qwen3.5-plus',
+    extractionModel: process.env.MEMORY_EXTRACTION_MODEL || 'qwen3.5-flash',
     /** 混合检索中向量权重 (0~1, BM25 权重 = 1 - vectorWeight) */
     vectorWeight: parseFloat(process.env.MEMORY_VECTOR_WEIGHT || '0.7'),
     /** 注入记忆的最大 token 数 */
