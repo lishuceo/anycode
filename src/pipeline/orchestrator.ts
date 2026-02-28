@@ -170,6 +170,8 @@ export class PipelineOrchestrator {
       PLAN_SYSTEM_PROMPT,
       undefined, // 不走 historySummaries（system prompt），历史已拼入 user prompt
       callbacks.onStreamUpdate,
+      undefined,
+      callbacks.onActivityChange,
     );
 
     const totalCostUsd = state.totalCostUsd + (result.costUsd ?? 0);
@@ -322,6 +324,8 @@ export class PipelineOrchestrator {
       IMPLEMENT_SYSTEM_PROMPT,
       undefined,
       callbacks.onStreamUpdate,
+      undefined,
+      callbacks.onActivityChange,
     );
 
     const totalCostUsd = state.totalCostUsd + (result.costUsd ?? 0);
@@ -367,6 +371,8 @@ export class PipelineOrchestrator {
       PUSH_SYSTEM_PROMPT,
       undefined,
       callbacks.onStreamUpdate,
+      undefined,
+      callbacks.onActivityChange,
     );
 
     const totalCostUsd = state.totalCostUsd + (result.costUsd ?? 0);
@@ -413,6 +419,7 @@ export class PipelineOrchestrator {
       undefined,
       callbacks.onStreamUpdate,
       600, // 10 分钟空闲超时，pr-fixup 需要轮询等待 CI
+      callbacks.onActivityChange,
     );
 
     const totalCostUsd = state.totalCostUsd + (result.costUsd ?? 0);
@@ -443,6 +450,7 @@ export class PipelineOrchestrator {
     historySummaries?: string,
     onStreamUpdate?: (text: string) => Promise<void>,
     timeoutSeconds?: number,
+    onActivityChange?: (status: import('../claude/types.js').ActivityStatus) => void,
   ): Promise<ClaudeResult> {
     this.currentSessionKey = sessionKey;
     return claudeExecutor.execute({
@@ -452,6 +460,7 @@ export class PipelineOrchestrator {
       // pipeline 每步独立，不 resume 上一步的 session
       resumeSessionId: undefined,
       onStreamUpdate,
+      onActivityChange,
       historySummaries,
       systemPromptOverride: systemPrompt,
       ...(timeoutSeconds != null ? { timeoutSeconds } : {}),

@@ -101,6 +101,8 @@ export interface PipelineCallbacks {
   onPhaseChange?: (state: PipelineState) => Promise<void>;
   /** 流式输出更新 */
   onStreamUpdate?: (text: string) => Promise<void>;
+  /** 活动状态变更（同步回调，仅存储最新状态，搭载在下次卡片更新展示） */
+  onActivityChange?: (status: import('../claude/types.js').ActivityStatus) => void;
 }
 
 /** 管道最终结果 */

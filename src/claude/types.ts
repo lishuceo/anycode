@@ -104,3 +104,11 @@ export interface ImageContentBlock {
 }
 
 export type MultimodalContentBlock = TextContentBlock | ImageContentBlock;
+
+/** Claude 活动状态（用于管道进度卡片展示） */
+export interface ActivityStatus {
+  /** 当前活动类型 */
+  state: 'thinking' | 'tool_call';
+  /** 累计工具调用次数 */
+  toolCallCount: number;
+}
