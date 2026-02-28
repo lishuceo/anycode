@@ -75,15 +75,18 @@ export function formatMemories(results: MemorySearchResult[]): string {
   const lines: string[] = ['\n## 关于此用户的记忆\n'];
   let totalChars = lines[0].length;
 
+  let budgetExhausted = false;
   for (const type of TYPE_ORDER) {
+    if (budgetExhausted) break;
+
     const group = groups.get(type);
     if (!group || group.length === 0) continue;
 
     const header = `### ${TYPE_LABELS[type]}`;
     if (totalChars + header.length + 1 > maxChars) break;
-    lines.push(header);
-    totalChars += header.length + 1;
 
+    // Collect items first, only add header if at least one item fits
+    const itemLines: string[] = [];
     for (const r of group) {
       const mem = r.memory;
       let line: string;
@@ -99,9 +102,18 @@ export function formatMemories(results: MemorySearchResult[]): string {
         line = `- ${mem.content}${confidenceTag}`;
       }
 
-      if (totalChars + line.length + 1 > maxChars) break;
-      lines.push(line);
+      if (totalChars + header.length + 1 + line.length + 1 > maxChars) {
+        budgetExhausted = true;
+        break;
+      }
+      itemLines.push(line);
       totalChars += line.length + 1;
+    }
+
+    if (itemLines.length > 0) {
+      totalChars += header.length + 1;
+      lines.push(header);
+      lines.push(...itemLines);
     }
   }
 

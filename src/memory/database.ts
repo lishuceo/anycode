@@ -169,7 +169,7 @@ export class MemoryDatabase {
    * Async factory method: creates DB, loads sqlite-vec if possible,
    * sets up schema and returns MemoryDatabase instance.
    */
-  static async create(dbPath: string, dimension: number = 1024): Promise<MemoryDatabase> {
+  static async create(dbPath: string, dimension: number = 1536): Promise<MemoryDatabase> {
     if (!Number.isInteger(dimension) || dimension <= 0 || dimension > 65536) {
       throw new Error(`Invalid embedding dimension: ${dimension}`);
     }

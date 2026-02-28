@@ -70,19 +70,29 @@ export function isMemoryEnabled(): boolean {
  * Periodic maintenance: mark expired TTL states, clean very old low-confidence memories.
  */
 export function runMemoryMaintenance(): void {
-  if (!memoryDb) return;
+  if (!memoryDb || !memoryStore) return;
   try {
-    memoryDb.db.exec(`
-      UPDATE memories SET invalid_at = datetime('now'), updated_at = datetime('now')
-      WHERE type = 'state' AND ttl IS NOT NULL AND ttl < datetime('now') AND invalid_at IS NULL
-    `);
-    const result = memoryDb.db.prepare(`
-      DELETE FROM memories
-      WHERE confidence < 0.1
-      AND created_at < datetime('now', '-90 days')
-    `).run();
-    if (result.changes > 0) {
-      logger.info({ deleted: result.changes }, 'Memory maintenance: cleaned low-confidence memories');
+    // Use ISO 8601 format to match stored timestamps (new Date().toISOString())
+    const now = new Date().toISOString();
+    const cutoff90d = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
+
+    // Mark expired TTL states as invalid
+    memoryDb.db.prepare(`
+      UPDATE memories SET invalid_at = ?, updated_at = ?
+      WHERE type = 'state' AND ttl IS NOT NULL AND ttl < ? AND invalid_at IS NULL
+    `).run(now, now, now);
+
+    // Clean very old low-confidence memories (via store to also clean vec0)
+    const rows = memoryDb.db.prepare(`
+      SELECT id FROM memories
+      WHERE confidence < 0.1 AND created_at < ?
+    `).all(cutoff90d) as Array<{ id: string }>;
+
+    for (const row of rows) {
+      memoryStore.delete(row.id);
+    }
+    if (rows.length > 0) {
+      logger.info({ deleted: rows.length }, 'Memory maintenance: cleaned low-confidence memories');
     }
   } catch (err) {
     logger.warn({ err }, 'Memory maintenance failed');

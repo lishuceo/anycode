@@ -201,12 +201,12 @@ describe('MemoryDatabase', () => {
     it('should handle insertVec gracefully when vector disabled', () => {
       if (db.vectorEnabled) return; // skip if vector IS enabled
       // Should not throw
-      db.insertVec('mem_no_vec', new Float32Array(1024));
+      db.insertVec('mem_no_vec', new Float32Array(1536));
     });
 
     it('should handle searchVec gracefully when vector disabled', () => {
       if (db.vectorEnabled) return;
-      const results = db.searchVec(new Float32Array(1024), 10);
+      const results = db.searchVec(new Float32Array(1536), 10);
       expect(results).toEqual([]);
     });
 
@@ -225,7 +225,7 @@ describe('MemoryDatabase', () => {
       const row = makeRow({ id: 'mem_vec_1', content: 'vector test' });
       db.insertMemory(row);
 
-      const embedding = new Float32Array(1024);
+      const embedding = new Float32Array(1536);
       embedding[0] = 1.0; // simple non-zero vector
       db.insertVec('mem_vec_1', embedding);
 
@@ -240,7 +240,7 @@ describe('MemoryDatabase', () => {
       const row = makeRow({ id: 'mem_vec_2', content: 'vector delete test' });
       db.insertMemory(row);
 
-      const embedding = new Float32Array(1024);
+      const embedding = new Float32Array(1536);
       embedding[0] = 0.5;
       embedding[1] = 0.5;
       db.insertVec('mem_vec_2', embedding);
