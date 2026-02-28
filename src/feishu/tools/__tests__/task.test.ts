@@ -9,6 +9,7 @@ const mockTaskCreate = vi.fn();
 const mockTaskGet = vi.fn();
 const mockTaskList = vi.fn();
 const mockTaskPatch = vi.fn();
+const mockRequest = vi.fn();
 
 vi.mock('../../client.js', () => ({
   feishuClient: {
@@ -27,6 +28,7 @@ vi.mock('../../client.js', () => ({
           },
         },
       },
+      request: (...args: unknown[]) => mockRequest(...args),
     },
   },
 }));
@@ -385,5 +387,64 @@ describe('feishu_task tool', () => {
       expect(result.isError).toBe(true);
       expect(result.content[0].text).toContain('未知 action');
     });
+  });
+});
+
+// ============================================================
+// list with user_access_token (Task v2 API)
+// ============================================================
+
+describe('feishu_task tool with getUserToken', () => {
+  let handlerWithToken: (args: Record<string, unknown>) => Promise<unknown>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    const mockGetUserToken = vi.fn().mockResolvedValue('u-test-access-token');
+    feishuTaskTool(mockGetUserToken);
+    handlerWithToken = capturedHandler;
+  });
+
+  it('should use Task v2 API with user token for list', async () => {
+    mockRequest.mockResolvedValue({
+      code: 0,
+      data: {
+        items: [
+          { guid: 'T1', summary: '个人任务', due: { timestamp: '1773532800' }, creator: { id: 'ou_123' } },
+        ],
+        has_more: false,
+      },
+    });
+
+    const result = await handlerWithToken({ action: 'list' });
+    const parsed = JSON.parse(result.content[0].text);
+    expect(parsed._token_type).toBe('user');
+    expect(parsed.items).toHaveLength(1);
+    expect(parsed.items[0].guid).toBe('T1');
+
+    // Should use client.request with user token header, not client.task.v1.task.list
+    expect(mockRequest).toHaveBeenCalledWith(expect.objectContaining({
+      method: 'GET',
+      url: '/open-apis/task/v2/tasks',
+      headers: { Authorization: 'Bearer u-test-access-token' },
+    }));
+    expect(mockTaskList).not.toHaveBeenCalled();
+  });
+
+  it('should fall back to v1 API when getUserToken returns undefined', async () => {
+    // Create a new tool instance with getUserToken returning undefined
+    const mockGetNoToken = vi.fn().mockResolvedValue(undefined);
+    feishuTaskTool(mockGetNoToken);
+    const handler = capturedHandler;
+
+    mockTaskList.mockResolvedValue({
+      code: 0,
+      data: { items: [], has_more: false },
+    });
+
+    const result = await handler({ action: 'list' });
+    const parsed = JSON.parse(result.content[0].text);
+    expect(parsed._token_type).toBe('bot');
+    expect(mockTaskList).toHaveBeenCalled();
+    expect(mockRequest).not.toHaveBeenCalled();
   });
 });

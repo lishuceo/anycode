@@ -562,3 +562,73 @@ describe('SessionDatabase — thread_sessions', () => {
     });
   });
 });
+
+// ============================================================
+// user_tokens CRUD
+// ============================================================
+
+describe('SessionDatabase — user_tokens', () => {
+  let db: SessionDatabase;
+  let tempDir: string;
+
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), 'session-db-test-'));
+    db = new SessionDatabase(join(tempDir, 'test.db'));
+  });
+
+  afterEach(() => {
+    db.close();
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it('should return undefined for non-existent user', () => {
+    expect(db.getUserToken('ou_nonexistent')).toBeUndefined();
+  });
+
+  it('should upsert and retrieve a user token', () => {
+    const expiry = Math.floor(Date.now() / 1000) + 7200;
+    db.upsertUserToken('ou_user1', 'access-token-1', 'refresh-token-1', expiry);
+
+    const token = db.getUserToken('ou_user1');
+    expect(token).toBeDefined();
+    expect(token!.accessToken).toBe('access-token-1');
+    expect(token!.refreshToken).toBe('refresh-token-1');
+    expect(token!.tokenExpiry).toBe(expiry);
+  });
+
+  it('should update existing token on upsert', () => {
+    const expiry1 = Math.floor(Date.now() / 1000) + 3600;
+    db.upsertUserToken('ou_user1', 'old-access', 'old-refresh', expiry1);
+
+    const expiry2 = Math.floor(Date.now() / 1000) + 7200;
+    db.upsertUserToken('ou_user1', 'new-access', 'new-refresh', expiry2);
+
+    const token = db.getUserToken('ou_user1');
+    expect(token!.accessToken).toBe('new-access');
+    expect(token!.refreshToken).toBe('new-refresh');
+    expect(token!.tokenExpiry).toBe(expiry2);
+  });
+
+  it('should delete a user token', () => {
+    db.upsertUserToken('ou_user1', 'access', 'refresh', Math.floor(Date.now() / 1000) + 3600);
+    db.deleteUserToken('ou_user1');
+    expect(db.getUserToken('ou_user1')).toBeUndefined();
+  });
+
+  it('should not throw when deleting non-existent token', () => {
+    expect(() => db.deleteUserToken('ou_nonexistent')).not.toThrow();
+  });
+
+  it('should store tokens for different users independently', () => {
+    const expiry = Math.floor(Date.now() / 1000) + 7200;
+    db.upsertUserToken('ou_user1', 'token-1', 'refresh-1', expiry);
+    db.upsertUserToken('ou_user2', 'token-2', 'refresh-2', expiry);
+
+    expect(db.getUserToken('ou_user1')!.accessToken).toBe('token-1');
+    expect(db.getUserToken('ou_user2')!.accessToken).toBe('token-2');
+
+    db.deleteUserToken('ou_user1');
+    expect(db.getUserToken('ou_user1')).toBeUndefined();
+    expect(db.getUserToken('ou_user2')!.accessToken).toBe('token-2');
+  });
+});

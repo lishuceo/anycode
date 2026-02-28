@@ -28,6 +28,7 @@ import { chatBotRegistry } from './bot-registry.js';
 import type { AgentId, AgentConfig } from '../agent/types.js';
 import { readPersonaFile, loadKnowledgeContent } from '../agent/config-loader.js';
 import { createDiscussionMcpServer } from '../agent/tools/discussion.js';
+import { generateAuthUrl, isOAuthConfigured, hasCallbackUrl, handleManualCode } from './oauth.js';
 
 // 注册审批通过后的消息重新入队回调（避免 approval.ts → event-handler.ts 循环依赖）
 setOnApproved((chatId, userId, text, messageId, rootId, threadId) => {
@@ -653,6 +654,45 @@ async function handleSlashCommand(
       await feishuClient.replyCardInThread(threadReplyMsgId, card);
     } else {
       await feishuClient.sendCard(chatId, card);
+    }
+    return true;
+  }
+
+  // /auth [code] 或 授权 [code] - 飞书 OAuth 用户授权
+  if (trimmed === '/auth' || trimmed === '授权' || trimmed.startsWith('/auth ') || trimmed.startsWith('授权 ')) {
+    // 提取可能的 code 参数
+    const codeArg = trimmed.startsWith('/auth ') ? trimmed.slice('/auth '.length).trim()
+      : trimmed.startsWith('授权 ') ? trimmed.slice('授权 '.length).trim()
+      : '';
+
+    if (codeArg) {
+      // 手动贴 code 模式：用户把授权后 URL 里的 code 参数贴回来
+      try {
+        await handleManualCode(codeArg, userId, chatId);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        const reply = `${msg}`;
+        if (threadReplyMsgId) {
+          await feishuClient.replyTextInThread(threadReplyMsgId, reply);
+        } else {
+          await feishuClient.replyText(messageId, reply);
+        }
+      }
+      return true;
+    }
+
+    // 生成授权 URL
+    const authUrl = generateAuthUrl(userId, chatId);
+    let reply: string;
+    if (hasCallbackUrl()) {
+      reply = `请点击以下链接授权，授权后即可查看个人任务：\n${authUrl}`;
+    } else {
+      reply = `请点击以下链接授权：\n${authUrl}\n\n授权完成后，浏览器会跳转到一个打不开的页面，这是正常的。请复制地址栏中 code= 后面的那串字符，发送：\n/auth <code值>`;
+    }
+    if (threadReplyMsgId) {
+      await feishuClient.replyTextInThread(threadReplyMsgId, reply);
+    } else {
+      await feishuClient.replyText(messageId, reply);
     }
     return true;
   }
