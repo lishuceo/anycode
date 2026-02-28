@@ -1,7 +1,7 @@
 # Plan 5: Agent 记忆系统
 
 > 日期: 2026-02-27
-> 状态: **Phase 0 ✅ 已完成** | Phase 1 待实施
+> 状态: **Phase 0 ✅ | Phase 1 ✅** | Phase 2 待实施
 > 前置依赖: Plan 4 Phase 1 (多 Agent 架构, 已实现)
 
 ---
@@ -568,34 +568,25 @@ TTL: 2 小时                  TTL: 按类型 (天~永久)
 
 > 详见第十四章。PR #73, 90 tests, 所有关键技术验证通过。
 
-### Phase 1: 记忆抽取 + 注入集成
+### ~~Phase 1: 记忆抽取 + 注入集成~~ ✅ 已完成 (2026-02-28)
 
-**目标**：对话执行后自动提取记忆，下次对话注入
+> PR #73, 141 tests, 质量评估: 检索命中率 90%, 抽取准确率 100%
 
-**前置条件**：Phase 0 ✅
+新增文件: `init.ts`(singleton), `extractor.ts`(Qwen 抽取), `injector.ts`(prompt 注入)
+改造文件: `executor.ts`(memoryContext), `event-handler.ts`(两路径接线), `index.ts`(启动/维护/关闭)
+模型选型: 抽取 `qwen3.5-flash`(7-8s 稳定), embedding `text-embedding-v4`(1536 维)
 
-新增文件 (2):
-1. `src/memory/extractor.ts` — 对话执行后调用 Qwen 抽取记忆
-2. `src/memory/injector.ts` — 检索结果 → system prompt 片段
+### Phase 2: 用户管理 + 统计面板
 
-改造文件 (3):
-3. `src/feishu/event-handler.ts` — executor 执行完后触发 extractor
-4. `src/claude/executor.ts` — systemPrompt 注入记忆片段
-5. `src/index.ts` — 启动时初始化 memory 模块
+**目标**：用户可查看/删除记忆，可视化统计
 
-**验证标准**：
-- 对话中提到"我喜欢用 pnpm"→ 下次新对话 system prompt 中出现此偏好
-- 对话中说"Node 16 升到 20"→ 旧事实被 supersede，新事实生效
-- 记忆检索延迟 < 100ms
+**前置条件**：Phase 1 ✅
 
-### Phase 2: 用户管理 + 定期维护
+**已完成的部分**：定期维护已在 `init.ts:runMemoryMaintenance()` 实现（标记过期 TTL + 清理低置信度，挂在 30min cleanup interval）
 
-**目标**：用户可查看/删除记忆，系统自动维护
-
-新增：
-1. `/memory` 系列 slash command
-2. `src/memory/maintenance.ts` — 定期清理
-3. 记忆统计面板（Feishu 卡片展示记忆条数/分类/最近更新）
+待实现：
+1. `/memory` 系列 slash command（list / search / delete / clear）
+2. 记忆统计面板（Feishu 卡片展示记忆条数/分类/最近更新）
 
 ### Phase 3: 跨 Agent 共享 + Relation 增强
 
