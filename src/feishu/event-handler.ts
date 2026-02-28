@@ -466,6 +466,9 @@ async function handleMessageEvent(data: MessageEventData, accountId: string = 'd
   // -- 被动收集：消息发送者为 bot 时记录到 registry --
   if (senderType === 'app' && userId && chatId) {
     const selfBotOpenIds = accountManager.getAllBotOpenIds();
+    // 单 bot 模式下 getAllBotOpenIds() 为空，需补充 feishuClient.botOpenId
+    const selfBotOpenId = feishuClient.botOpenId;
+    if (selfBotOpenId) selfBotOpenIds.add(selfBotOpenId);
     if (!selfBotOpenIds.has(userId)) {
       // 非自身 bot → 记录为已知 bot（name 在此处不可用，后续可通过事件补充）
       chatBotRegistry.addBot(chatId, userId, undefined, 'message_sender');
@@ -1892,6 +1895,9 @@ function handleBotAddedEvent(data: Record<string, unknown>, accountId: string): 
     return;
   }
   const selfBotOpenIds = accountManager.getAllBotOpenIds();
+  // 单 bot 模式下 getAllBotOpenIds() 为空，需补充 feishuClient.botOpenId
+  const selfBotOpenId = feishuClient.botOpenId;
+  if (selfBotOpenId) selfBotOpenIds.add(selfBotOpenId);
   for (const user of users) {
     const openId = user.user_id?.open_id;
     if (!openId) continue;
@@ -1917,6 +1923,9 @@ function handleBotDeletedEvent(data: Record<string, unknown>, accountId: string)
     return;
   }
   const selfBotOpenIds = accountManager.getAllBotOpenIds();
+  // 单 bot 模式下 getAllBotOpenIds() 为空，需补充 feishuClient.botOpenId
+  const selfBotOpenId = feishuClient.botOpenId;
+  if (selfBotOpenId) selfBotOpenIds.add(selfBotOpenId);
   for (const user of users) {
     const openId = user.user_id?.open_id;
     if (!openId) continue;
