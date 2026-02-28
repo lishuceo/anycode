@@ -1,30 +1,23 @@
-import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, realpathSync, statSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { readdirSync, statSync, readFileSync, openSync, readSync, closeSync } from 'node:fs';
+import { join } from 'node:path';
 import { config } from '../config.js';
 import { logger } from '../utils/logger.js';
 import { claudeExecutor } from './executor.js';
-import { setupWorkspace } from '../workspace/manager.js';
-import { isOwner } from '../utils/security.js';
 
-// ============================================================
-// Routing Agent
-//
-// 轻量级 Claude Code 实例（Sonnet 4.6），在主查询启动前
-// 决定当前 thread 应该在哪个工作目录下工作。
-//
-// 使用 Agent SDK 复用同一套基础设施，自主运行 ls/gh 等
-// 命令发现本地缓存和 GitHub 账号下的仓库。
-// ============================================================
-
-/** 路由决策类型 */
+/** 路由决策结果 */
 export interface RoutingDecision {
   decision: 'use_existing' | 'clone_remote' | 'use_default' | 'need_clarification';
+  /** 本地目录绝对路径（use_existing 时必填） */
   workdir?: string;
+  /** 远程仓库 URL（clone_remote 时必填） */
   repo_url?: string;
+  /** 工作区模式 */
   mode?: 'readonly' | 'writable';
+  /** 分支名（可选） */
   branch?: string;
+  /** 用户澄清问题（need_clarification 时必填） */
   question?: string;
-  /** clone 失败时携带错误信息，供调用方提示用户 */
+  /** clone 失败时的错误信息 */
   cloneError?: string;
   /** 非阻断性警告（如缓存 fetch 失败） */
   warning?: string;
@@ -84,51 +77,50 @@ function discoverLocalProjects(projectsDir: string): Array<{ name: string; descr
 function buildRoutingSystemPrompt(projects: Array<{ name: string; description: string }>): string {
   const projectsDir = config.claude.defaultWorkDir;
   const cacheDir = config.repoCache.dir;
-  const workspacesDir = config.workspace.baseDir;
 
-  // 构建已知项目列表
+  // 找到本系统自身的项目名（用于默认路由规则）
+  const selfProjectName = projects.find(p =>
+    p.description.includes('飞书') && p.description.includes('Claude'),
+  )?.name || 'anywhere-code';
+
   const projectsSection = projects.length > 0
     ? [
         '## 已知本地项目',
         '',
         `以下是 \`${projectsDir}\` 中的项目及其用途：`,
         '',
-        ...projects.map(p => `- **${p.name}**: ${p.description}`),
-        '',
-        '当用户的需求明确匹配某个项目的描述时，优先选择该项目，无需再执行查找命令。',
+        ...projects.map(p => `- **${p.name}** (\`${projectsDir}/${p.name}\`): ${p.description}`),
         '',
       ].join('\n')
     : '';
 
   return `你是一个工作区路由助手。你的唯一任务是决定用户的请求应该在哪个代码仓库/目录下执行。
+**你应该尽量快速决策，直接输出 JSON，不要调用任何工具，除非用户提到了一个你不认识的仓库名。**
 
-${projectsSection}## 你能做的事
-- 运行 \`find ${cacheDir} -maxdepth 3 -name "*.git" -type d\` 查看本地已缓存的仓库
-- 运行 \`ls ${projectsDir}\` 查看项目目录下的仓库
-- 运行 \`ls <path>\` 验证本地路径是否存在
-- 运行 \`gh search repos <关键词> --json fullName,url --limit 20\` 搜索用户有权访问的所有仓库（含组织仓库）
-- 如果信息不足，向用户提问（保持简短）
+${projectsSection}## 快速决策规则（优先级从高到低，匹配即停）
 
-## 你不能做的事
-- 不要开始执行用户的实际任务
-- 不要修改任何文件
-- 不要 clone 仓库（由系统负责）
+1. **消息中有明确 URL** → \`clone_remote\`，用该 URL
+2. **消息中有明确本地路径** → \`use_existing\`（验证路径存在）
+3. **消息提到已知项目名**（见上方列表）→ 直接 \`use_existing\`，workdir 填对应路径，**不需要调用任何工具**
+4. **消息涉及本系统自身的功能**（如飞书工具、卡片、消息、agent、pipeline、MCP、routing 等）→ 用户在让 agent 改自己，选 \`use_existing\`，workdir = \`${projectsDir}/${selfProjectName}\`
+5. **消息不涉及特定仓库**（通用问题、闲聊等）→ \`use_default\`
+6. **消息提到不认识的仓库名** → 此时才需要调用工具查找（见下方查找顺序）
+7. **以上都无法判断** → \`need_clarification\`
 
-## 查找顺序
+## 查找顺序（仅当快速决策规则 6 触发时使用）
 
-当用户提到某个仓库或项目名时，**严格按以下顺序查找，不能跳过任何步骤**：
+当用户提到一个**不在已知项目列表中的**仓库名时，按以下顺序查找：
 
-1. **本地缓存（必须执行）** — 运行 \`find ${cacheDir} -maxdepth 3 -name "*.git" -type d\`，在输出结果中查找名称匹配的 bare clone。如果找到，从缓存路径推导 URL（如 \`${cacheDir}/github.com/org/repo.git\` → \`https://github.com/org/repo\`），返回 **clone_remote**。**绝对不要跳过这一步，也不要凭猜测构造 URL。**
-2. **项目目录** — \`ls ${projectsDir}\`，看有没有匹配的目录（非 bare clone），返回 **use_existing**
-3. **GitHub 搜索** — \`gh search repos <关键词> --json fullName,url --limit 20\`，搜索用户有权访问的所有仓库（包括个人仓库和组织仓库）。**不要用 \`gh repo list\`，它只能列出个人仓库，无法搜索组织仓库。**
-4. 以上都找不到 → 如果用户给了 URL 则用 URL；否则向用户提问
+1. **本地缓存** — 运行 \`find ${cacheDir} -maxdepth 3 -name "*.git" -type d\`，查找匹配的 bare clone。如果找到，从缓存路径推导 URL（如 \`${cacheDir}/github.com/org/repo.git\` → \`https://github.com/org/repo\`），返回 \`clone_remote\`。**不要凭猜测构造 URL。**
+2. **项目目录** — \`ls ${projectsDir}\`，看有没有匹配的目录
+3. **GitHub 搜索** — \`gh search repos <关键词> --json fullName,url --limit 20\`（不要用 \`gh repo list\`）
+4. 都找不到 → 用户给了 URL 就用 URL；否则 \`need_clarification\`
 
-**重要：缓存目录中的 bare clone 不能直接用作工作目录（它们没有工作树），必须通过 clone_remote 让系统创建隔离工作区。**
-**重要：绝对不要凭猜测构造仓库 URL。必须从缓存路径推导或从 GitHub 搜索结果中获取确切的 URL。**
+**重要：缓存中的 bare clone 不能直接用作工作目录，必须通过 \`clone_remote\` 让系统创建隔离工作区。**
 
 ## 输出格式
 
-决策完成后，输出一个 JSON 代码块（且仅输出此 JSON）：
+直接输出一个 JSON 代码块（且仅输出此 JSON，不要有其他文字）：
 
 \`\`\`json
 {
@@ -144,21 +136,13 @@ ${projectsSection}## 你能做的事
 字段说明：
 - **use_existing**: 本地已有目标目录。必填 workdir（绝对路径）
 - **clone_remote**: 本地没有，需要 clone。必填 repo_url 和 mode
-- **use_default**: 不涉及特定仓库（通用问题、创建新项目、闲聊等）。无需额外字段
+- **use_default**: 不涉及特定仓库。无需额外字段
 - **need_clarification**: 信息不足。必填 question
 
-## 决策优先级
-1. 消息中有明确 URL → clone_remote
-2. 消息中有明确本地路径 → use_existing（验证路径存在）
-3. 提到仓库名 → 按查找顺序在本地和 GitHub 账号中搜索
-4. 不涉及特定仓库（通用问题、新项目、闲聊等）→ use_default
-5. 涉及特定仓库但无法确定是哪个 → need_clarification
-
-## 重要规则
-- mode 判断：用户明确说要修改代码、提 PR、修 bug 时用 "writable"；只是看看、分析、提问时用 "readonly"
-- 不确定 mode 时默认 "writable"（修改比只读更常见）
+## 规则
+- mode：用户要修改代码、提 PR、修 bug → "writable"；只是看看、分析 → "readonly"；不确定 → "writable"
 - branch 字段可选，不确定就不填
-- 回复中只输出 JSON 代码块，不要输出其他内容`;
+- 不要开始执行用户的实际任务，不要修改文件，不要 clone 仓库`;
 }
 
 /** 构建路由 prompt（截断过长消息，routing 只需判断目标仓库） */
@@ -167,74 +151,48 @@ function buildRoutingPrompt(userMessage: string): string {
   if (userMessage.length <= MAX_ROUTING_PROMPT_LENGTH) {
     return userMessage;
   }
-  return userMessage.slice(0, MAX_ROUTING_PROMPT_LENGTH) + '\n\n[... 消息已截断，仅用于路由决策]';
+  return userMessage.slice(0, MAX_ROUTING_PROMPT_LENGTH) + '\n\n[消息过长，已截断。请根据上述内容判断目标仓库]';
 }
 
-/** 从 agent 输出中解析 JSON 决策 */
+/** 解析 Claude 输出中的 JSON 决策 */
 function parseRoutingDecision(output: string): RoutingDecision | null {
-  // 尝试从 ```json ... ``` 代码块中提取
-  const codeBlockMatch = output.match(/```json\s*\n?([\s\S]*?)\n?\s*```/);
-  const jsonStr = codeBlockMatch ? codeBlockMatch[1] : output;
-
-  // 尝试从文本中找到 JSON 对象（非贪婪，避免匹配多个 {} 时取到错误范围）
-  const jsonMatch = jsonStr.match(/\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}/);
-  if (!jsonMatch) return null;
+  // 尝试从 markdown 代码块中提取 JSON
+  const codeBlockMatch = output.match(/```(?:json)?\s*\n?([\s\S]*?)\n?\s*```/);
+  const jsonStr = codeBlockMatch ? codeBlockMatch[1].trim() : output.trim();
 
   try {
-    const parsed = JSON.parse(jsonMatch[0]) as Record<string, unknown>;
-    const decision = parsed.decision as string;
+    const parsed = JSON.parse(jsonStr);
+    const { decision, workdir, repo_url, mode, branch, question } = parsed;
 
     if (!['use_existing', 'clone_remote', 'use_default', 'need_clarification'].includes(decision)) {
+      logger.warn({ output: output.slice(0, 500) }, 'Invalid routing decision type');
       return null;
     }
 
-    // 关键字段类型校验：AI 可能返回非字符串值
-    if (parsed.workdir !== undefined && typeof parsed.workdir !== 'string') return null;
-    if (parsed.repo_url !== undefined && typeof parsed.repo_url !== 'string') return null;
-    if (parsed.question !== undefined && typeof parsed.question !== 'string') return null;
-    if (parsed.mode !== undefined && parsed.mode !== 'readonly' && parsed.mode !== 'writable') return null;
-
     return {
-      decision: decision as RoutingDecision['decision'],
-      workdir: parsed.workdir as string | undefined,
-      repo_url: parsed.repo_url as string | undefined,
-      mode: parsed.mode as 'readonly' | 'writable' | undefined,
-      branch: parsed.branch as string | undefined,
-      question: parsed.question as string | undefined,
+      decision,
+      workdir,
+      repo_url,
+      mode: mode === 'readonly' ? 'readonly' : mode === 'writable' ? 'writable' : undefined,
+      branch,
+      question,
     };
   } catch {
+    logger.warn({ output: output.slice(0, 500) }, 'Failed to parse routing decision JSON');
     return null;
   }
 }
 
-/** 获取路由失败时的 fallback 目录 */
+/** 获取 fallback 工作目录 */
 function getFallbackWorkdir(): string {
   return config.claude.defaultWorkDir;
 }
 
-/** 检查路径是否在允许的目录范围内（防止 AI 返回敏感路径） */
-function isPathAllowed(targetPath: string): boolean {
-  try {
-    const realPath = realpathSync(resolve(targetPath));
-    const allowedDirs = [
-      config.claude.defaultWorkDir,
-      config.workspace.baseDir,
-      config.repoCache.dir,
-    ];
-    return allowedDirs.some((base) => {
-      const resolvedBase = existsSync(base) ? realpathSync(resolve(base)) : resolve(base);
-      return realPath === resolvedBase || realPath.startsWith(resolvedBase + '/');
-    });
-  } catch {
-    return false;
-  }
-}
-
 /**
- * 执行路由决策
+ * 运行路由 agent，决定用户请求的目标工作区
  *
- * 使用 Sonnet 4.6 的 Claude Code 实例，自主探索本地缓存和 GitHub 账号，
- * 决定当前 thread 应该在哪个工作目录下工作。
+ * 路由 agent 是一次性的：每次调用都是全新 session，不走 resume 路径。
+ * 不受 systemPromptHash 的影响。
  */
 export async function routeWorkspace(
   prompt: string,
@@ -258,7 +216,6 @@ export async function routeWorkspace(
       workingDir: config.claude.defaultWorkDir,
       systemPromptOverride: buildRoutingSystemPrompt(projects),
       disableWorkspaceTool: true,
-      disableThinking: true,
       model: 'claude-sonnet-4-6',
       settingSources: [],
       maxTurns: 10,
@@ -283,105 +240,43 @@ export async function routeWorkspace(
 
   const decision = parseRoutingDecision(result.output);
   if (!decision) {
-    logger.warn({ chatId, userId, output: result.output.slice(0, 500) }, 'Failed to parse routing decision, using fallback');
+    logger.warn({ chatId, userId }, 'Could not parse routing decision, using fallback');
     return { decision: 'use_default', workdir: getFallbackWorkdir() };
   }
 
-  logger.info({ chatId, userId, decision }, 'Routing decision');
+  logger.info(
+    { chatId, userId, decision },
+    'Routing decision',
+  );
 
-  // 处理 clone_remote：执行 clone 并返回工作区路径
-  if (decision.decision === 'clone_remote') {
-    if (!decision.repo_url) {
-      logger.warn({ chatId, userId }, 'clone_remote decision missing repo_url, using fallback');
-      const fallbackDir = getFallbackWorkdir();
-      return { decision: 'use_default', workdir: fallbackDir };
-    }
-
-    try {
-      const cloneMode = isOwner(userId) ? 'writable' : (decision.mode ?? 'writable');
-      const workspace = setupWorkspace({
-        repoUrl: decision.repo_url,
-        mode: cloneMode,
-        sourceBranch: decision.branch,
-      });
-      // 验证 clone 结果路径在允许范围内（防止 symlink 等绕过）
-      if (!isPathAllowed(workspace.workspacePath)) {
-        logger.warn({ chatId, userId, workspacePath: workspace.workspacePath }, 'clone_remote result path outside allowed directories, using fallback');
-        const fallbackDir = getFallbackWorkdir();
-        return { decision: 'use_default', workdir: fallbackDir };
-      }
-      return { ...decision, workdir: workspace.workspacePath, warning: workspace.warning };
-    } catch (err) {
-      const errMsg = err instanceof Error ? err.message : String(err);
-      logger.error({ err: errMsg, chatId, userId, repoUrl: decision.repo_url }, 'Failed to setup workspace from routing decision');
-      return { decision: 'use_default', workdir: getFallbackWorkdir(), cloneError: `仓库 clone 失败 (${decision.repo_url}): ${errMsg}` };
-    }
-  }
-
-  // use_default: 填充默认工作目录
-  if (decision.decision === 'use_default') {
-    return { ...decision, workdir: config.claude.defaultWorkDir };
-  }
-
-  // use_existing: 验证 workdir 非空 + 路径存在 + 在允许目录范围内
+  // 验证 use_existing 的 workdir 存在
   if (decision.decision === 'use_existing') {
     if (!decision.workdir) {
       logger.warn({ chatId, userId }, 'use_existing decision missing workdir, using fallback');
-      const fallbackDir = getFallbackWorkdir();
-      return { decision: 'use_default', workdir: fallbackDir };
+      return { decision: 'use_default', workdir: getFallbackWorkdir() };
     }
+    try {
+      statSync(decision.workdir);
+    } catch {
+      logger.warn({ chatId, userId, workdir: decision.workdir }, 'use_existing workdir does not exist');
+      return {
+        decision: 'use_default',
+        workdir: getFallbackWorkdir(),
+        warning: `⚠️ 路由目标目录 \`${decision.workdir}\` 不存在，已回退到默认目录`,
+      };
+    }
+  }
 
-    // bare cache 检测：routing agent 可能返回 bare clone 缓存路径作为 use_existing，
-    // 但 bare repo 不能直接当工作目录。如果有 repo_url，走 clone_remote 创建工作区。
-    const resolvedCacheDir = resolve(config.repoCache.dir);
-    const resolvedWorkdir = resolve(decision.workdir);
-    if (resolvedWorkdir.startsWith(resolvedCacheDir + '/')) {
-      logger.info({ chatId, userId, workdir: decision.workdir }, 'use_existing points to bare cache, converting to clone_remote');
-      if (decision.repo_url) {
-        try {
-          const cacheCloneMode = isOwner(userId) ? 'writable' : (decision.mode ?? 'writable');
-          const workspace = setupWorkspace({
-            repoUrl: decision.repo_url,
-            mode: cacheCloneMode,
-            sourceBranch: decision.branch,
-          });
-          if (!isPathAllowed(workspace.workspacePath)) {
-            logger.warn({ chatId, userId, workspacePath: workspace.workspacePath }, 'clone_remote result path outside allowed directories, using fallback');
-            const fallbackDir = getFallbackWorkdir();
-            return { decision: 'use_default', workdir: fallbackDir };
-          }
-          return { ...decision, decision: 'clone_remote', workdir: workspace.workspacePath, warning: workspace.warning };
-        } catch (err) {
-          logger.error({ err, chatId, userId, repoUrl: decision.repo_url }, 'Failed to clone from bare cache, using fallback');
-          const fallbackDir = getFallbackWorkdir();
-          return { decision: 'use_default', workdir: fallbackDir };
-        }
-      }
-      // 无 repo_url，无法 clone，使用默认目录
-      const fallbackDir = getFallbackWorkdir();
-      return { decision: 'use_default', workdir: fallbackDir };
-    }
-
-    if (!existsSync(decision.workdir)) {
-      logger.warn({ chatId, userId, workdir: decision.workdir }, 'use_existing workdir does not exist, using fallback');
-      const fallbackDir = getFallbackWorkdir();
-      return { decision: 'use_default', workdir: fallbackDir };
-    }
-
-    // 路径 allowlist：防止 AI 生成的路径指向敏感目录
-    if (!isPathAllowed(decision.workdir)) {
-      logger.warn({ chatId, userId, workdir: decision.workdir }, 'use_existing workdir outside allowed directories, using fallback');
-      const fallbackDir = getFallbackWorkdir();
-      return { decision: 'use_default', workdir: fallbackDir };
-    }
+  // clone_remote: 验证 repo_url 非空
+  if (decision.decision === 'clone_remote' && !decision.repo_url) {
+    logger.warn({ chatId, userId }, 'clone_remote decision missing repo_url, using fallback');
+    return { decision: 'use_default', workdir: getFallbackWorkdir() };
   }
 
   // need_clarification: 验证 question 非空
   if (decision.decision === 'need_clarification' && !decision.question) {
-    return {
-      ...decision,
-      question: '请提供更多信息，我需要知道你想要操作哪个仓库或项目。',
-    };
+    logger.warn({ chatId, userId }, 'need_clarification decision missing question, using fallback');
+    return { decision: 'use_default', workdir: getFallbackWorkdir() };
   }
 
   return decision;
