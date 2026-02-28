@@ -115,13 +115,15 @@ export function feishuTaskTool(getUserToken?: () => Promise<string | undefined>)
       '- get: 获取任务详情 (需要 task_guid)',
       '- list: 查询任务列表 (支持 completed/page_size 过滤)',
       '- update: 编辑任务 (需要 task_guid + update_fields)',
+      '- delete: 删除任务 (需要 task_guid)',
       '',
       '时间格式 (due/start): Unix 秒级时间戳 或 ISO 日期 (如 "2026-03-15" 或 "2026-03-15T10:00:00")',
       'members 格式: JSON 数组 \'[{"id": "ou_xxx", "role": "assignee"}]\'',
-      'update_fields: 逗号分隔的字段名 (如 "summary,due,description")',
+      'update_fields: 逗号分隔的字段名 (如 "summary,due,description,completed_at")',
+      '  - completed_at: 设为当前时间表示完成任务，设为空字符串表示取消完成',
     ].join('\n'),
     {
-      action: z.enum(['create', 'get', 'list', 'update']).describe('操作类型'),
+      action: z.enum(['create', 'get', 'list', 'update', 'delete']).describe('操作类型'),
       // create / update 共用
       summary: z.string().optional().describe('任务标题 (create 时必填)'),
       description: z.string().optional().describe('任务描述'),
@@ -318,6 +320,10 @@ export function feishuTaskTool(getUserToken?: () => Promise<string | undefined>)
             if (args.start) {
               taskData.start = { timestamp: parseDueDate(args.start), is_all_day: args.is_all_day ?? false };
             }
+            // completed_at: 设为当前时间戳 → 标记完成；设为 "0" 或空 → 取消完成
+            if (updateFieldsArr.includes('completed_at')) {
+              taskData.completed_at = String(Math.floor(Date.now() / 1000));
+            }
 
             const resp = await client.task.v2.task.patch({
               path: { task_guid: args.task_guid },
@@ -332,6 +338,20 @@ export function feishuTaskTool(getUserToken?: () => Promise<string | undefined>)
               content: [{
                 type: 'text' as const,
                 text: '任务已更新',
+              }],
+            };
+          }
+
+          case 'delete': {
+            if (!args.task_guid) throw new Error('delete 操作需要 task_guid');
+            const resp = await client.task.v2.task.delete({
+              path: { task_guid: args.task_guid },
+            }, userTokenOpt);
+            if (resp.code !== 0) throw new Error(`删除任务失败 (${resp.code}): ${resp.msg}`);
+            return {
+              content: [{
+                type: 'text' as const,
+                text: '任务已删除',
               }],
             };
           }
