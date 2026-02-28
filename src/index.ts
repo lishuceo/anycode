@@ -119,8 +119,8 @@ async function main(): Promise<void> {
     process.exit(0);
   }
 
-  process.on('SIGINT', () => { shutdown('SIGINT'); });
-  process.on('SIGTERM', () => { shutdown('SIGTERM'); });
+  process.on('SIGINT', () => { shutdown('SIGINT').catch(err => { logger.error({ err }, 'Shutdown error'); process.exit(1); }); });
+  process.on('SIGTERM', () => { shutdown('SIGTERM').catch(err => { logger.error({ err }, 'Shutdown error'); process.exit(1); }); });
 }
 
 main().catch((err) => {
