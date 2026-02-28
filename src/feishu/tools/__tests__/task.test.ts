@@ -14,11 +14,15 @@ vi.mock('../../client.js', () => ({
   feishuClient: {
     raw: {
       task: {
+        v1: {
+          task: {
+            list: (...args: unknown[]) => mockTaskList(...args),
+          },
+        },
         v2: {
           task: {
             create: (...args: unknown[]) => mockTaskCreate(...args),
             get: (...args: unknown[]) => mockTaskGet(...args),
-            list: (...args: unknown[]) => mockTaskList(...args),
             patch: (...args: unknown[]) => mockTaskPatch(...args),
           },
         },
@@ -235,30 +239,39 @@ describe('feishu_task tool', () => {
   });
 
   describe('list', () => {
-    it('should list tasks without params', async () => {
+    it('should list tasks via v1 API and map to v2 format', async () => {
       mockTaskList.mockResolvedValue({
         code: 0,
         data: {
-          items: [{ guid: 'T1', summary: '任务1' }, { guid: 'T2', summary: '任务2' }],
+          items: [
+            { id: 'T1', summary: '任务1', due: { time: '0', is_all_day: false }, complete_time: '0', creator_id: 'ou_111' },
+            { id: 'T2', summary: '任务2', due: { time: '1773532800', is_all_day: true }, complete_time: '1773600000', creator_id: 'ou_222' },
+          ],
           has_more: false,
         },
       });
       const result = await capturedHandler({ action: 'list' });
-      expect(result.content[0].text).toContain('T1');
-      expect(result.content[0].text).toContain('T2');
+      const parsed = JSON.parse(result.content[0].text);
+      expect(parsed.items).toHaveLength(2);
+      expect(parsed.items[0].guid).toBe('T1');
+      expect(parsed.items[0].due).toBeUndefined(); // time=0 → no due
+      expect(parsed.items[0].completed_at).toBeUndefined(); // complete_time=0 → not completed
+      expect(parsed.items[1].guid).toBe('T2');
+      expect(parsed.items[1].due).toEqual({ timestamp: '1773532800', is_all_day: true });
+      expect(parsed.items[1].completed_at).toBe('1773600000');
       expect(mockTaskList).toHaveBeenCalledWith(expect.objectContaining({
         params: expect.objectContaining({ page_size: 20, user_id_type: 'open_id' }),
       }));
     });
 
-    it('should pass page_size and completed filter', async () => {
+    it('should pass page_size', async () => {
       mockTaskList.mockResolvedValue({
         code: 0,
         data: { items: [], has_more: false },
       });
-      await capturedHandler({ action: 'list', page_size: 10, completed: true });
+      await capturedHandler({ action: 'list', page_size: 10 });
       expect(mockTaskList).toHaveBeenCalledWith(expect.objectContaining({
-        params: expect.objectContaining({ page_size: 10, completed: true }),
+        params: expect.objectContaining({ page_size: 10 }),
       }));
     });
 

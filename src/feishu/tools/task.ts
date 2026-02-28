@@ -191,22 +191,35 @@ export function feishuTaskTool() {
           }
 
           case 'list': {
+            // Task v2 list 只支持 user_access_token，bot 使用 tenant_access_token 会报 99991663。
+            // 改用 Task v1 list，支持 tenant_access_token，返回数据基本一致。
             const params: Record<string, unknown> = {
               page_size: args.page_size ?? 20,
               user_id_type: args.user_id_type ?? 'open_id',
             };
             if (args.page_token) params.page_token = args.page_token;
-            if (args.completed !== undefined) params.completed = args.completed;
 
-            const resp = await client.task.v2.task.list({
-              params: params as { page_size?: number; page_token?: string; completed?: boolean; user_id_type?: string },
+            const resp = await client.task.v1.task.list({
+              params: params as { page_size?: number; page_token?: string; user_id_type?: 'open_id' | 'user_id' | 'union_id' },
             });
             if (resp.code !== 0) throw new Error(`查询任务列表失败 (${resp.code}): ${resp.msg}`);
+
+            // 将 v1 响应格式映射为与 v2 一致的结构
+            const items = (resp.data?.items ?? []).map((item) => ({
+              guid: item.id,
+              summary: item.summary,
+              due: item.due?.time && item.due.time !== '0'
+                ? { timestamp: item.due.time, is_all_day: item.due.is_all_day }
+                : undefined,
+              completed_at: item.complete_time !== '0' ? item.complete_time : undefined,
+              creator_id: item.creator_id,
+            }));
+
             return {
               content: [{
                 type: 'text' as const,
                 text: JSON.stringify({
-                  items: resp.data?.items ?? [],
+                  items,
                   has_more: resp.data?.has_more ?? false,
                   page_token: resp.data?.page_token,
                 }, null, 2),
