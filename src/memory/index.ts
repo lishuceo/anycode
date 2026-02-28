@@ -21,3 +21,14 @@ export type {
   MemorySearchQuery,
 } from './types.js';
 export { CONFIDENCE_CAPS } from './types.js';
+
+export {
+  initializeMemory, closeMemory, getMemoryStore, getHybridSearch,
+  isMemoryEnabled, runMemoryMaintenance,
+} from './init.js';
+
+export { extractMemories } from './extractor.js';
+export type { ExtractionContext } from './extractor.js';
+
+export { injectMemories } from './injector.js';
+export type { InjectionContext } from './injector.js';
