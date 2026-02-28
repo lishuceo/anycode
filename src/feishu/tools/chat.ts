@@ -1,6 +1,7 @@
 import { tool } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 import { feishuClient } from '../client.js';
+import { chatBotRegistry } from '../bot-registry.js';
 import { logger } from '../../utils/logger.js';
 
 /**
@@ -15,7 +16,8 @@ export function feishuChatTool(chatId?: string) {
       '获取当前飞书群聊的成员列表。',
       '',
       '返回群内所有成员的 open_id 和姓名。',
-      '适用于需要了解群内有哪些人、@某人、分配任务等场景。',
+      '同时返回已知的 Bot 列表（通过事件订阅和消息检测发现的 bot）。',
+      '适用于需要了解群内有哪些人、哪些 bot、@某人、分配任务等场景。',
       '',
       '无需参数，自动使用当前会话所在群。',
     ].join('\n'),
@@ -38,10 +40,23 @@ export function feishuChatTool(chatId?: string) {
         logger.info({ chatId: targetChatId, count: members.length }, 'feishu_chat_members tool invoked');
 
         const lines = members.map((m, i) => `${i + 1}. ${m.name} (${m.memberId})`);
+
+        // 追加已知 Bot 信息
+        const knownBots = chatBotRegistry.getBots(targetChatId);
+        let botSection = '';
+        if (knownBots.length > 0) {
+          const botLines = knownBots.map((b, i) =>
+            `${i + 1}. ${b.name ?? '[未知名称]'} (${b.openId}) [来源: ${b.source === 'event_added' ? '入群事件' : '消息检测'}]`
+          );
+          botSection = `\n\n已知 Bot 列表 (共 ${knownBots.length} 个，通过事件订阅和消息检测发现):\n${botLines.join('\n')}`;
+        } else {
+          botSection = '\n\n已知 Bot 列表: 暂无记录（Bot 发送消息或有新 Bot 入群后会自动发现）';
+        }
+
         return {
           content: [{
             type: 'text' as const,
-            text: `群成员列表 (共 ${members.length} 人):\n${lines.join('\n')}`,
+            text: `群成员列表 (共 ${members.length} 人):\n${lines.join('\n')}${botSection}`,
           }],
         };
       } catch (err) {
