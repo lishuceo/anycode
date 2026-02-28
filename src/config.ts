@@ -53,6 +53,8 @@ export const config = {
       bitable: process.env.FEISHU_TOOLS_BITABLE !== 'false',
       /** 群成员工具 */
       chat: process.env.FEISHU_TOOLS_CHAT !== 'false',
+      /** 任务工具 */
+      task: process.env.FEISHU_TOOLS_TASK !== 'false',
     },
   },
 

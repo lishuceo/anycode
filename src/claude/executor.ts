@@ -130,6 +130,7 @@ function buildWorkspaceSystemPrompt(workingDir?: string): string {
 - **feishu_drive**: 浏览云空间文件。
 - **feishu_bitable**: 读写多维表格。链接格式: https://xxx.feishu.cn/base/TOKEN
 - **feishu_chat_members**: 获取当前群聊的成员列表 (open_id + 姓名)。在需要了解群内有谁、@某人、分配任务时使用。
+- **feishu_task**: 创建和管理飞书任务。action: create/get/list/update。due/start 支持 Unix 时间戳或 ISO 日期 (如 "2026-03-15")。members 为 JSON 数组。update 需指定 update_fields。
 
 URL Token 提取规则:
 - /docx/ABC123 → doc_token: ABC123
@@ -400,6 +401,7 @@ export class ClaudeExecutor {
                 'list_spaces', 'list_nodes', 'get_node',            // wiki
                 'list', 'info',                                     // drive
                 'list_tables', 'list_fields', 'list_records', 'get_record', // bitable
+                'get',                                               // task (get 单条; list 已在 drive 中存在)
               ]);
               if (readOnlyActions.has(action)) {
                 logger.info({ toolName, action, readOnly }, 'canUseTool allowed — read-only feishu action');
