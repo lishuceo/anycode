@@ -23,6 +23,7 @@ import {
 import { resolveAgent, shouldRespond } from '../agent/router.js';
 import { agentRegistry } from '../agent/registry.js';
 import { accountManager } from './multi-account.js';
+import { chatBotRegistry } from './bot-registry.js';
 import type { AgentId, AgentConfig } from '../agent/types.js';
 import { readPersonaFile, loadKnowledgeContent } from '../agent/config-loader.js';
 import { createDiscussionMcpServer } from '../agent/tools/discussion.js';
@@ -106,6 +107,28 @@ export function createEventDispatcher(accountId: string = 'default'): lark.Event
       } catch (err) {
         logger.error({ err }, 'Error handling card action trigger');
         return {};
+      }
+    },
+  });
+
+  // Bot 入群事件（SDK 无此事件类型定义，用 as any 绕过 + 运行时校验）
+  (dispatcher as any).register({
+    'im.chat.member.bot.added_v1': async (data: Record<string, unknown>) => {
+      try {
+        await runWithAccountId(accountId, () => handleBotAddedEvent(data, accountId));
+      } catch (err) {
+        logger.error({ err, accountId }, 'Error handling bot added event');
+      }
+    },
+  });
+
+  // Bot 离群事件
+  (dispatcher as any).register({
+    'im.chat.member.bot.deleted_v1': async (data: Record<string, unknown>) => {
+      try {
+        await runWithAccountId(accountId, () => handleBotDeletedEvent(data, accountId));
+      } catch (err) {
+        logger.error({ err, accountId }, 'Error handling bot deleted event');
       }
     },
   });
@@ -404,6 +427,8 @@ interface ParsedMessage {
   threadId?: string;
   /** 图片附件列表 (用户发送图片消息时) */
   images?: ImageAttachment[];
+  /** 发送者类型: 'user' = 人类用户, 'app' = 应用/机器人 */
+  senderType?: string;
 }
 
 /**
@@ -436,7 +461,16 @@ async function handleMessageEvent(data: MessageEventData, accountId: string = 'd
   const parsed = await parseMessage(data);
   if (!parsed) return;
 
-  const { text, messageId, userId, chatId, chatType, mentionedBot, rootId, threadId, images, mentions } = parsed;
+  const { text, messageId, userId, chatId, chatType, mentionedBot, rootId, threadId, images, mentions, senderType } = parsed;
+
+  // -- 被动收集：消息发送者为 bot 时记录到 registry --
+  if (senderType === 'app' && userId && chatId) {
+    const selfBotOpenIds = accountManager.getAllBotOpenIds();
+    if (!selfBotOpenIds.has(userId)) {
+      // 非自身 bot → 记录为已知 bot（name 在此处不可用，后续可通过事件补充）
+      chatBotRegistry.addBot(chatId, userId, undefined, 'message_sender');
+    }
+  }
 
   logger.info({ userId, chatId, chatType, rootId, threadId, accountId, text: text.slice(0, 100), hasImages: !!images?.length }, 'Received message');
 
@@ -1838,8 +1872,67 @@ async function parseMessage(data: MessageEventData): Promise<ParsedMessage | nul
     rootId: message.root_id || undefined,
     threadId: message.thread_id || undefined,
     images,
+    senderType: sender.sender_type,
   };
 }
+
+// ============================================================
+// Bot 入群 / 离群事件处理
+// ============================================================
+
+/**
+ * 处理 bot 被加入群聊事件
+ * 事件数据结构: { chat_id, operator_id, ... } + users 数组（每个 user 含 user_id/open_id/name）
+ */
+function handleBotAddedEvent(data: Record<string, unknown>, accountId: string): void {
+  const chatId = (data as any)?.chat_id as string | undefined;
+  const users = (data as any)?.users as Array<{ user_id?: { open_id?: string }; name?: string }> | undefined;
+  if (!chatId || !users) {
+    logger.warn({ data, accountId }, 'bot.added event missing chatId or users');
+    return;
+  }
+  const selfBotOpenIds = accountManager.getAllBotOpenIds();
+  for (const user of users) {
+    const openId = user.user_id?.open_id;
+    if (!openId) continue;
+    // 排除自身 bot（不需要追踪自己）
+    if (selfBotOpenIds.has(openId)) continue;
+    chatBotRegistry.addBot(chatId, openId, user.name, 'event_added');
+    logger.info({ chatId, openId, name: user.name, accountId }, 'Bot added to chat (event)');
+  }
+}
+
+/**
+ * 处理 bot 被移出群聊事件
+ *
+ * 区分两种情况：
+ * 1. 被移出的是其他 bot → removeBot
+ * 2. 被移出的是本 bot → clearChat（不再能收到该群事件）
+ */
+function handleBotDeletedEvent(data: Record<string, unknown>, accountId: string): void {
+  const chatId = (data as any)?.chat_id as string | undefined;
+  const users = (data as any)?.users as Array<{ user_id?: { open_id?: string } }> | undefined;
+  if (!chatId || !users) {
+    logger.warn({ data, accountId }, 'bot.deleted event missing chatId or users');
+    return;
+  }
+  const selfBotOpenIds = accountManager.getAllBotOpenIds();
+  for (const user of users) {
+    const openId = user.user_id?.open_id;
+    if (!openId) continue;
+    if (selfBotOpenIds.has(openId)) {
+      // 本 bot 被移出群 → 清空该群的全部 bot 记录
+      chatBotRegistry.clearChat(chatId);
+      logger.info({ chatId, accountId }, 'Self bot removed from chat, cleared bot registry');
+      return;
+    }
+    chatBotRegistry.removeBot(chatId, openId);
+    logger.info({ chatId, openId, accountId }, 'Bot removed from chat (event)');
+  }
+}
+
+/** @internal 测试用导出 */
+export const _testing = { handleBotAddedEvent, handleBotDeletedEvent };
 
 function formatDuration(ms: number): string {
   if (ms < 1000) return `${ms}ms`;

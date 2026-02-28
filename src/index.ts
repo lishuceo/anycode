@@ -12,6 +12,7 @@ import { cleanupExpiredApprovals } from './feishu/approval.js';
 import { accountManager } from './feishu/multi-account.js';
 import { validateBindings } from './agent/router.js';
 import { loadAgentConfig, startConfigWatcher, stopConfigWatcher, reloadAgentConfig } from './agent/config-loader.js';
+import { chatBotRegistry } from './feishu/bot-registry.js';
 
 async function main(): Promise<void> {
   logger.info('Starting Feishu Claude Code Bridge...');
@@ -93,6 +94,7 @@ async function main(): Promise<void> {
     cleanupExpiredCaches();
     pipelineStore.cleanExpired(30);
     cleanupExpiredApprovals();
+    chatBotRegistry.cleanup();
   }, 30 * 60 * 1000);
 
   // 优雅退出
