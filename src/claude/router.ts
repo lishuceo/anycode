@@ -1,5 +1,5 @@
-import { existsSync, realpathSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, realpathSync, statSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import { config } from '../config.js';
 import { logger } from '../utils/logger.js';
 import { claudeExecutor } from './executor.js';
@@ -30,15 +30,79 @@ export interface RoutingDecision {
   warning?: string;
 }
 
-/** 构建路由 system prompt（注入实际目录路径） */
-function buildRoutingSystemPrompt(): string {
+/** 扫描项目目录，读取各项目的描述信息（package.json description 或 CLAUDE.md 标题） */
+function discoverLocalProjects(projectsDir: string): Array<{ name: string; description: string }> {
+  const projects: Array<{ name: string; description: string }> = [];
+  let entries: string[];
+  try {
+    entries = readdirSync(projectsDir);
+  } catch {
+    return projects;
+  }
+  for (const name of entries) {
+    // 跳过隐藏目录和已知的非项目目录
+    if (name.startsWith('.')) continue;
+    const dirPath = join(projectsDir, name);
+    try {
+      if (!statSync(dirPath).isDirectory()) continue;
+    } catch {
+      continue;
+    }
+    // 尝试从 package.json 读取 description
+    let description = '';
+    try {
+      const pkg = JSON.parse(readFileSync(join(dirPath, 'package.json'), 'utf-8'));
+      if (typeof pkg.description === 'string' && pkg.description.trim()) {
+        description = pkg.description.trim();
+      }
+    } catch {
+      // no package.json or invalid JSON
+    }
+    // fallback: 读取 CLAUDE.md 开头（仅前 1KB，只需第一个标题行）
+    if (!description) {
+      try {
+        const buf = Buffer.alloc(1024);
+        const fd = openSync(join(dirPath, 'CLAUDE.md'), 'r');
+        const bytesRead = readSync(fd, buf, 0, 1024, 0);
+        closeSync(fd);
+        const content = buf.toString('utf-8', 0, bytesRead);
+        const match = content.match(/^#\s+(.+)/m);
+        if (match) {
+          description = match[1].trim();
+        }
+      } catch {
+        // no CLAUDE.md
+      }
+    }
+    projects.push({ name, description: description || '(no description)' });
+  }
+  // 限制数量，避免项目过多时撑爆 routing prompt
+  return projects.slice(0, 30);
+}
+
+/** 构建路由 system prompt（注入实际目录路径和项目描述） */
+function buildRoutingSystemPrompt(projects: Array<{ name: string; description: string }>): string {
   const projectsDir = config.claude.defaultWorkDir;
   const cacheDir = config.repoCache.dir;
   const workspacesDir = config.workspace.baseDir;
 
+  // 构建已知项目列表
+  const projectsSection = projects.length > 0
+    ? [
+        '## 已知本地项目',
+        '',
+        `以下是 \`${projectsDir}\` 中的项目及其用途：`,
+        '',
+        ...projects.map(p => `- **${p.name}**: ${p.description}`),
+        '',
+        '当用户的需求明确匹配某个项目的描述时，优先选择该项目，无需再执行查找命令。',
+        '',
+      ].join('\n')
+    : '';
+
   return `你是一个工作区路由助手。你的唯一任务是决定用户的请求应该在哪个代码仓库/目录下执行。
 
-## 你能做的事
+${projectsSection}## 你能做的事
 - 运行 \`find ${cacheDir} -maxdepth 3 -name "*.git" -type d\` 查看本地已缓存的仓库
 - 运行 \`ls ${projectsDir}\` 查看项目目录下的仓库
 - 运行 \`ls <path>\` 验证本地路径是否存在
@@ -184,13 +248,15 @@ export async function routeWorkspace(
     'Starting routing agent',
   );
 
+  const projects = discoverLocalProjects(config.claude.defaultWorkDir);
+
   let result;
   try {
     result = await claudeExecutor.execute({
       sessionKey: threadId ? `routing:${chatId}:${userId}:${threadId}` : `routing:${chatId}:${userId}`,
       prompt: buildRoutingPrompt(prompt),
       workingDir: config.claude.defaultWorkDir,
-      systemPromptOverride: buildRoutingSystemPrompt(),
+      systemPromptOverride: buildRoutingSystemPrompt(projects),
       disableWorkspaceTool: true,
       model: 'claude-sonnet-4-6',
       settingSources: [],

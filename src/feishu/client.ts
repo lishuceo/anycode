@@ -3,6 +3,19 @@ import { config } from '../config.js';
 import { logger } from '../utils/logger.js';
 
 /**
+ * Serialize card to JSON, escaping ${...} patterns to prevent
+ * Feishu from interpreting them as card template variables.
+ * Uses zero-width space (U+200B) between $ and { to break the pattern.
+ *
+ * NOTE: This will also escape intentional Feishu card template variables.
+ * If template variables are needed in the future, those cards should
+ * bypass this function and use JSON.stringify directly.
+ */
+export function serializeCard(card: Record<string, unknown>): string {
+  return JSON.stringify(card).replaceAll('${', '$\u200B{');
+}
+
+/**
  * 飞书 API 客户端封装
  */
 export class FeishuClient {
@@ -116,7 +129,7 @@ export class FeishuClient {
         data: {
           receive_id: chatId,
           msg_type: 'interactive',
-          content: JSON.stringify(card),
+          content: serializeCard(card),
         },
       });
 
@@ -140,7 +153,7 @@ export class FeishuClient {
       const resp = await this.client.im.message.patch({
         path: { message_id: messageId },
         data: {
-          content: JSON.stringify(card),
+          content: serializeCard(card),
         },
       });
 
@@ -249,7 +262,7 @@ export class FeishuClient {
         path: { message_id: threadMessageId },
         data: {
           msg_type: 'interactive',
-          content: JSON.stringify(card),
+          content: serializeCard(card),
           reply_in_thread: true,
         },
       });
@@ -279,7 +292,7 @@ export class FeishuClient {
         path: { message_id: messageId },
         data: {
           msg_type: 'interactive',
-          content: JSON.stringify(card),
+          content: serializeCard(card),
           reply_in_thread: true,
         },
       });
@@ -309,7 +322,7 @@ export class FeishuClient {
         data: {
           receive_id: openId,
           msg_type: 'interactive',
-          content: JSON.stringify(card),
+          content: serializeCard(card),
         },
       });
 
