@@ -406,7 +406,7 @@ export class ClaudeExecutor {
                 'list_spaces', 'list_nodes', 'get_node',            // wiki
                 'list', 'info',                                     // drive
                 'list_tables', 'list_fields', 'list_records', 'get_record', // bitable
-                'get', 'create', 'update',                          // task (读写均允许，受飞书权限体系保护)
+                'get', 'create', 'update', 'delete',                // task (读写均允许，受飞书权限体系保护)
               ]);
               if (readOnlyActions.has(action)) {
                 logger.info({ toolName, action, readOnly }, 'canUseTool allowed — read-only feishu action');
