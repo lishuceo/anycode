@@ -1,7 +1,7 @@
 # Plan 5: Agent 记忆系统
 
 > 日期: 2026-02-27
-> 状态: **设计中**
+> 状态: **Phase 0 ✅ 已完成** | Phase 1 待实施
 > 前置依赖: Plan 4 Phase 1 (多 Agent 架构, 已实现)
 
 ---
@@ -564,22 +564,24 @@ TTL: 2 小时                  TTL: 按类型 (天~永久)
 
 ## 十一、分阶段实施
 
-### Phase 1: 基础记忆存储 + 自动抽取
+### ~~Phase 0: 技术原型验证~~ ✅ 已完成 (2026-02-28)
 
-**目标**：对话结束后自动提取记忆，下次对话注入
+> 详见第十四章。PR #73, 90 tests, 所有关键技术验证通过。
 
-新增文件 (6):
-1. `src/memory/types.ts` — 类型定义
-2. `src/memory/store.ts` — MemoryStore (CRUD + 查重 + supersede)
-3. `src/memory/search.ts` — HybridSearch (vector + BM25 + scoring)
-4. `src/memory/extractor.ts` — 对话结束时 LLM 抽取
-5. `src/memory/injector.ts` — 检索结果 → prompt 片段
-6. `src/memory/embeddings.ts` — Embedding 生成 (fallback chain)
+### Phase 1: 记忆抽取 + 注入集成
+
+**目标**：对话执行后自动提取记忆，下次对话注入
+
+**前置条件**：Phase 0 ✅
+
+新增文件 (2):
+1. `src/memory/extractor.ts` — 对话执行后调用 Qwen 抽取记忆
+2. `src/memory/injector.ts` — 检索结果 → system prompt 片段
 
 改造文件 (3):
-7. `src/session/database.ts` — 新增 memories / memories_vec / memories_fts 表
-8. `src/feishu/event-handler.ts` — 对话结束时触发 extractor
-9. `src/claude/executor.ts` — systemPrompt 注入记忆片段
+3. `src/feishu/event-handler.ts` — executor 执行完后触发 extractor
+4. `src/claude/executor.ts` — systemPrompt 注入记忆片段
+5. `src/index.ts` — 启动时初始化 memory 模块
 
 **验证标准**：
 - 对话中提到"我喜欢用 pnpm"→ 下次新对话 system prompt 中出现此偏好
@@ -757,4 +759,47 @@ src/memory/
     store.test.ts
     search.test.ts
     embeddings.test.ts
+    integration.test.ts  # 端到端集成测试 (需 DASHSCOPE_API_KEY)
 ```
+
+### Phase 0 实施状态: ✅ 已完成 (2026-02-28)
+
+**实现 & Review:**
+- PR #73 (`feat/memory-system-phase0`)
+- 3-agent 并行 code review: 修复 3 Critical + 8 Warning + 5 Info
+- 90 tests 全部通过 (79 unit + 11 integration)
+
+**验证结果:**
+
+| 验证项 | 结果 |
+|--------|------|
+| sqlite-vec 动态加载 + fallback | ✅ vectorEnabled 运行时检测，BM25-only 降级正常 |
+| FTS5 external content trigger 同步 | ✅ INSERT/DELETE/UPDATE 三向同步正确 |
+| DashScope embedding API (text-embedding-v4) | ✅ 通过 OpenAI SDK compatible-mode 调用成功 |
+| BM25 + vector 混合检索 score fusion | ✅ 加权融合、type boost、recency decay 正确 |
+| 语义搜索 (关键词不匹配时) | ✅ "UI library upgrade" → 命中 React 迁移记忆 (vec: 0.48) |
+| 跨语言语义检索 | ✅ 中文 "项目用什么数据库" → 命中英文 PostgreSQL 记忆 (vec: 0.55) |
+| 置信度分层 (L0/L1/L2) | ✅ L0≤0.7, L1≤0.9, L2≤1.0 |
+| Agent / Workspace 隔离 | ✅ 不同 agent 和 workspace 的记忆互不可见 |
+| TTL 时效过滤 | ✅ 过期 state 记忆被排除 |
+| 事实纠正 (supersede) | ✅ 旧事实标记失效，新事实生效 |
+| FTS5 查询注入防护 | ✅ 特殊字符 strip + token 引号包裹 |
+| 搜索延迟 | ✅ BM25-only <50ms, hybrid (含 API) ~300-550ms |
+
+**配置方式 (生产环境):**
+```bash
+MEMORY_ENABLED=true
+DASHSCOPE_API_KEY=sk-xxx           # 必填，embedding + 后续抽取共用
+# 以下保持默认即可:
+# MEMORY_DB_PATH=./data/memories.db
+# MEMORY_EMBEDDING_MODEL=text-embedding-v4
+# MEMORY_EMBEDDING_DIM=1024
+# MEMORY_VECTOR_WEIGHT=0.7
+# MEMORY_MAX_INJECT_TOKENS=2000
+```
+
+**尚未集成的环节 (Phase 1 实施):**
+- 记忆抽取触发 (executor 执行完后调用 Qwen 从对话中提取记忆)
+- 记忆注入 (新对话开始时 search → 格式化 → 注入 systemPrompt)
+- 抽取模型配置 (`MEMORY_EXTRACTION_MODEL`, 如 `qwen-plus`)
+- `/memory` 用户管理命令
