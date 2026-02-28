@@ -70,6 +70,9 @@ export class SessionDatabase {
   private stmtSetThreadApproved: Database.Statement;
   private stmtTouchThreadSession: Database.Statement;
   private stmtGetAllThreadSessions: Database.Statement;
+  private stmtUpsertUserToken: Database.Statement;
+  private stmtGetUserToken: Database.Statement;
+  private stmtDeleteUserToken: Database.Statement;
 
   constructor(dbPath: string) {
     dbPath = resolve(dbPath);
@@ -219,6 +222,21 @@ export class SessionDatabase {
       this.db.exec('UPDATE schema_version SET version = 11');
     }
 
+    // Migration v11 → v12: add user_tokens table for OAuth user access tokens
+    if (version < 12) {
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS user_tokens (
+          user_id         TEXT PRIMARY KEY,
+          access_token    TEXT NOT NULL,
+          refresh_token   TEXT NOT NULL,
+          token_expiry    INTEGER NOT NULL,
+          created_at      TEXT NOT NULL,
+          updated_at      TEXT NOT NULL
+        )
+      `);
+      this.db.exec('UPDATE schema_version SET version = 12');
+    }
+
     this.stmtUpsert = this.db.prepare(`
       INSERT INTO sessions (key, chat_id, user_id, working_dir, conversation_id, conversation_cwd, thread_id, thread_root_message_id, status, created_at, last_active_at)
       VALUES (@key, @chat_id, @user_id, @working_dir, @conversation_id, @conversation_cwd, @thread_id, @thread_root_message_id, @status, @created_at, @last_active_at)
@@ -357,6 +375,24 @@ export class SessionDatabase {
 
     this.stmtGetAllThreadSessions = this.db.prepare(
       'SELECT * FROM thread_sessions',
+    );
+
+    this.stmtUpsertUserToken = this.db.prepare(`
+      INSERT INTO user_tokens (user_id, access_token, refresh_token, token_expiry, created_at, updated_at)
+      VALUES (@user_id, @access_token, @refresh_token, @token_expiry, @created_at, @updated_at)
+      ON CONFLICT(user_id) DO UPDATE SET
+        access_token  = @access_token,
+        refresh_token = @refresh_token,
+        token_expiry  = @token_expiry,
+        updated_at    = @updated_at
+    `);
+
+    this.stmtGetUserToken = this.db.prepare(
+      'SELECT * FROM user_tokens WHERE user_id = ?',
+    );
+
+    this.stmtDeleteUserToken = this.db.prepare(
+      'DELETE FROM user_tokens WHERE user_id = ?',
     );
 
     logger.info({ dbPath }, 'Session database initialized');
@@ -532,6 +568,39 @@ export class SessionDatabase {
 
   setThreadApproved(threadId: string, approved: boolean): void {
     this.stmtSetThreadApproved.run(approved ? 1 : 0, new Date().toISOString(), threadId);
+  }
+
+  // ── User Token CRUD ──
+
+  upsertUserToken(userId: string, accessToken: string, refreshToken: string, tokenExpiry: number): void {
+    const now = new Date().toISOString();
+    this.stmtUpsertUserToken.run({
+      user_id: userId,
+      access_token: accessToken,
+      refresh_token: refreshToken,
+      token_expiry: tokenExpiry,
+      created_at: now,
+      updated_at: now,
+    });
+  }
+
+  getUserToken(userId: string): { accessToken: string; refreshToken: string; tokenExpiry: number } | undefined {
+    const row = this.stmtGetUserToken.get(userId) as {
+      user_id: string;
+      access_token: string;
+      refresh_token: string;
+      token_expiry: number;
+    } | undefined;
+    if (!row) return undefined;
+    return {
+      accessToken: row.access_token,
+      refreshToken: row.refresh_token,
+      tokenExpiry: row.token_expiry,
+    };
+  }
+
+  deleteUserToken(userId: string): void {
+    this.stmtDeleteUserToken.run(userId);
   }
 
   close(): void {

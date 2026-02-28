@@ -98,8 +98,12 @@ function validateMembers(jsonStr: string): Array<{ id: string; role: string; typ
  * 飞书任务 MCP 工具
  *
  * 支持操作: create / get / list / update
+ *
+ * @param getUserToken 可选，返回当前用户的 user_access_token。
+ *   有 user token 时 list 使用 Task v2 API（支持查看用户个人任务）；
+ *   无 user token 时降级为 Task v1 API（仅 bot 创建的任务）。
  */
-export function feishuTaskTool() {
+export function feishuTaskTool(getUserToken?: () => Promise<string | undefined>) {
   return tool(
     'feishu_task',
     [
@@ -191,8 +195,63 @@ export function feishuTaskTool() {
           }
 
           case 'list': {
-            // Task v2 list 只支持 user_access_token，bot 使用 tenant_access_token 会报 99991663。
-            // 改用 Task v1 list，支持 tenant_access_token，返回数据基本一致。
+            // 优先使用 user_access_token 调用 Task v2 list（支持查看用户个人任务）。
+            // 无 user token 时降级为 Task v1 list（仅 bot 创建的任务）。
+            const userToken = getUserToken ? await getUserToken() : undefined;
+
+            if (userToken) {
+              // ── Task v2 list with user_access_token ──
+              const v2Params: Record<string, unknown> = {
+                page_size: args.page_size ?? 20,
+                user_id_type: args.user_id_type ?? 'open_id',
+              };
+              if (args.page_token) v2Params.page_token = args.page_token;
+              if (args.completed !== undefined) v2Params.completed = args.completed;
+
+              const resp = await client.request<{
+                code?: number;
+                msg?: string;
+                data?: {
+                  items?: Array<{
+                    guid?: string;
+                    summary?: string;
+                    due?: { timestamp?: string; is_all_day?: boolean };
+                    completed_at?: string;
+                    creator?: { id?: string };
+                  }>;
+                  has_more?: boolean;
+                  page_token?: string;
+                };
+              }>({
+                method: 'GET',
+                url: '/open-apis/task/v2/tasks',
+                params: v2Params,
+                headers: { Authorization: `Bearer ${userToken}` },
+              });
+              if (resp.code !== 0) throw new Error(`查询任务列表失败 (${resp.code}): ${resp.msg}`);
+
+              const items = (resp.data?.items ?? []).map((item) => ({
+                guid: item.guid,
+                summary: item.summary,
+                due: item.due,
+                completed_at: item.completed_at,
+                creator_id: item.creator?.id,
+              }));
+
+              return {
+                content: [{
+                  type: 'text' as const,
+                  text: JSON.stringify({
+                    items,
+                    has_more: resp.data?.has_more ?? false,
+                    page_token: resp.data?.page_token,
+                    _token_type: 'user',
+                  }, null, 2),
+                }],
+              };
+            }
+
+            // ── Fallback: Task v1 list with tenant_access_token ──
             const params: Record<string, unknown> = {
               page_size: args.page_size ?? 20,
               user_id_type: args.user_id_type ?? 'open_id',
@@ -223,6 +282,7 @@ export function feishuTaskTool() {
                   items,
                   has_more: resp.data?.has_more ?? false,
                   page_token: resp.data?.page_token,
+                  _token_type: 'bot',
                 }, null, 2),
               }],
             };

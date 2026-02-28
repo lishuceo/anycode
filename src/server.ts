@@ -4,6 +4,7 @@ import { config, isMultiBotMode } from './config.js';
 import { logger } from './utils/logger.js';
 import { createEventDispatcher, createCardActionHandler } from './feishu/event-handler.js';
 import { accountManager } from './feishu/multi-account.js';
+import { handleOAuthCallback, isOAuthConfigured } from './feishu/oauth.js';
 
 /**
  * 启动服务
@@ -34,12 +35,37 @@ export function startServer(): void {
 }
 
 // ============================================================
+// OAuth callback route (shared across all modes)
+// ============================================================
+
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function registerOAuthRoute(app: express.Express): void {
+  if (!isOAuthConfigured()) return;
+
+  app.get('/feishu/oauth/callback', async (req, res) => {
+    const { code, state } = req.query;
+    if (typeof code !== 'string' || typeof state !== 'string') {
+      res.status(400).send('Missing code or state parameter');
+      return;
+    }
+    const message = await handleOAuthCallback(code, state);
+    res.send(`<html><body><h2>${escapeHtml(message)}</h2></body></html>`);
+  });
+
+  logger.info('OAuth callback route registered at /feishu/oauth/callback');
+}
+
+// ============================================================
 // 模式一: HTTP Webhook (需要公网)
 // ============================================================
 
 function startWebhookMode(eventDispatcher: lark.EventDispatcher, port: number): void {
   const app = express();
   app.use(express.json());
+  registerOAuthRoute(app);
 
   // 健康检查
   app.get('/health', (_req, res) => {
@@ -92,6 +118,7 @@ function startWebSocketMode(eventDispatcher: lark.EventDispatcher, port: number)
   // 因此需要在两种模式下都注册卡片回调端点
   const app = express();
   app.use(express.json());
+  registerOAuthRoute(app);
 
   app.get('/health', (_req, res) => {
     res.json({ status: 'ok', mode: 'websocket', timestamp: new Date().toISOString() });
@@ -144,6 +171,7 @@ function startMultiBotWebSocketMode(_sharedDispatcher: lark.EventDispatcher, por
   // Express 用于健康检查 + 卡片交互回调
   const app = express();
   app.use(express.json());
+  registerOAuthRoute(app);
 
   app.get('/health', (_req, res) => {
     res.json({

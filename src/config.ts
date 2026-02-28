@@ -56,6 +56,11 @@ export const config = {
       /** 任务工具 */
       task: process.env.FEISHU_TOOLS_TASK !== 'false',
     },
+    /** OAuth 用户授权配置（用于获取 user_access_token，支持查询用户个人任务等） */
+    oauth: {
+      /** OAuth 回调地址（需要公网可访问） */
+      redirectUri: process.env.FEISHU_OAUTH_REDIRECT_URI || '',
+    },
   },
 
   // 安全配置
