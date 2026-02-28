@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { buildProgressCard, buildResultCard, buildStreamingCard, buildPipelineCard, buildStatusCard, buildTurnCard, buildToolProgressCard, buildOverviewCard, buildSimpleResultCard } from '../message-builder.js';
-import type { TurnInfo, ToolCallInfo } from '../../claude/types.js';
+import type { TurnInfo, ToolCallInfo, ActivityStatus } from '../../claude/types.js';
 
 describe('buildProgressCard', () => {
   it('should build a card with the given prompt', () => {
@@ -161,6 +161,47 @@ describe('buildPipelineCard', () => {
     const allTexts = card.elements.map((e: any) => e.text?.content ?? '').join(' ');
     expect(allTexts).toContain('...');
     expect(allTexts.length).toBeLessThan(3000 + 500);
+  });
+
+  it('should show thinking activity status in footer', () => {
+    const activity: ActivityStatus = { state: 'thinking', toolCallCount: 3 };
+    const card = buildPipelineCard('task', 'implement', 3, 5, 30, undefined, undefined, 'pipe1', activity) as any;
+    const note = card.elements[card.elements.length - 1];
+    expect(note.elements[0].content).toContain('🧠 思考中');
+    expect(note.elements[0].content).toContain('阶段 3/5');
+  });
+
+  it('should show tool_call activity status with count in footer', () => {
+    const activity: ActivityStatus = { state: 'tool_call', toolCallCount: 12 };
+    const card = buildPipelineCard('task', 'plan', 1, 5, 45, undefined, undefined, 'pipe1', activity) as any;
+    const note = card.elements[card.elements.length - 1];
+    expect(note.elements[0].content).toContain('🔧 工具调用: 12');
+    expect(note.elements[0].content).toContain('阶段 1/5');
+  });
+
+  it('should not show activity status when done', () => {
+    const activity: ActivityStatus = { state: 'tool_call', toolCallCount: 50 };
+    const card = buildPipelineCard('task', 'done', 6, 5, 120, 0.72, undefined, 'pipe1', activity) as any;
+    const note = card.elements[card.elements.length - 1];
+    expect(note.elements[0].content).not.toContain('🔧');
+    expect(note.elements[0].content).not.toContain('🧠');
+    expect(note.elements[0].content).toContain('✅ 完成');
+  });
+
+  it('should not show activity status when failed', () => {
+    const activity: ActivityStatus = { state: 'thinking', toolCallCount: 5 };
+    const card = buildPipelineCard('task', 'failed', 3, 5, 60, undefined, undefined, 'pipe1', activity) as any;
+    const note = card.elements[card.elements.length - 1];
+    expect(note.elements[0].content).not.toContain('🧠');
+    expect(note.elements[0].content).toContain('❌ 失败');
+  });
+
+  it('should not show activity status when undefined', () => {
+    const card = buildPipelineCard('task', 'implement', 3, 5, 30) as any;
+    const note = card.elements[card.elements.length - 1];
+    expect(note.elements[0].content).not.toContain('🧠');
+    expect(note.elements[0].content).not.toContain('🔧');
+    expect(note.elements[0].content).toContain('阶段 3/5');
   });
 });
 

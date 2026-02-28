@@ -186,6 +186,7 @@ export async function startPipeline(pipelineId: string): Promise<void> {
 
   let currentPipelinePhase = 'plan';
   let currentPhaseIndex = 1;
+  let latestActivity: import('../claude/types.js').ActivityStatus | undefined;
 
   try {
     // 更新卡片为初始执行状态
@@ -202,6 +203,7 @@ export async function startPipeline(pipelineId: string): Promise<void> {
         onPhaseChange: async (state) => {
           currentPipelinePhase = state.phase;
           currentPhaseIndex = PHASE_META[state.phase]?.index ?? currentPhaseIndex;
+          latestActivity = undefined; // 阶段切换时重置活动状态
 
           // 同步到 store
           pipelineStore.updateState(pipelineId, 'running', state.phase, JSON.stringify(state));
@@ -214,7 +216,7 @@ export async function startPipeline(pipelineId: string): Promise<void> {
               progressMsgId,
               buildPipelineCard(
                 prompt, state.phase, currentPhaseIndex, TOTAL_PHASES,
-                elapsed, state.totalCostUsd || undefined, undefined, pipelineId,
+                elapsed, state.totalCostUsd || undefined, undefined, pipelineId, latestActivity,
               ),
             ),
             cardUpdateTimeout,
@@ -233,11 +235,14 @@ export async function startPipeline(pipelineId: string): Promise<void> {
               progressMsgId,
               buildPipelineCard(
                 prompt, currentPipelinePhase, currentPhaseIndex, TOTAL_PHASES,
-                elapsed, undefined, tail, pipelineId,
+                elapsed, undefined, tail, pipelineId, latestActivity,
               ),
             ),
             streamTimeout,
           ]);
+        },
+        onActivityChange: (status) => {
+          latestActivity = status;
         },
       },
       threadHistory,

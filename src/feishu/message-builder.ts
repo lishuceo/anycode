@@ -207,6 +207,7 @@ export function buildPipelineCard(
   costUsd?: number,
   detail?: string,
   pipelineId?: string,
+  activityStatus?: import('../claude/types.js').ActivityStatus,
 ): Record<string, unknown> {
 
   const isDone = phase === 'done';
@@ -305,12 +306,17 @@ export function buildPipelineCard(
 
   const costStr = costUsd ? ` | 💰 $${costUsd.toFixed(4)}` : '';
   const statusIcon = isDone ? '✅ 完成' : isFailed ? '❌ 失败' : `⏳ 阶段 ${phaseIndex}/${totalPhases}`;
+  const activityStr = (!isDone && !isFailed && activityStatus)
+    ? activityStatus.state === 'thinking'
+      ? ' | 🧠 思考中'
+      : ` | 🔧 工具调用: ${activityStatus.toolCallCount}`
+    : '';
   elements.push({
     tag: 'note',
     elements: [
       {
         tag: 'plain_text',
-        content: `${statusIcon} | ⏱️ ${elapsedSec}s${costStr}`,
+        content: `${statusIcon}${activityStr} | ⏱️ ${elapsedSec}s${costStr}`,
       },
     ],
   });
