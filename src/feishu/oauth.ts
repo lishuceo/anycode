@@ -75,6 +75,16 @@ export function verifyState(state: string): OAuthState | undefined {
 const FALLBACK_REDIRECT_URI = 'http://127.0.0.1:3000/feishu/oauth/callback';
 
 /**
+ * OAuth scopes to request during user authorization.
+ * Without explicit scopes, only basic user info is granted.
+ */
+const OAUTH_SCOPES = [
+  'task:task:read',
+  'task:task:write',
+  'bitable:bitable',
+].join(' ');
+
+/**
  * Generate a Feishu OAuth authorization URL.
  * The user opens this URL to authorize the app to access their data.
  *
@@ -85,8 +95,9 @@ export function generateAuthUrl(userId: string, chatId: string): string {
   const state = signState({ userId, chatId, ts: Date.now() });
   const redirectUri = encodeURIComponent(config.feishu.oauth.redirectUri || FALLBACK_REDIRECT_URI);
   const appId = config.feishu.appId;
+  const scope = encodeURIComponent(OAUTH_SCOPES);
 
-  return `https://open.feishu.cn/open-apis/authen/v1/authorize?app_id=${appId}&redirect_uri=${redirectUri}&state=${state}`;
+  return `https://open.feishu.cn/open-apis/authen/v1/authorize?app_id=${appId}&redirect_uri=${redirectUri}&scope=${scope}&state=${state}`;
 }
 
 /**

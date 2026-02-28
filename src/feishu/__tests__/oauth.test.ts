@@ -56,6 +56,8 @@ describe('generateAuthUrl', () => {
     expect(url).toContain('https://open.feishu.cn/open-apis/authen/v1/authorize');
     expect(url).toContain('app_id=cli_test_app_id');
     expect(url).toContain('redirect_uri=');
+    expect(url).toContain('scope=');
+    expect(url).toContain('task%3Atask%3Aread');
     expect(url).toContain('state=');
   });
 });
