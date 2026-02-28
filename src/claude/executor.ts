@@ -40,6 +40,8 @@ export interface ExecuteInput extends ExecuteOptions {
   onWorkspaceChanged?: (newDir: string) => void;
   onStreamUpdate?: (text: string) => Promise<void>;
   onTurn?: (turn: TurnInfo) => Promise<void>;
+  /** 活动状态变更回调（同步，仅存储状态，不触发卡片更新） */
+  onActivityChange?: (status: import('./types.js').ActivityStatus) => void;
   historySummaries?: string;
   /** 覆盖 system prompt（用于 pipeline 各角色独立 prompt 或 persona）。有值 → replace 模式；无 → append 模式 */
   systemPromptOverride?: string;
@@ -206,7 +208,7 @@ export class ClaudeExecutor {
   async execute(input: ExecuteInput): Promise<ClaudeResult> {
     const {
       sessionKey, prompt, workingDir, resumeSessionId,
-      onProgress, onWorkspaceChanged, onStreamUpdate, onTurn, historySummaries,
+      onProgress, onWorkspaceChanged, onStreamUpdate, onTurn, onActivityChange, historySummaries,
       systemPromptOverride, disableWorkspaceTool, maxTurns, maxBudgetUsd,
       model: modelOverride, settingSources: settingSourcesOverride,
       readOnly, images,
@@ -467,6 +469,10 @@ export class ClaudeExecutor {
     let turnFailed = 0;
     let lastTurnPromise: Promise<void> | undefined;
 
+    // 活动状态追踪
+    let activityToolCallCount = 0;
+    let currentActivity: 'thinking' | 'tool_call' = 'thinking';
+
     try {
       // 遍历 SDK 流式消息
       for await (const message of q) {
@@ -517,6 +523,18 @@ export class ClaudeExecutor {
               if (lastTurnPromise) await lastTurnPromise.catch(() => {});
               lastTurnPromise = onTurn({ turnIndex, textContent: turnText.join(''), toolCalls: turnTools })
                 .catch(() => { turnFailed++; });
+            }
+
+            // 活动状态追踪：tool_call 或 thinking
+            if (onActivityChange) {
+              if (turnTools.length > 0) {
+                activityToolCallCount += turnTools.length;
+                currentActivity = 'tool_call';
+                onActivityChange({ state: 'tool_call', toolCallCount: activityToolCallCount });
+              } else if (turnText.length > 0 && currentActivity !== 'thinking') {
+                currentActivity = 'thinking';
+                onActivityChange({ state: 'thinking', toolCallCount: activityToolCallCount });
+              }
             }
 
             // 旧流式卡片更新（pipeline 仍在用，节流：3秒 或 500字符，连续失败 3 次后停止）
