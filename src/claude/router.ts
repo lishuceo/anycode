@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, realpathSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { config } from '../config.js';
 import { logger } from '../utils/logger.js';
@@ -58,10 +58,14 @@ function discoverLocalProjects(projectsDir: string): Array<{ name: string; descr
     } catch {
       // no package.json or invalid JSON
     }
-    // fallback: 读取 CLAUDE.md 的第一个 # 标题行
+    // fallback: 读取 CLAUDE.md 开头（仅前 1KB，只需第一个标题行）
     if (!description) {
       try {
-        const content = readFileSync(join(dirPath, 'CLAUDE.md'), 'utf-8');
+        const buf = Buffer.alloc(1024);
+        const fd = openSync(join(dirPath, 'CLAUDE.md'), 'r');
+        const bytesRead = readSync(fd, buf, 0, 1024, 0);
+        closeSync(fd);
+        const content = buf.toString('utf-8', 0, bytesRead);
         const match = content.match(/^#\s+(.+)/m);
         if (match) {
           description = match[1].trim();
@@ -72,7 +76,8 @@ function discoverLocalProjects(projectsDir: string): Array<{ name: string; descr
     }
     projects.push({ name, description: description || '(no description)' });
   }
-  return projects;
+  // 限制数量，避免项目过多时撑爆 routing prompt
+  return projects.slice(0, 30);
 }
 
 /** 构建路由 system prompt（注入实际目录路径和项目描述） */
