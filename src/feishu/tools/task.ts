@@ -202,6 +202,8 @@ export function feishuTaskTool(getUserToken?: () => Promise<string | undefined>)
 
             if (userToken) {
               // ── Task v2 list with user_access_token ──
+              // 权限不足 (99991679) 时自动降级到 v1 API，而不是直接报错。
+              // 常见原因：user token 缺少 task:task:read scope（需用户重新授权）。
               const v2Params: Record<string, unknown> = {
                 page_size: args.page_size ?? 20,
                 user_id_type: args.user_id_type ?? 'open_id',
@@ -209,46 +211,56 @@ export function feishuTaskTool(getUserToken?: () => Promise<string | undefined>)
               if (args.page_token) v2Params.page_token = args.page_token;
               if (args.completed !== undefined) v2Params.completed = args.completed;
 
-              const resp = await client.request<{
-                code?: number;
-                msg?: string;
-                data?: {
-                  items?: Array<{
-                    guid?: string;
-                    summary?: string;
-                    due?: { timestamp?: string; is_all_day?: boolean };
-                    completed_at?: string;
-                    creator?: { id?: string };
-                  }>;
-                  has_more?: boolean;
-                  page_token?: string;
-                };
-              }>({
-                method: 'GET',
-                url: '/open-apis/task/v2/tasks',
-                params: v2Params,
-              }, lark.withUserAccessToken(userToken));
-              if (resp.code !== 0) throw new Error(`查询任务列表失败 (${resp.code}): ${resp.msg}`);
+              try {
+                const resp = await client.request<{
+                  code?: number;
+                  msg?: string;
+                  data?: {
+                    items?: Array<{
+                      guid?: string;
+                      summary?: string;
+                      due?: { timestamp?: string; is_all_day?: boolean };
+                      completed_at?: string;
+                      creator?: { id?: string };
+                    }>;
+                    has_more?: boolean;
+                    page_token?: string;
+                  };
+                }>({
+                  method: 'GET',
+                  url: '/open-apis/task/v2/tasks',
+                  params: v2Params,
+                }, lark.withUserAccessToken(userToken));
 
-              const items = (resp.data?.items ?? []).map((item) => ({
-                guid: item.guid,
-                summary: item.summary,
-                due: item.due,
-                completed_at: item.completed_at,
-                creator_id: item.creator?.id,
-              }));
+                if (resp.code === 0) {
+                  const items = (resp.data?.items ?? []).map((item) => ({
+                    guid: item.guid,
+                    summary: item.summary,
+                    due: item.due,
+                    completed_at: item.completed_at,
+                    creator_id: item.creator?.id,
+                  }));
 
-              return {
-                content: [{
-                  type: 'text' as const,
-                  text: JSON.stringify({
-                    items,
-                    has_more: resp.data?.has_more ?? false,
-                    page_token: resp.data?.page_token,
-                    _token_type: 'user',
-                  }, null, 2),
-                }],
-              };
+                  return {
+                    content: [{
+                      type: 'text' as const,
+                      text: JSON.stringify({
+                        items,
+                        has_more: resp.data?.has_more ?? false,
+                        page_token: resp.data?.page_token,
+                        _token_type: 'user',
+                      }, null, 2),
+                    }],
+                  };
+                }
+
+                // 权限/授权错误 → 降级到 v1
+                logger.warn({ code: resp.code, msg: resp.msg }, 'Task v2 list failed, falling back to v1');
+              } catch (v2Err) {
+                // 网络/SDK 错误也降级
+                const axiosCode = (v2Err as { response?: { data?: { code?: number } } })?.response?.data?.code;
+                logger.warn({ err: v2Err instanceof Error ? v2Err.message : String(v2Err), axiosCode }, 'Task v2 list error, falling back to v1');
+              }
             }
 
             // ── Fallback: Task v1 list with tenant_access_token ──

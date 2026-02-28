@@ -11,7 +11,7 @@ vi.mock('../../config.js', () => ({
     feishu: {
       appId: 'cli_test_app_id',
       appSecret: 'test_app_secret_32bytes_long_xxx',
-      oauth: { redirectUri: 'https://example.com/feishu/oauth/callback' },
+      oauth: { redirectUri: 'https://example.com/feishu/oauth/callback', scopes: 'task:task:read task:task:write' },
     },
   },
 }));
@@ -57,6 +57,14 @@ describe('generateAuthUrl', () => {
     expect(url).toContain('app_id=cli_test_app_id');
     expect(url).toContain('redirect_uri=');
     expect(url).toContain('state=');
+  });
+
+  it('should include scope parameter with task permissions', () => {
+    const url = generateAuthUrl('ou_user123', 'oc_chat456');
+    const parsed = new URL(url);
+    const scope = parsed.searchParams.get('scope');
+    expect(scope).toContain('task:task:read');
+    expect(scope).toContain('task:task:write');
   });
 });
 
