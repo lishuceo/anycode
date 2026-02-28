@@ -264,14 +264,14 @@ describe('feishu_task tool', () => {
       }));
     });
 
-    it('should pass page_size', async () => {
+    it('should pass page_size and map completed to task_completed', async () => {
       mockTaskList.mockResolvedValue({
         code: 0,
         data: { items: [], has_more: false },
       });
-      await capturedHandler({ action: 'list', page_size: 10 });
+      await capturedHandler({ action: 'list', page_size: 10, completed: true });
       expect(mockTaskList).toHaveBeenCalledWith(expect.objectContaining({
-        params: expect.objectContaining({ page_size: 10 }),
+        params: expect.objectContaining({ page_size: 10, task_completed: true }),
       }));
     });
 

@@ -198,9 +198,10 @@ export function feishuTaskTool() {
               user_id_type: args.user_id_type ?? 'open_id',
             };
             if (args.page_token) params.page_token = args.page_token;
+            if (args.completed !== undefined) params.task_completed = args.completed;
 
             const resp = await client.task.v1.task.list({
-              params: params as { page_size?: number; page_token?: string; user_id_type?: 'open_id' | 'user_id' | 'union_id' },
+              params: params as { page_size?: number; page_token?: string; task_completed?: boolean; user_id_type?: 'open_id' | 'user_id' | 'union_id' },
             });
             if (resp.code !== 0) throw new Error(`查询任务列表失败 (${resp.code}): ${resp.msg}`);
 
