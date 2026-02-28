@@ -286,9 +286,11 @@ export class ClaudeExecutor {
       mcpServers['workspace-manager'] = createWorkspaceMcpServer(onWorkspaceChangedWrapped);
     }
     if (config.feishu.tools.enabled) {
-      // sessionKey 格式为 "chatId:userId"，提取 chatId 用于创建文档后自动授权群成员
-      const chatId = sessionKey.split(':')[0] || undefined;
-      const feishuMcp = createFeishuToolsMcpServer(chatId);
+      // sessionKey 格式为 "agent:{agentId}:{chatId}:{userId}" 或旧格式 "chatId:userId"
+      const keyParts = sessionKey.split(':');
+      const chatId = keyParts.length >= 4 ? keyParts[2] : keyParts[0] || undefined;
+      const userId = keyParts.length >= 4 ? keyParts[3] : keyParts[1] || undefined;
+      const feishuMcp = createFeishuToolsMcpServer(chatId, userId);
       if (feishuMcp) {
         mcpServers['feishu-tools'] = feishuMcp;
       }

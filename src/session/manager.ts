@@ -305,6 +305,20 @@ export class SessionManager {
     return cleaned;
   }
 
+  // ── User Token (OAuth) ──
+
+  upsertUserToken(userId: string, accessToken: string, refreshToken: string, tokenExpiry: number): void {
+    this.db.upsertUserToken(userId, accessToken, refreshToken, tokenExpiry);
+  }
+
+  getUserToken(userId: string): { accessToken: string; refreshToken: string; tokenExpiry: number } | undefined {
+    return this.db.getUserToken(userId);
+  }
+
+  deleteUserToken(userId: string): void {
+    this.db.deleteUserToken(userId);
+  }
+
   /**
    * 关闭数据库连接
    */

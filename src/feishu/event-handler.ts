@@ -28,6 +28,7 @@ import { chatBotRegistry } from './bot-registry.js';
 import type { AgentId, AgentConfig } from '../agent/types.js';
 import { readPersonaFile, loadKnowledgeContent } from '../agent/config-loader.js';
 import { createDiscussionMcpServer } from '../agent/tools/discussion.js';
+import { generateAuthUrl, isOAuthConfigured } from './oauth.js';
 
 // 注册审批通过后的消息重新入队回调（避免 approval.ts → event-handler.ts 循环依赖）
 setOnApproved((chatId, userId, text, messageId, rootId, threadId) => {
@@ -653,6 +654,27 @@ async function handleSlashCommand(
       await feishuClient.replyCardInThread(threadReplyMsgId, card);
     } else {
       await feishuClient.sendCard(chatId, card);
+    }
+    return true;
+  }
+
+  // /auth 或 授权 - 发起飞书 OAuth 用户授权（获取 user_access_token）
+  if (trimmed === '/auth' || trimmed === '授权') {
+    if (!isOAuthConfigured()) {
+      const reply = '⚠️ OAuth 未配置。需要设置 FEISHU_OAUTH_REDIRECT_URI 环境变量。';
+      if (threadReplyMsgId) {
+        await feishuClient.replyTextInThread(threadReplyMsgId, reply);
+      } else {
+        await feishuClient.replyText(messageId, reply);
+      }
+      return true;
+    }
+    const authUrl = generateAuthUrl(userId, chatId);
+    const reply = `🔑 请点击以下链接授权，授权后即可查看你的个人任务：\n${authUrl}`;
+    if (threadReplyMsgId) {
+      await feishuClient.replyTextInThread(threadReplyMsgId, reply);
+    } else {
+      await feishuClient.replyText(messageId, reply);
     }
     return true;
   }

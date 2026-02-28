@@ -29,6 +29,7 @@ const { mockConfig, mockDocTool, mockWikiTool, mockDriveTool, mockBitableTool, m
 });
 
 vi.mock('../../../config.js', () => ({ config: mockConfig }));
+vi.mock('../../oauth.js', () => ({ getValidUserToken: vi.fn() }));
 vi.mock('../doc.js', () => ({ feishuDocTool: () => mockDocTool() }));
 vi.mock('../wiki.js', () => ({ feishuWikiTool: () => mockWikiTool() }));
 vi.mock('../drive.js', () => ({ feishuDriveTool: () => mockDriveTool() }));
