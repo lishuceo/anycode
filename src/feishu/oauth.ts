@@ -1,4 +1,4 @@
-import { createHmac } from 'node:crypto';
+import { createHmac, timingSafeEqual } from 'node:crypto';
 import { config } from '../config.js';
 import { feishuClient } from './client.js';
 import { sessionManager } from '../session/manager.js';
@@ -54,7 +54,9 @@ export function verifyState(state: string): OAuthState | undefined {
     .update(data)
     .digest('base64url');
 
-  if (sig !== expected) return undefined;
+  const sigBuf = Buffer.from(sig, 'base64url');
+  const expectedBuf = Buffer.from(expected, 'base64url');
+  if (sigBuf.length !== expectedBuf.length || !timingSafeEqual(sigBuf, expectedBuf)) return undefined;
 
   try {
     const payload = JSON.parse(Buffer.from(data, 'base64url').toString()) as OAuthState;

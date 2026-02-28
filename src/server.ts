@@ -38,6 +38,10 @@ export function startServer(): void {
 // OAuth callback route (shared across all modes)
 // ============================================================
 
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
 function registerOAuthRoute(app: express.Express): void {
   if (!isOAuthConfigured()) return;
 
@@ -48,7 +52,7 @@ function registerOAuthRoute(app: express.Express): void {
       return;
     }
     const message = await handleOAuthCallback(code, state);
-    res.send(`<html><body><h2>${message}</h2></body></html>`);
+    res.send(`<html><body><h2>${escapeHtml(message)}</h2></body></html>`);
   });
 
   logger.info('OAuth callback route registered at /feishu/oauth/callback');
