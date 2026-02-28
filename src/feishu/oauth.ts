@@ -66,12 +66,22 @@ export function verifyState(state: string): OAuthState | undefined {
 }
 
 /**
+ * Default redirect URI used when no public callback URL is configured.
+ * After authorization, the browser will redirect here but fail to load —
+ * the user just needs to copy the `code` param from the URL bar.
+ */
+const FALLBACK_REDIRECT_URI = 'http://127.0.0.1:3000/feishu/oauth/callback';
+
+/**
  * Generate a Feishu OAuth authorization URL.
  * The user opens this URL to authorize the app to access their data.
+ *
+ * If no redirect URI is configured, uses a localhost placeholder.
+ * The user can then copy the code from the redirected URL and paste it back.
  */
 export function generateAuthUrl(userId: string, chatId: string): string {
   const state = signState({ userId, chatId, ts: Date.now() });
-  const redirectUri = encodeURIComponent(config.feishu.oauth.redirectUri);
+  const redirectUri = encodeURIComponent(config.feishu.oauth.redirectUri || FALLBACK_REDIRECT_URI);
   const appId = config.feishu.appId;
 
   return `https://accounts.feishu.cn/suite/passport/oauth/authorize?client_id=${appId}&redirect_uri=${redirectUri}&response_type=code&state=${state}`;
@@ -196,11 +206,52 @@ export async function handleOAuthCallback(code: string, state: string): Promise<
 }
 
 /**
+ * Handle manual code exchange: user pastes the authorization code back in chat.
+ * Used when no public callback URL is available.
+ */
+export async function handleManualCode(code: string, userId: string, chatId: string): Promise<string> {
+  try {
+    const result = await exchangeCodeForToken(code);
+
+    const effectiveUserId = result.openId || userId;
+    const tokenExpiry = Math.floor(Date.now() / 1000) + result.expiresIn;
+    sessionManager.upsertUserToken(effectiveUserId, result.accessToken, result.refreshToken, tokenExpiry);
+
+    logger.info({ userId: effectiveUserId }, 'User OAuth token stored via manual code');
+
+    await feishuClient.sendText(chatId, `授权成功！已保存 user token，现在可以查看个人任务了。`);
+    return effectiveUserId;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.error({ err: msg, userId }, 'Manual code exchange failed');
+    throw new Error(`授权失败：${msg}`);
+  }
+}
+
+/**
  * Get a valid user access token for the given user.
  * Automatically refreshes expired tokens.
- * Returns undefined if the user has not authorized.
+ *
+ * Fallback chain:
+ *   1. Current user's own token
+ *   2. Owner user's token (config.security.ownerUserId) — "一人授权，全员可用"
+ *   3. undefined (no token available)
  */
 export async function getValidUserToken(userId: string): Promise<string | undefined> {
+  // Try current user first
+  const token = await _getStoredToken(userId);
+  if (token) return token;
+
+  // Fallback to owner's token
+  const ownerId = config.security?.ownerUserId;
+  if (ownerId && ownerId !== userId) {
+    return _getStoredToken(ownerId);
+  }
+
+  return undefined;
+}
+
+async function _getStoredToken(userId: string): Promise<string | undefined> {
   const stored = sessionManager.getUserToken(userId);
   if (!stored) return undefined;
 
@@ -231,8 +282,17 @@ export async function getValidUserToken(userId: string): Promise<string | undefi
 }
 
 /**
- * Check if OAuth is configured (redirect URI set).
+ * Check if OAuth is available.
+ * Always true — supports both callback mode (with redirect URI) and
+ * manual code mode (without redirect URI, user pastes code back).
  */
 export function isOAuthConfigured(): boolean {
+  return true;
+}
+
+/**
+ * Check if a public callback URL is configured.
+ */
+export function hasCallbackUrl(): boolean {
   return !!config.feishu.oauth.redirectUri;
 }
