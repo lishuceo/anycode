@@ -490,8 +490,12 @@ async function handleMessageEvent(data: MessageEventData, accountId: string = 'd
   if (text) {
     const trimmedText = text.trim();
     if (trimmedText === '/auth' || trimmedText.startsWith('/auth ')) {
-      // /auth 命令：多 bot 模式下仅 dev-bot 处理，避免重复响应
+      // /auth 命令：仅 owner 可用，多 bot 模式下仅 dev-bot 处理
       if (!isMultiBotMode() || agentId === 'dev') {
+        if (!isOwner(userId)) {
+          await feishuClient.replyText(messageId, '仅管理员可执行 /auth 命令');
+          return;
+        }
         const rootReplyId = rootId || undefined;
         const codeArg = trimmedText.startsWith('/auth ') ? trimmedText.slice('/auth '.length).trim() : '';
         if (codeArg) {
