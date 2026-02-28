@@ -437,6 +437,43 @@ describe('feishu_task tool with getUserToken', () => {
     expect(mockTaskList).not.toHaveBeenCalled();
   });
 
+  it('should fall back to v1 API when v2 returns permission error (99991679)', async () => {
+    // v2 returns permission error
+    mockRequest.mockResolvedValue({
+      code: 99991679,
+      msg: 'Unauthorized. required: [task:task:read]',
+    });
+    // v1 succeeds
+    mockTaskList.mockResolvedValue({
+      code: 0,
+      data: {
+        items: [{ id: 'T1', summary: 'bot任务', due: { time: '0', is_all_day: false }, complete_time: '0', creator_id: 'ou_111' }],
+        has_more: false,
+      },
+    });
+
+    const result = await handlerWithToken({ action: 'list' });
+    const parsed = JSON.parse(result.content[0].text);
+    // Should fall back to v1 and succeed
+    expect(parsed._token_type).toBe('bot');
+    expect(parsed.items).toHaveLength(1);
+    expect(mockRequest).toHaveBeenCalled(); // v2 was attempted
+    expect(mockTaskList).toHaveBeenCalled(); // v1 fallback used
+  });
+
+  it('should fall back to v1 API when v2 throws network error', async () => {
+    mockRequest.mockRejectedValue(new Error('network error'));
+    mockTaskList.mockResolvedValue({
+      code: 0,
+      data: { items: [], has_more: false },
+    });
+
+    const result = await handlerWithToken({ action: 'list' });
+    const parsed = JSON.parse(result.content[0].text);
+    expect(parsed._token_type).toBe('bot');
+    expect(mockTaskList).toHaveBeenCalled();
+  });
+
   it('should fall back to v1 API when getUserToken returns undefined', async () => {
     // Create a new tool instance with getUserToken returning undefined
     const mockGetNoToken = vi.fn().mockResolvedValue(undefined);

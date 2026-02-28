@@ -85,8 +85,12 @@ export function generateAuthUrl(userId: string, chatId: string): string {
   const state = signState({ userId, chatId, ts: Date.now() });
   const redirectUri = encodeURIComponent(config.feishu.oauth.redirectUri || FALLBACK_REDIRECT_URI);
   const appId = config.feishu.appId;
+  // 显式请求 scope，确保 user_access_token 包含所需权限（如 task:task:read）。
+  // 不传 scope 时飞书文档称默认授权全部权限，但实测某些权限不会自动包含。
+  const scopes = config.feishu.oauth.scopes;
+  const scopeParam = scopes ? `&scope=${encodeURIComponent(scopes)}` : '';
 
-  return `https://open.feishu.cn/open-apis/authen/v1/authorize?app_id=${appId}&redirect_uri=${redirectUri}&state=${state}`;
+  return `https://open.feishu.cn/open-apis/authen/v1/authorize?app_id=${appId}&redirect_uri=${redirectUri}&state=${state}${scopeParam}`;
 }
 
 /**
