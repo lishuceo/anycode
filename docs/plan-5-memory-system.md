@@ -576,17 +576,20 @@ TTL: 2 小时                  TTL: 按类型 (天~永久)
 改造文件: `executor.ts`(memoryContext), `event-handler.ts`(两路径接线), `index.ts`(启动/维护/关闭)
 模型选型: 抽取 `qwen3.5-flash`(7-8s 稳定), embedding `text-embedding-v4`(1536 维)
 
-### Phase 2: 用户管理 + 统计面板
+### ~~Phase 2: 用户管理 + 统计面板~~ ✅ 已完成 (2026-03-01)
 
-**目标**：用户可查看/删除记忆，可视化统计
+> PR #100, 51 new tests (总计 761 tests 通过)
 
-**前置条件**：Phase 1 ✅
+新增文件: `commands.ts`(slash command + card action handler), `commands.test.ts`(51 tests)
+改造文件: `database.ts`(listMemories/countByType/deleteAllForUser), `store.ts`(list/countByType/deleteAll), `message-builder.ts`(4 个记忆卡片), `event-handler.ts`(/memory 路由 + memory_* 卡片动作), `types.ts`(MEMORY_PAGE_SIZE)
 
-**已完成的部分**：定期维护已在 `init.ts:runMemoryMaintenance()` 实现（标记过期 TTL + 清理低置信度，挂在 30min cleanup interval）
-
-待实现：
-1. `/memory` 系列 slash command（list / search / delete / clear）
-2. 记忆统计面板（Feishu 卡片展示记忆条数/分类/最近更新）
+功能:
+- `/memory` 或 `/memory list [类型]` — 分页列表 + 统计面板（支持中英文类型名）
+- `/memory search <关键词>` — 混合搜索（BM25 + vector）
+- `/memory delete <id>` — 删除单条（含权限检查）
+- `/memory clear` — 清除全部（需确认卡片，仅删除用户个人记忆，不影响共享记忆）
+- 卡片交互按钮：翻页（保持类型过滤）、删除（带确认弹窗）、清除全部
+- 定期维护已在 `init.ts:runMemoryMaintenance()` 实现（标记过期 TTL + 清理低置信度，挂在 30min cleanup interval）
 
 ### Phase 3: 跨 Agent 共享 + Relation 增强
 
