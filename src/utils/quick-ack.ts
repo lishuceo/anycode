@@ -81,14 +81,17 @@ export async function generateQuickAck(
     ]);
 
     if (!result) {
-      logger.debug('Quick ack timed out');
+      logger.info('Quick ack timed out');
       return null;
     }
 
     const text = result.choices?.[0]?.message?.content?.trim();
+    if (text) {
+      logger.info({ text }, 'Quick ack generated');
+    }
     return text || null;
   } catch (err) {
-    logger.debug({ err }, 'Quick ack generation failed');
+    logger.warn({ err }, 'Quick ack generation failed');
     return null;
   }
 }
