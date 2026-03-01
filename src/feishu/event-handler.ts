@@ -32,6 +32,7 @@ import { generateAuthUrl, isOAuthConfigured, hasCallbackUrl, handleManualCode } 
 import { injectMemories } from '../memory/injector.js';
 import { extractMemories } from '../memory/extractor.js';
 import { handleMemoryCommand, handleMemoryCardAction } from '../memory/commands.js';
+import { getRepoIdentity } from '../workspace/identity.js';
 
 // 注册审批通过后的消息重新入队回调（避免 approval.ts → event-handler.ts 循环依赖）
 setOnApproved((chatId, userId, text, messageId, rootId, threadId) => {
@@ -1193,8 +1194,10 @@ async function executeClaudeTask(
     const isFirstMessage = !activeConversationId;
 
     // 记忆注入：搜索相关记忆，格式化为 system prompt 片段
+    // 使用 repo identity（而非带随机后缀的工作区路径）确保同仓库记忆互通
+    const repoIdentity = getRepoIdentity(workingDir);
     const memoryContext = config.memory.enabled
-      ? await injectMemories(rawPrompt, { agentId, userId, workspaceDir: workingDir })
+      ? await injectMemories(rawPrompt, { agentId, userId, workspaceDir: repoIdentity })
       : '';
 
     const result = await claudeExecutor.execute({
@@ -1319,7 +1322,7 @@ async function executeClaudeTask(
       // 记忆抽取 (fire-and-forget, restart 路径)
       if (config.memory.enabled && restartResult.success && restartResult.output) {
         extractMemories(prompt, restartResult.output, {
-          agentId, userId, chatId, workspaceDir: result.newWorkingDir!, messageId,
+          agentId, userId, chatId, workspaceDir: getRepoIdentity(result.newWorkingDir!), messageId,
         }).catch((err) => logger.warn({ err }, 'Memory extraction failed'));
       }
       return;
@@ -1381,7 +1384,7 @@ async function executeClaudeTask(
     // 记忆抽取 (fire-and-forget)
     if (config.memory.enabled && result.success && result.output) {
       extractMemories(rawPrompt, result.output, {
-        agentId, userId, chatId, workspaceDir: workingDir, messageId,
+        agentId, userId, chatId, workspaceDir: repoIdentity, messageId,
       }).catch((err) => logger.warn({ err }, 'Memory extraction failed'));
     }
 
@@ -1499,9 +1502,10 @@ async function executeDirectTask(
 
     const personaPrompt = readPersonaFile(agentId);
 
-    // 记忆注入
+    // 记忆注入（使用 repo identity 确保同仓库记忆互通）
+    const repoIdentity = getRepoIdentity(workingDir);
     const memoryContext = config.memory.enabled
-      ? await injectMemories(rawPrompt, { agentId, userId, workspaceDir: workingDir })
+      ? await injectMemories(rawPrompt, { agentId, userId, workspaceDir: repoIdentity })
       : '';
 
     const result = await claudeExecutor.execute({
@@ -1545,7 +1549,7 @@ async function executeDirectTask(
     // 记忆抽取 (fire-and-forget)
     if (config.memory.enabled && result.success && result.output) {
       extractMemories(rawPrompt, result.output, {
-        agentId, userId, chatId, workspaceDir: workingDir, messageId,
+        agentId, userId, chatId, workspaceDir: repoIdentity, messageId,
       }).catch((err) => logger.warn({ err }, 'Memory extraction failed'));
     }
 

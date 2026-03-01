@@ -43,7 +43,7 @@ export interface SetupWorkspaceResult {
 /** git 分支名合法字符 */
 const SAFE_BRANCH_RE = /^[a-zA-Z0-9._\/-]+$/;
 /** git 远程 URL 协议前缀 */
-const GIT_URL_RE = /^(https?:\/\/|git@|ssh:\/\/|git:\/\/)/;
+export const GIT_URL_RE = /^(https?:\/\/|git@|ssh:\/\/|git:\/\/)/;
 /** SSH 简写格式: github.com:user/repo.git (缺少 git@ 前缀) */
 const SSH_SHORTHAND_RE = /^[\w.-]+\.\w{2,}:[\w./-]+$/;
 
