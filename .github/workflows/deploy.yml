@@ -31,6 +31,12 @@ jobs:
           cd /root/dev/anywhere-code
           npm run build
 
+      - name: Wait for running queries to finish (direct push only)
+        if: ${{ github.event.head_commit.committer.username != 'web-flow' }}
+        run: |
+          echo "Direct push to main detected, waiting 60s for running queries to finish..."
+          sleep 60
+
       - name: Restart service
         run: |
           export NVM_DIR="$HOME/.nvm"

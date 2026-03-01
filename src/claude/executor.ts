@@ -693,6 +693,13 @@ export class ClaudeExecutor {
   }
 
   /**
+   * 获取所有运行中查询的 session key（用于 shutdown 时保存被中断的会话）
+   */
+  getRunningQueryKeys(): string[] {
+    return [...this.runningQueries.keys()];
+  }
+
+  /**
    * 中断所有运行中的查询
    */
   killAll(): void {

@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import { config, validateConfig, isMultiBotMode } from './config.js';
 import { logger } from './utils/logger.js';
 import { startServer } from './server.js';
@@ -14,6 +15,8 @@ import { validateBindings } from './agent/router.js';
 import { loadAgentConfig, startConfigWatcher, stopConfigWatcher, reloadAgentConfig } from './agent/config-loader.js';
 import { chatBotRegistry } from './feishu/bot-registry.js';
 import { initializeMemory, closeMemory, runMemoryMaintenance } from './memory/init.js';
+
+const INTERRUPTED_SESSIONS_FILE = '/tmp/feishu-claude-interrupted.json';
 
 async function main(): Promise<void> {
   logger.info('Starting Feishu Claude Code Bridge...');
@@ -93,6 +96,27 @@ async function main(): Promise<void> {
     logger.error({ err }, 'Failed to recover interrupted pipelines');
   });
 
+  // 通知被重启中断的会话
+  try {
+    if (fs.existsSync(INTERRUPTED_SESSIONS_FILE)) {
+      const raw = fs.readFileSync(INTERRUPTED_SESSIONS_FILE, 'utf-8');
+      fs.unlinkSync(INTERRUPTED_SESSIONS_FILE);
+      const data = JSON.parse(raw) as { sessions?: Array<{ chatId: string }>; timestamp?: number };
+
+      if (data.sessions?.length) {
+        const uniqueChatIds = [...new Set(data.sessions.map((s) => s.chatId))];
+        logger.info({ chatIds: uniqueChatIds, interruptedAt: data.timestamp }, 'Notifying interrupted sessions after restart');
+        for (const chatId of uniqueChatIds) {
+          feishuClient.sendText(chatId, '服务已重启完成，之前正在执行的任务被中断。如需继续，请重新发送消息。').catch((err) => {
+            logger.warn({ err, chatId }, 'Failed to notify interrupted session');
+          });
+        }
+      }
+    }
+  } catch (err) {
+    logger.warn({ err }, 'Failed to process interrupted sessions file');
+  }
+
   // 定时清理过期会话、Claude Code 进程、缓存和管道记录 (每 30 分钟)
   const cleanupInterval = setInterval(() => {
     sessionManager.cleanup();
@@ -116,6 +140,25 @@ async function main(): Promise<void> {
     logger.info({ signal }, 'Shutting down...');
     stopConfigWatcher();
     clearInterval(cleanupInterval);
+
+    // 保存被中断的会话信息，重启后发通知
+    const runningKeys = claudeExecutor.getRunningQueryKeys();
+    if (runningKeys.length > 0) {
+      const sessions = runningKeys.map((key) => {
+        const parts = key.split(':');
+        // 新格式 "agent:{agentId}:{chatId}:{userId}" 或旧格式 "chatId:userId"
+        const chatId = parts.length >= 4 ? parts[2] : parts[0];
+        return { chatId, sessionKey: key };
+      }).filter((s) => s.chatId);
+
+      try {
+        fs.writeFileSync(INTERRUPTED_SESSIONS_FILE, JSON.stringify({ sessions, timestamp: Date.now() }));
+        logger.info({ count: sessions.length }, 'Saved interrupted sessions for post-restart notification');
+      } catch (err) {
+        logger.error({ err }, 'Failed to save interrupted sessions');
+      }
+    }
+
     claudeExecutor.killAll();
     pipelineStore.markRunningAsInterrupted();
 
