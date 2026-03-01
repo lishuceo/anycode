@@ -81,11 +81,15 @@ export function feishuContactTool() {
           return {
             content: [{ type: 'text' as const, text: lines.join('\n') }],
           };
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          logger.error({ err: msg, open_id }, 'feishu_contact get_user failed');
+        } catch (err: unknown) {
+          // 飞书 SDK 在 HTTP 4xx 时抛 axios 异常，响应体在 err.response.data
+          const axiosData = (err as { response?: { data?: { code?: number; msg?: string } } })?.response?.data;
+          const detail = axiosData?.code
+            ? `飞书 API 错误 (code ${axiosData.code}): ${axiosData.msg ?? '未知'}`
+            : (err instanceof Error ? err.message : String(err));
+          logger.error({ err: detail, open_id, feishuCode: axiosData?.code }, 'feishu_contact get_user failed');
           return {
-            content: [{ type: 'text' as const, text: `查询用户失败: ${msg}` }],
+            content: [{ type: 'text' as const, text: `查询用户失败: ${detail}` }],
             isError: true,
           };
         }
