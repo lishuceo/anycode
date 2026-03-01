@@ -60,9 +60,13 @@ async function sendCardReply(
   messageId: string,
   threadReplyMsgId: string | undefined,
   card: Record<string, unknown>,
+  userId?: string,
 ): Promise<void> {
+  // 优先使用临时卡片（仅发起人可见），话题内回退到普通卡片
   if (threadReplyMsgId) {
     await feishuClient.replyCardInThread(threadReplyMsgId, card);
+  } else if (userId) {
+    await feishuClient.sendEphemeralCard(chatId, userId, card);
   } else {
     await feishuClient.sendCard(chatId, card);
   }
@@ -146,7 +150,7 @@ async function handleList(
   const totalPages = Math.max(1, Math.ceil(total / MEMORY_PAGE_SIZE));
 
   const card = buildMemoryListCard(memories, 1, totalPages, stats, agentId, userId, typeFilter);
-  await sendCardReply(chatId, messageId, threadReplyMsgId, card);
+  await sendCardReply(chatId, messageId, threadReplyMsgId, card, userId);
 }
 
 // ── /memory search <keyword> ──
@@ -178,7 +182,7 @@ async function handleSearch(
   });
 
   const card = buildMemorySearchCard(results, keyword, userId);
-  await sendCardReply(chatId, messageId, threadReplyMsgId, card);
+  await sendCardReply(chatId, messageId, threadReplyMsgId, card, userId);
 }
 
 // ── /memory delete <id> ──
@@ -235,7 +239,7 @@ async function handleClear(
   }
 
   const card = buildMemoryClearConfirmCard(total, agentId, userId);
-  await sendCardReply(chatId, messageId, threadReplyMsgId, card);
+  await sendCardReply(chatId, messageId, threadReplyMsgId, card, userId);
 }
 
 // ============================================================
@@ -298,8 +302,9 @@ function handleDeleteAction(
   if (!memory) return buildMemoryResultCard('记忆不存在或已被删除', false);
 
   // Only check against the actual DB record, not client-provided userId
+  // Return toast so the card stays unchanged (non-owner click has no visible effect)
   if (memory.userId && memory.userId !== operatorId) {
-    return buildMemoryResultCard('无权删除他人的记忆', false);
+    return { toast: { type: 'error', content: '无权操作此卡片' } };
   }
 
   const deleted = store.delete(memoryId);
@@ -320,7 +325,7 @@ function handleClearRequest(
   const agentId = (value?.agentId as string) ?? 'dev';
   const userId = (value?.userId as string) ?? operatorId;
   if (operatorId !== userId) {
-    return buildMemoryResultCard('无权清除他人的记忆', false);
+    return { toast: { type: 'error', content: '无权操作此卡片' } };
   }
 
   // ownedOnly: only count user's own memories (not shared ones with user_id=NULL)
@@ -339,7 +344,7 @@ function handleClearConfirm(
   const agentId = (value?.agentId as string) ?? 'dev';
   const userId = (value?.userId as string) ?? operatorId;
   if (operatorId !== userId) {
-    return buildMemoryResultCard('无权清除他人的记忆', false);
+    return { toast: { type: 'error', content: '无权操作此卡片' } };
   }
 
   const count = store.deleteAll(agentId, userId);
@@ -359,7 +364,7 @@ function handlePageAction(
 
   // Authorization: operator can only view their own memories
   if (operatorId !== userId) {
-    return buildMemoryResultCard('无权查看他人的记忆', false);
+    return { toast: { type: 'error', content: '无权操作此卡片' } };
   }
 
   const { memories, total } = store.list(agentId, userId, {

@@ -107,6 +107,10 @@ export function createEventDispatcher(accountId: string = 'default'): lark.Event
     'card.action.trigger': async (data: Record<string, unknown>) => {
       try {
         const cardBody = await handleCardAction(data);
+        // Toast responses: return as-is (no card replacement, just show notification)
+        if (cardBody && 'toast' in cardBody) {
+          return cardBody;
+        }
         if (cardBody && Object.keys(cardBody).length > 0) {
           return { card: { type: 'raw', data: cardBody } };
         }
