@@ -6,7 +6,7 @@ import { randomBytes } from 'node:crypto';
 import { logger } from '../utils/logger.js';
 import { MemoryDatabase } from './database.js';
 import type { EmbeddingProvider } from './embeddings.js';
-import type { Memory, MemoryCreateInput, ConfidenceLevel } from './types.js';
+import type { Memory, MemoryCreateInput, MemoryType, ConfidenceLevel } from './types.js';
 import { CONFIDENCE_CAPS } from './types.js';
 import type { MemoryRow } from './database.js';
 
@@ -174,6 +174,45 @@ export class MemoryStore {
       logger.warn({ err }, 'findConflicting failed');
       return [];
     }
+  }
+
+  /**
+   * List valid memories for an agent+user, with optional type filter and pagination.
+   */
+  list(
+    agentId: string,
+    userId: string,
+    opts?: { type?: MemoryType; limit?: number; offset?: number },
+  ): { memories: Memory[]; total: number } {
+    const { rows, total } = this.db.listMemories(agentId, userId, opts);
+    return { memories: rows.map(MemoryDatabase.rowToMemory), total };
+  }
+
+  /**
+   * Count valid memories by type for an agent+user.
+   * Returns a Record mapping type → count.
+   */
+  countByType(agentId: string, userId: string): Record<string, number> {
+    const rows = this.db.countByType(agentId, userId);
+    const result: Record<string, number> = {};
+    for (const r of rows) {
+      result[r.type] = r.count;
+    }
+    return result;
+  }
+
+  /**
+   * Delete all valid memories for an agent+user.
+   * Also cleans up vec0 entries.
+   */
+  deleteAll(agentId: string, userId: string): number {
+    const ids = this.db.deleteAllForUser(agentId, userId);
+    if (this.db.vectorEnabled) {
+      for (const id of ids) {
+        this.db.deleteVec(id);
+      }
+    }
+    return ids.length;
   }
 
   /** Wait for all pending async embedding operations to complete */

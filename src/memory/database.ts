@@ -352,6 +352,82 @@ export class MemoryDatabase {
     }) as VecResultRow[];
   }
 
+  // ── List & Count ──
+
+  /**
+   * List valid memories for an agent+user, with optional type filter and pagination.
+   * Returns rows ordered by updated_at DESC and the total count.
+   */
+  listMemories(
+    agentId: string,
+    userId: string,
+    opts?: { type?: MemoryType; limit?: number; offset?: number },
+  ): { rows: MemoryRow[]; total: number } {
+    const limit = opts?.limit ?? 10;
+    const offset = opts?.offset ?? 0;
+
+    const baseWhere = `
+      (agent_id = @agentId OR agent_id = '*')
+      AND (user_id = @userId OR user_id IS NULL)
+      AND invalid_at IS NULL
+    `;
+    const typeClause = opts?.type ? ' AND type = @type' : '';
+    const where = baseWhere + typeClause;
+
+    const params: Record<string, unknown> = { agentId, userId, limit, offset };
+    if (opts?.type) params.type = opts.type;
+
+    const rows = this.db.prepare(
+      `SELECT * FROM memories WHERE ${where} ORDER BY updated_at DESC LIMIT @limit OFFSET @offset`,
+    ).all(params) as MemoryRow[];
+
+    const countRow = this.db.prepare(
+      `SELECT COUNT(*) AS cnt FROM memories WHERE ${where}`,
+    ).get(params) as { cnt: number };
+
+    return { rows, total: countRow.cnt };
+  }
+
+  /**
+   * Count valid memories grouped by type for an agent+user.
+   */
+  countByType(agentId: string, userId: string): Array<{ type: string; count: number }> {
+    return this.db.prepare(`
+      SELECT type, COUNT(*) AS count FROM memories
+      WHERE (agent_id = @agentId OR agent_id = '*')
+        AND (user_id = @userId OR user_id IS NULL)
+        AND invalid_at IS NULL
+      GROUP BY type
+    `).all({ agentId, userId }) as Array<{ type: string; count: number }>;
+  }
+
+  /**
+   * Delete all valid memories for an agent+user. Returns IDs of deleted memories
+   * so caller can also clean up vec0 entries.
+   */
+  deleteAllForUser(agentId: string, userId: string): string[] {
+    // Only delete memories explicitly owned by this user (user_id = @userId).
+    // Shared memories (user_id IS NULL) are NOT deleted — they belong to everyone.
+    const rows = this.db.prepare(`
+      SELECT id FROM memories
+      WHERE (agent_id = @agentId OR agent_id = '*')
+        AND user_id = @userId
+        AND invalid_at IS NULL
+    `).all({ agentId, userId }) as Array<{ id: string }>;
+
+    const ids = rows.map(r => r.id);
+    if (ids.length === 0) return [];
+
+    // Delete in batches via transaction
+    this.db.transaction(() => {
+      for (const id of ids) {
+        this.stmtDelete.run(id);
+      }
+    })();
+
+    return ids;
+  }
+
   // ── Helpers ──
 
   close(): void {
