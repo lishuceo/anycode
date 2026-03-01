@@ -49,9 +49,17 @@ export async function injectMemories(
       limit: 15,
     });
 
-    if (results.length === 0) return '';
+    if (results.length === 0) {
+      logger.debug({ agentId: context.agentId, userId: context.userId }, 'Memory injection: no relevant memories found');
+      return '';
+    }
 
-    return formatMemories(results);
+    const fragment = formatMemories(results);
+    logger.info(
+      { agentId: context.agentId, userId: context.userId, count: results.length, chars: fragment.length },
+      'Memories injected into system prompt',
+    );
+    return fragment;
   } catch (err) {
     logger.warn({ err }, 'Memory injection failed (non-blocking)');
     return '';
