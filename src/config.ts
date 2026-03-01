@@ -167,7 +167,7 @@ export const config = {
     /** 使用的模型 (DashScope) */
     model: process.env.QUICK_ACK_MODEL || 'qwen3.5-flash',
     /** 超时毫秒数，超时则放弃快速回复 */
-    timeoutMs: parseInt(process.env.QUICK_ACK_TIMEOUT_MS || '1500', 10),
+    timeoutMs: parseInt(process.env.QUICK_ACK_TIMEOUT_MS || '3000', 10),
   },
 
   // 记忆系统配置

@@ -15,6 +15,7 @@ import { validateBindings } from './agent/router.js';
 import { loadAgentConfig, startConfigWatcher, stopConfigWatcher, reloadAgentConfig } from './agent/config-loader.js';
 import { chatBotRegistry } from './feishu/bot-registry.js';
 import { initializeMemory, closeMemory, runMemoryMaintenance } from './memory/init.js';
+import { warmup as warmupQuickAck } from './utils/quick-ack.js';
 
 const INTERRUPTED_SESSIONS_FILE = '/tmp/feishu-claude-interrupted.json';
 
@@ -62,6 +63,9 @@ async function main(): Promise<void> {
   if (config.memory.enabled) {
     await initializeMemory();
   }
+
+  // 预热 quick-ack client（避免首次调用冷启动）
+  warmupQuickAck();
 
   // 初始化 bot 账号
   if (isMultiBotMode()) {
