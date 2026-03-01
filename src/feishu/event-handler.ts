@@ -1468,7 +1468,7 @@ async function executeDirectTask(
       }
       return feishuClient.replyText(messageId, ackText);
     }).catch((err) => {
-      logger.debug({ err }, 'Quick ack failed (non-blocking)');
+      logger.warn({ err }, 'Quick ack send failed (non-blocking)');
     });
 
     // Thread session 管理（话题内独立对话）
