@@ -40,8 +40,10 @@ export function getRepoIdentity(workDir: string): string {
 const MAX_FOLLOW_DEPTH = 3;
 
 function resolveIdentity(workDir: string): string {
-  const visited = new Set<string>([resolve(workDir)]);
-  let currentDir = workDir;
+  const startDir = resolve(workDir);
+  const visited = new Set<string>([startDir]);
+  const cacheDir = resolve(config.repoCache.dir);
+  let currentDir = startDir;
 
   for (let depth = 0; depth < MAX_FOLLOW_DEPTH; depth++) {
     let remoteUrl: string;
@@ -52,13 +54,12 @@ function resolveIdentity(workDir: string): string {
       }).toString().trim();
     } catch {
       // Not a git repo or no remote configured
-      return resolve(currentDir);
+      return currentDir;
     }
 
-    if (!remoteUrl) return resolve(currentDir);
+    if (!remoteUrl) return currentDir;
 
     // Case 1: bare cache path (under REPO_CACHE_DIR)
-    const cacheDir = resolve(config.repoCache.dir);
     if (remoteUrl.startsWith(cacheDir + '/')) {
       return remoteUrl.slice(cacheDir.length + 1);
     }
@@ -68,7 +69,8 @@ function resolveIdentity(workDir: string): string {
       try {
         return repoUrlToCachePath(remoteUrl);
       } catch {
-        // Normalization failed, fall through to path resolution
+        // Remote URL format but normalization failed — don't treat as local path
+        return currentDir;
       }
     }
 
@@ -83,7 +85,7 @@ function resolveIdentity(workDir: string): string {
   }
 
   // Exhausted depth limit, return the last resolved path
-  return resolve(currentDir);
+  return currentDir;
 }
 
 /** Clear the identity cache (for testing) */

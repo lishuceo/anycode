@@ -147,10 +147,22 @@ describe('getRepoIdentity', () => {
     expect(identity).toBe('/tmp/workspaces/other-repo');
   });
 
+  it('should return currentDir when remote URL matches GIT_URL_RE but normalization fails', () => {
+    // Remote URL with dot-prefixed segment → repoUrlToCachePath throws
+    mockExecFileSync.mockReturnValueOnce(Buffer.from('https://github.com/.hidden/repo\n'));
+
+    const identity = getRepoIdentity('/tmp/workspaces/myrepo-feat-aaa111');
+
+    // Should return currentDir, not treat the URL as a local path
+    expect(identity).toBe('/tmp/workspaces/myrepo-feat-aaa111');
+    expect(mockExecFileSync).toHaveBeenCalledTimes(1);
+  });
+
   it('should not loop on circular local references', () => {
     // repo-a → repo-b → repo-a (circular)
     mockExecFileSync.mockImplementation((_cmd, args) => {
-      const dir = (args as string[])[1]; // -C <dir>
+      const cIdx = (args as string[]).indexOf('-C');
+      const dir = cIdx !== -1 ? (args as string[])[cIdx + 1] : undefined;
       if (dir === '/repos/repo-a') return Buffer.from('/repos/repo-b\n');
       if (dir === '/repos/repo-b') return Buffer.from('/repos/repo-a\n');
       throw new Error('unexpected dir');
