@@ -83,8 +83,8 @@ Environment variables loaded via dotenv (see `.env.example`):
 
 ## Deployment
 
-- PR 合并到 main 后会自动触发 GitHub Actions deploy workflow，将代码部署到服务器。
-- 部署完成后仍需手动执行 `pm2 restart feishu-claude` 重启进程才能加载新代码。不要跳过这一步。
+- PR 合并到 main 后会自动触发 GitHub Actions deploy workflow，将代码部署到服务器并自动 `pm2 restart`。
+- **严禁在对话中执行 `pm2 restart feishu-claude`** — Claude 作为 bridge server 的子进程运行，执行此命令会杀掉自己的父进程，导致级联重启。
 
 ## Tech Stack
 

@@ -159,7 +159,7 @@ URL Token 提取规则:
 - 实时日志（谨慎，会持续输出）: \`pm2 logs feishu-claude --lines 50\`（需 Ctrl+C 中断）
 
 ### 注意事项
-- **重启服务会中断当前对话** — 你的回复正在通过这个进程发送，restart 会导致本次对话中断。仅在用户明确要求时执行 \`pm2 restart feishu-claude\`
+- **严禁执行 \`pm2 restart feishu-claude\`** — 你是这个进程的子进程，restart 会杀掉你自己的父进程，导致对话中断和级联重启。代码部署后 CI/CD 会自动 restart
 - 你的工作目录是服务仓库的隔离 clone，修改不会直接影响运行中的实例，需要推送代码并重启才能生效
 - 日志是 JSON 格式（Pino），可用 \`| jq .\` 格式化或 \`| grep "关键词"\` 过滤` : '';
 
@@ -714,7 +714,7 @@ export class ClaudeExecutor {
    * 等待所有运行中的 task 完成（用于 graceful shutdown）
    * killAll() 关闭 stream 后，execute() 会返回，caller 发送结果卡片后 task 完成
    */
-  async waitForRunningTasks(timeoutMs = 15000): Promise<void> {
+  async waitForRunningTasks(timeoutMs = 8000): Promise<void> {
     if (this.runningTasks.size === 0) return;
     logger.info({ count: this.runningTasks.size }, 'Waiting for running tasks to finish...');
     let timer: ReturnType<typeof setTimeout>;

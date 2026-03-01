@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import { config, validateConfig, isMultiBotMode } from './config.js';
 import { logger } from './utils/logger.js';
-import { startServer } from './server.js';
+import { startServer, closeServer } from './server.js';
 import { sessionManager } from './session/manager.js';
 import { claudeExecutor } from './claude/executor.js';
 import { cleanupTmpDirs, cleanupExpiredCaches } from './workspace/cache.js';
@@ -141,6 +141,9 @@ async function main(): Promise<void> {
     stopConfigWatcher();
     clearInterval(cleanupInterval);
 
+    // 先关闭 HTTP 服务器，立即释放端口，避免新进程 EADDRINUSE
+    await closeServer();
+
     // 保存被中断的会话信息，重启后发通知
     const runningKeys = claudeExecutor.getRunningQueryKeys();
     if (runningKeys.length > 0) {
@@ -162,9 +165,10 @@ async function main(): Promise<void> {
     claudeExecutor.killAll();
     pipelineStore.markRunningAsInterrupted();
 
-    // 等待正在运行的 task 完成（发送结果卡片到飞书），最多等 15 秒
+    // 等待正在运行的 task 完成（发送结果卡片到飞书），最多等 8 秒
     // killAll() 关闭 stream → execute() 返回 → executeClaudeTask 发结果卡片 → task 完成
-    await claudeExecutor.waitForRunningTasks(15000);
+    // 注意：必须 < pm2 kill_timeout (10s)，留出余量给后续清理步骤
+    await claudeExecutor.waitForRunningTasks(8000);
 
     pipelineStore.close();
     sessionManager.close();
