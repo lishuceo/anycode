@@ -511,6 +511,43 @@ export class FeishuClient {
     }
   }
 
+  /**
+   * 发送仅特定人可见的临时卡片（ephemeral message）
+   * 群聊中仅 openId 用户可见，带"仅对你可见"标识
+   */
+  async sendEphemeralCard(
+    chatId: string,
+    openId: string,
+    card: Record<string, unknown>,
+  ): Promise<string | undefined> {
+    try {
+      const resp = await this.client.request<{
+        code?: number;
+        msg?: string;
+        data?: { message_id?: string };
+      }>({
+        method: 'POST',
+        url: '/open-apis/ephemeral/v1/send',
+        data: {
+          chat_id: chatId,
+          open_id: openId,
+          msg_type: 'interactive',
+          card,
+        },
+      });
+
+      if (resp.code !== 0) {
+        logger.error({ code: resp.code, msg: resp.msg }, 'Failed to send ephemeral card');
+        return undefined;
+      }
+
+      return resp.data?.message_id;
+    } catch (err) {
+      logger.error({ err }, 'Error sending ephemeral card');
+      return undefined;
+    }
+  }
+
   /** 获取原始 client 以便直接使用 */
   get raw(): lark.Client {
     return this.client;

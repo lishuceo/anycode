@@ -14,6 +14,7 @@ const {
     replyText: vi.fn(),
     replyTextInThread: vi.fn(),
     sendCard: vi.fn(),
+    sendEphemeralCard: vi.fn(),
     replyCardInThread: vi.fn(),
   },
   mockIsMemoryEnabled: vi.fn(() => true),
@@ -485,13 +486,13 @@ describe('handleMemoryCommand', () => {
     );
   });
 
-  it('should send card for /memory (list)', async () => {
+  it('should send ephemeral card for /memory (list)', async () => {
     store.create({ agentId: 'dev', userId: 'user1', type: 'fact', content: 'Test fact' });
 
     await handleMemoryCommand('', 'chat1', 'user1', 'msg1', undefined, 'dev');
 
-    expect(mockFeishuClient.sendCard).toHaveBeenCalled();
-    const card = mockFeishuClient.sendCard.mock.calls[0][1];
+    expect(mockFeishuClient.sendEphemeralCard).toHaveBeenCalled();
+    const card = mockFeishuClient.sendEphemeralCard.mock.calls[0][2];
     expect((card.header as any).title.content).toContain('记忆管理');
   });
 
@@ -501,7 +502,7 @@ describe('handleMemoryCommand', () => {
 
     await handleMemoryCommand('list fact', 'chat1', 'user1', 'msg1', undefined, 'dev');
 
-    expect(mockFeishuClient.sendCard).toHaveBeenCalled();
+    expect(mockFeishuClient.sendEphemeralCard).toHaveBeenCalled();
   });
 
   it('should accept Chinese type name for /memory list 偏好', async () => {
@@ -509,7 +510,7 @@ describe('handleMemoryCommand', () => {
 
     await handleMemoryCommand('list 偏好', 'chat1', 'user1', 'msg1', undefined, 'dev');
 
-    expect(mockFeishuClient.sendCard).toHaveBeenCalled();
+    expect(mockFeishuClient.sendEphemeralCard).toHaveBeenCalled();
   });
 
   it('should reply error for unknown type', async () => {
@@ -572,14 +573,14 @@ describe('handleMemoryCommand', () => {
     );
   });
 
-  it('should send clear confirm card for /memory clear', async () => {
+  it('should send ephemeral clear confirm card for /memory clear', async () => {
     store.create({ agentId: 'dev', userId: 'user1', type: 'fact', content: 'A' });
     store.create({ agentId: 'dev', userId: 'user1', type: 'fact', content: 'B' });
 
     await handleMemoryCommand('clear', 'chat1', 'user1', 'msg1', undefined, 'dev');
 
-    expect(mockFeishuClient.sendCard).toHaveBeenCalled();
-    const card = mockFeishuClient.sendCard.mock.calls[0][1];
+    expect(mockFeishuClient.sendEphemeralCard).toHaveBeenCalled();
+    const card = mockFeishuClient.sendEphemeralCard.mock.calls[0][2];
     expect((card.header as any).template).toBe('red');
     expect((card.header as any).title.content).toContain('确认');
   });
@@ -646,12 +647,12 @@ describe('handleMemoryCardAction', () => {
     expect(store.get(mem.id)).toBeUndefined();
   });
 
-  it('should reject delete by non-owner via card action', () => {
+  it('should reject delete by non-owner via card action (toast, no card change)', () => {
     const mem = store.create({ agentId: 'dev', userId: 'user1', type: 'fact', content: 'Hello' });
 
     const result = handleMemoryCardAction('memory_delete', { memoryId: mem.id, userId: 'user1' }, 'other_user');
 
-    expect((result.header as any)?.template).toBe('red');
+    expect(result).toEqual({ toast: { type: 'error', content: '无权操作此卡片' } });
     expect(store.get(mem.id)).toBeDefined();
   });
 
@@ -693,7 +694,7 @@ describe('handleMemoryCardAction', () => {
     expect(total).toBe(0);
   });
 
-  it('should reject clear by non-owner', () => {
+  it('should reject clear by non-owner (toast, no card change)', () => {
     store.create({ agentId: 'dev', userId: 'user1', type: 'fact', content: 'A' });
 
     const result = handleMemoryCardAction(
@@ -702,7 +703,7 @@ describe('handleMemoryCardAction', () => {
       'other_user',
     );
 
-    expect((result.header as any)?.template).toBe('red');
+    expect(result).toEqual({ toast: { type: 'error', content: '无权操作此卡片' } });
     const { total } = store.list('dev', 'user1');
     expect(total).toBe(1);
   });
@@ -726,7 +727,7 @@ describe('handleMemoryCardAction', () => {
     expect((result.header as any)?.template).toBe('green');
   });
 
-  it('should reject page action by non-owner', () => {
+  it('should reject page action by non-owner (toast, no card change)', () => {
     store.create({ agentId: 'dev', userId: 'user1', type: 'fact', content: 'A' });
 
     const result = handleMemoryCardAction(
@@ -735,7 +736,7 @@ describe('handleMemoryCardAction', () => {
       'other_user',
     );
 
-    expect((result.header as any)?.template).toBe('red');
+    expect(result).toEqual({ toast: { type: 'error', content: '无权操作此卡片' } });
   });
 
   it('should preserve type filter across pagination', () => {
