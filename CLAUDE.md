@@ -81,6 +81,11 @@ Environment variables loaded via dotenv (see `.env.example`):
 - **复杂改动须通过完整回归** — 涉及多模块或核心逻辑的改动，提交前需运行 `npx vitest run` 确保全部测试通过。
 - **PR 不得降低测试覆盖率** — 新增代码应有合理的测试覆盖，不允许只加功能不加测试。
 
+## Deployment
+
+- PR 合并到 main 后会自动触发 GitHub Actions deploy workflow，将代码部署到服务器。
+- 部署完成后仍需手动执行 `pm2 restart feishu-claude` 重启进程才能加载新代码。不要跳过这一步。
+
 ## Tech Stack
 
 - TypeScript 5.7, Node.js 18+, Express 4
