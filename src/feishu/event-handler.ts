@@ -655,10 +655,10 @@ async function handleSlashCommand(
 ): Promise<boolean> {
   const trimmed = text.trim();
 
-  // 获取当前会话的话题锚点消息 ID（用于将命令响应发到话题内）
-  // 如果用户在话题内发消息，优先使用该话题的 rootId
-  const currentSession = sessionManager.get(chatId, userId);
-  const threadReplyMsgId = rootId || currentSession?.threadRootMessageId;
+  // 仅当用户确实在话题内发消息时（有 threadId），才回复到话题
+  // rootId 单独出现（无 threadId）= 主面板引用回复，不应跟进话题
+  // 不 fallback 到 session 的 threadRootMessageId，避免群主界面的命令被发到旧话题
+  const threadReplyMsgId = effectiveThreadId ? rootId : undefined;
 
   // /project <path> - 切换工作目录
   if (trimmed.startsWith('/project ')) {
