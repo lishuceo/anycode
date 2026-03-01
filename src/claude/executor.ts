@@ -397,38 +397,20 @@ export class ClaudeExecutor {
             logger.info({ toolName, readOnly }, 'canUseTool denied — read-only mode');
             return { behavior: 'deny' as const, message: '当前用户处于只读模式，无法使用此工具。需要管理员权限才能修改文件或执行命令。' };
           }
-          // 只读模式 MCP 工具权限：deny-by-default，仅放行已知只读 action
+          // 只读模式 MCP 工具权限：deny-by-default，但飞书工具和讨论工具整体放行
           if (readOnly && toolName.startsWith('mcp__')) {
-            // 飞书工具：仅放行已知的只读 action 和只读工具（精确匹配 server 名，避免命名碰撞）
+            // 飞书工具整体放行：操作的是飞书数据（文档/任务/表格/通讯录），不是代码仓库，
+            // 且受飞书自身权限体系保护，无需逐个 action 白名单
             if (toolName.startsWith('mcp__feishu-tools__')) {
-              // feishu_chat_members 整体为只读工具（无 action 参数），精确匹配完整工具名
-              if (toolName === 'mcp__feishu-tools__feishu_chat_members') {
-                logger.info({ toolName, readOnly }, 'canUseTool allowed — read-only feishu_chat_members tool');
-                return { behavior: 'allow' as const, updatedInput: inputObj };
-              }
-              const action = inputObj.action as string;
-              // readOnly 模式下允许的飞书 action。
-              // 飞书工具操作的是飞书数据（文档/任务/表格），不是代码仓库，
-              // 且受飞书自身权限体系保护，因此 task 写操作也允许。
-              const readOnlyActions = new Set([
-                'read', 'list_blocks',                              // doc
-                'list_spaces', 'list_nodes', 'get_node',            // wiki
-                'list', 'info',                                     // drive
-                'list_tables', 'list_fields', 'list_records', 'get_record', // bitable
-                'get_user',                                         // contact (只读，查通讯录)
-                'get', 'create', 'update', 'delete',                // task (读写均允许，受飞书权限体系保护)
-              ]);
-              if (readOnlyActions.has(action)) {
-                logger.info({ toolName, action, readOnly }, 'canUseTool allowed — read-only feishu action');
-                return { behavior: 'allow' as const, updatedInput: inputObj };
-              }
+              logger.info({ toolName, readOnly }, 'canUseTool allowed — feishu tool (not repo data)');
+              return { behavior: 'allow' as const, updatedInput: inputObj };
             }
-            // discussion-tools: Chat Agent 话题升级工具，readonly 下允许（精确匹配 server 名前缀）
+            // discussion-tools: Chat Agent 话题升级工具，readonly 下允许
             if (toolName.startsWith('mcp__discussion-tools__')) {
               logger.info({ toolName, readOnly }, 'canUseTool allowed — discussion tool in read-only mode');
               return { behavior: 'allow' as const, updatedInput: inputObj };
             }
-            // 所有其他 MCP 工具（含 workspace-manager、未来新增）以及不在 allow-list 的 feishu action：deny
+            // 所有其他 MCP 工具（含 workspace-manager、未来新增）：deny
             logger.info({ toolName, readOnly }, 'canUseTool denied — read-only mode (MCP tool)');
             return { behavior: 'deny' as const, message: '当前用户处于只读模式，无法使用此工具。' };
           }

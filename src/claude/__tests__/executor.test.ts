@@ -351,28 +351,28 @@ describe('ClaudeExecutor', () => {
       expect(result.behavior).toBe('allow');
     });
 
-    it('should deny write feishu action in read-only mode', async () => {
+    it('should allow write feishu action in read-only mode (feishu data, not repo)', async () => {
       await executor.execute(makeInput({ readOnly: true }));
       const canUseTool = getCanUseTool();
 
       const result = await canUseTool('mcp__feishu-tools__feishu_doc', { action: 'write', doc_token: 'ABC' });
-      expect(result.behavior).toBe('deny');
+      expect(result.behavior).toBe('allow');
     });
 
-    it('should deny create feishu action in read-only mode', async () => {
+    it('should allow create feishu action in read-only mode (feishu data, not repo)', async () => {
       await executor.execute(makeInput({ readOnly: true }));
       const canUseTool = getCanUseTool();
 
       const result = await canUseTool('mcp__feishu-tools__feishu_bitable', { action: 'create_record', app_token: 'APP1' });
-      expect(result.behavior).toBe('deny');
+      expect(result.behavior).toBe('allow');
     });
 
-    it('should deny delete feishu action in read-only mode', async () => {
+    it('should allow delete feishu action in read-only mode (feishu data, not repo)', async () => {
       await executor.execute(makeInput({ readOnly: true }));
       const canUseTool = getCanUseTool();
 
       const result = await canUseTool('mcp__feishu-tools__feishu_bitable', { action: 'delete_record', app_token: 'APP1' });
-      expect(result.behavior).toBe('deny');
+      expect(result.behavior).toBe('allow');
     });
 
     it('should deny non-feishu MCP tools in read-only mode', async () => {
