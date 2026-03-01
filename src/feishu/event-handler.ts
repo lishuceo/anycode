@@ -31,6 +31,7 @@ import { createDiscussionMcpServer } from '../agent/tools/discussion.js';
 import { generateAuthUrl, isOAuthConfigured, hasCallbackUrl, handleManualCode } from './oauth.js';
 import { injectMemories } from '../memory/injector.js';
 import { extractMemories } from '../memory/extractor.js';
+import { handleMemoryCommand, handleMemoryCardAction } from '../memory/commands.js';
 
 // 注册审批通过后的消息重新入队回调（避免 approval.ts → event-handler.ts 循环依赖）
 setOnApproved((chatId, userId, text, messageId, rootId, threadId) => {
@@ -161,6 +162,11 @@ async function handleCardAction(data: Record<string, unknown>): Promise<Record<s
   // 审批卡片动作（approval_approve / approval_reject）
   if ((actionType === 'approval_approve' || actionType === 'approval_reject') && approvalId && operatorId) {
     return handleApprovalCardAction(actionType, approvalId, operatorId);
+  }
+
+  // 记忆管理卡片动作（memory_*）
+  if (actionType.startsWith('memory_') && operatorId) {
+    return handleMemoryCardAction(actionType, action?.value, operatorId);
   }
 
   // 管道卡片动作需要 pipelineId
@@ -826,6 +832,13 @@ async function handleSlashCommand(
     return true;
   }
 
+  // /memory - 记忆管理
+  if (trimmed === '/memory' || trimmed.startsWith('/memory ')) {
+    const memoryArgs = trimmed === '/memory' ? '' : trimmed.slice('/memory '.length).trim();
+    await handleMemoryCommand(memoryArgs, chatId, userId, messageId, threadReplyMsgId, agentId);
+    return true;
+  }
+
   // /help - 帮助
   if (trimmed === '/help') {
     const helpText = [
@@ -837,6 +850,7 @@ async function handleSlashCommand(
       '`/project <path>` - 切换工作目录',
       '`/workspace <url|path> [branch]` - 创建隔离工作区 (自动 clone + 创建分支)',
       '`/dev <task>` - 自动开发管道 (方案→审查→实现→审查→推送)',
+      '`/memory` - 查看/管理记忆',
       '`/status` - 查看当前会话状态',
       '`/reset` - 重置会话',
       '`/stop` - 中断当前执行',

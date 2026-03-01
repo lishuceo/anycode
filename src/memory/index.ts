@@ -32,3 +32,5 @@ export type { ExtractionContext } from './extractor.js';
 
 export { injectMemories } from './injector.js';
 export type { InjectionContext } from './injector.js';
+
+export { handleMemoryCommand, handleMemoryCardAction } from './commands.js';
