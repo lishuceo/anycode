@@ -153,6 +153,23 @@ export const config = {
     historyMaxChars: parseInt(process.env.CHAT_HISTORY_MAX_CHARS || '4000', 10),
   },
 
+  // DashScope (阿里云百炼) 通用配置
+  dashscope: {
+    apiKey: process.env.DASHSCOPE_API_KEY || '',
+    baseUrl:
+      process.env.DASHSCOPE_BASE_URL || 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+  },
+
+  // 快速确认配置（Direct 模式下先用小模型快速回复，掩盖主流程延迟）
+  quickAck: {
+    /** 快速确认开关 (默认关闭) */
+    enabled: process.env.QUICK_ACK_ENABLED === 'true',
+    /** 使用的模型 (DashScope) */
+    model: process.env.QUICK_ACK_MODEL || 'qwen3.5-flash',
+    /** 超时毫秒数，超时则放弃快速回复 */
+    timeoutMs: parseInt(process.env.QUICK_ACK_TIMEOUT_MS || '1500', 10),
+  },
+
   // 记忆系统配置
   memory: {
     /** 记忆系统总开关 */
