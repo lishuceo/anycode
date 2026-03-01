@@ -25,7 +25,6 @@ export function createFeishuToolsMcpServer(chatId?: string, userId?: string) {
   if (config.feishu.tools.drive) tools.push(feishuDriveTool(chatId));
   if (config.feishu.tools.bitable) tools.push(feishuBitableTool());
   if (config.feishu.tools.chat) tools.push(feishuChatTool(chatId));
-  // 通过闭包绑定当前用户的 token 获取函数，task 工具可透明使用 user_access_token
   if (config.feishu.tools.contact) tools.push(feishuContactTool());
   // 通过闭包绑定当前用户的 token 获取函数，task 工具可透明使用 user_access_token
   const getUserToken = userId ? () => getValidUserToken(userId) : undefined;
