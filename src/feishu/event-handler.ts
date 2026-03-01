@@ -33,6 +33,7 @@ import { injectMemories } from '../memory/injector.js';
 import { extractMemories } from '../memory/extractor.js';
 import { handleMemoryCommand, handleMemoryCardAction } from '../memory/commands.js';
 import { getRepoIdentity } from '../workspace/identity.js';
+import { generateQuickAck } from '../utils/quick-ack.js';
 
 // 注册审批通过后的消息重新入队回调（避免 approval.ts → event-handler.ts 循环依赖）
 setOnApproved((chatId, userId, text, messageId, rootId, threadId) => {
@@ -1458,6 +1459,18 @@ async function executeDirectTask(
   let threadId: string | undefined = eventThreadId;
 
   try {
+    // 快速确认：用小模型立即生成自然短回复，与主流程并行
+    // fire-and-forget，不阻塞主流程
+    void generateQuickAck(rawPrompt).then((ackText) => {
+      if (!ackText) return;
+      if (threadReplyMsgId) {
+        return feishuClient.replyTextInThread(threadReplyMsgId, ackText);
+      }
+      return feishuClient.replyText(messageId, ackText);
+    }).catch((err) => {
+      logger.debug({ err }, 'Quick ack failed (non-blocking)');
+    });
+
     // Thread session 管理（话题内独立对话）
     let threadSession = eventThreadId
       ? sessionManager.getThreadSession(eventThreadId, agentId)
