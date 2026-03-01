@@ -390,12 +390,16 @@ export class MemoryDatabase {
 
   /**
    * Count valid memories grouped by type for an agent+user.
+   * When ownedOnly=true, excludes shared memories (user_id IS NULL) — use for clear flow.
    */
-  countByType(agentId: string, userId: string): Array<{ type: string; count: number }> {
+  countByType(agentId: string, userId: string, opts?: { ownedOnly?: boolean }): Array<{ type: string; count: number }> {
+    const userClause = opts?.ownedOnly
+      ? 'AND user_id = @userId'
+      : 'AND (user_id = @userId OR user_id IS NULL)';
     return this.db.prepare(`
       SELECT type, COUNT(*) AS count FROM memories
       WHERE (agent_id = @agentId OR agent_id = '*')
-        AND (user_id = @userId OR user_id IS NULL)
+        ${userClause}
         AND invalid_at IS NULL
       GROUP BY type
     `).all({ agentId, userId }) as Array<{ type: string; count: number }>;

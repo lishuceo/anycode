@@ -192,8 +192,8 @@ export class MemoryStore {
    * Count valid memories by type for an agent+user.
    * Returns a Record mapping type → count.
    */
-  countByType(agentId: string, userId: string): Record<string, number> {
-    const rows = this.db.countByType(agentId, userId);
+  countByType(agentId: string, userId: string, opts?: { ownedOnly?: boolean }): Record<string, number> {
+    const rows = this.db.countByType(agentId, userId, opts);
     const result: Record<string, number> = {};
     for (const r of rows) {
       result[r.type] = r.count;

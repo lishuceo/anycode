@@ -226,7 +226,8 @@ async function handleClear(
   threadReplyMsgId: string | undefined,
   agentId: AgentId,
 ): Promise<void> {
-  const stats = store.countByType(agentId, userId);
+  // ownedOnly: only count user's own memories (not shared ones with user_id=NULL)
+  const stats = store.countByType(agentId, userId, { ownedOnly: true });
   const total = Object.values(stats).reduce((a, b) => a + b, 0);
   if (total === 0) {
     await sendReply(messageId, threadReplyMsgId, '暂无记忆记录');
@@ -322,7 +323,8 @@ function handleClearRequest(
     return buildMemoryResultCard('无权清除他人的记忆', false);
   }
 
-  const stats = store.countByType(agentId, userId);
+  // ownedOnly: only count user's own memories (not shared ones with user_id=NULL)
+  const stats = store.countByType(agentId, userId, { ownedOnly: true });
   const total = Object.values(stats).reduce((a, b) => a + b, 0);
   if (total === 0) return buildMemoryResultCard('暂无记忆记录', true);
 
