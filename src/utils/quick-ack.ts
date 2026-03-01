@@ -96,6 +96,19 @@ export async function generateQuickAck(
   }
 }
 
+/**
+ * Eagerly initialize the OpenAI client at startup to avoid cold-start latency
+ * on the first quick ack call (dynamic import + client creation).
+ */
+export function warmup(): void {
+  if (!config.quickAck.enabled) return;
+  getClient().then((c) => {
+    if (c) logger.info('Quick ack client warmed up');
+  }).catch(() => {
+    // already logged in getClient
+  });
+}
+
 /** Reset client for testing */
 export function _resetClient(): void {
   clientReady = null;
