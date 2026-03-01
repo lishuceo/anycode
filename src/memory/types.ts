@@ -91,3 +91,6 @@ export interface MemorySearchQuery {
   limit?: number;
   includeInvalid?: boolean;
 }
+
+/** Page size for /memory list pagination */
+export const MEMORY_PAGE_SIZE = 5;

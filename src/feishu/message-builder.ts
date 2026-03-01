@@ -6,6 +6,8 @@
 import { PHASE_META, TOTAL_PHASES } from '../pipeline/types.js';
 import type { PipelinePhase } from '../pipeline/types.js';
 import type { TurnInfo, ToolCallInfo } from '../claude/types.js';
+import type { Memory, MemorySearchResult } from '../memory/types.js';
+import { MEMORY_PAGE_SIZE } from '../memory/types.js';
 
 /** 构建新会话问候卡片（初始状态，工作目录未确定） */
 export function buildGreetingCard(): Record<string, unknown> {
@@ -856,4 +858,242 @@ function formatOutputAsMarkdown(output: string): string {
     .trim();
 
   return truncated ? result + '\n\n_(输出过长，已截断)_' : result;
+}
+
+// ============================================================
+// 记忆管理卡片
+// ============================================================
+
+const MEMORY_TYPE_LABELS: Record<string, string> = {
+  preference: '偏好',
+  fact: '事实',
+  state: '状态',
+  decision: '决策',
+  relation: '关系',
+};
+
+function formatMemoryDate(iso: string): string {
+  return iso.split('T')[0];
+}
+
+/**
+ * 记忆列表卡片（含统计摘要 + 分页 + 删除按钮）
+ */
+export function buildMemoryListCard(
+  memories: Memory[],
+  page: number,
+  totalPages: number,
+  stats: Record<string, number>,
+  agentId: string,
+  userId: string,
+  typeFilter?: string,
+): Record<string, unknown> {
+  const totalCount = Object.values(stats).reduce((a, b) => a + b, 0);
+
+  // 统计摘要行
+  const statParts = (['preference', 'fact', 'state', 'decision', 'relation'] as const)
+    .map((t) => `${MEMORY_TYPE_LABELS[t]} ${stats[t] ?? 0}`)
+    .join(' | ');
+  const statsLine = `${statParts}  共 ${totalCount} 条`;
+
+  const elements: Record<string, unknown>[] = [
+    { tag: 'div', text: { tag: 'lark_md', content: statsLine } },
+    { tag: 'hr' },
+  ];
+
+  // 记忆条目
+  if (memories.length === 0) {
+    elements.push({
+      tag: 'div',
+      text: { tag: 'lark_md', content: '暂无记忆记录' },
+    });
+  } else {
+    for (let i = 0; i < memories.length; i++) {
+      const mem = memories[i];
+      const idx = (page - 1) * MEMORY_PAGE_SIZE + i + 1;
+      const typeLabel = MEMORY_TYPE_LABELS[mem.type] ?? mem.type;
+      const meta = [
+        `置信度: ${mem.confidence.toFixed(2)}`,
+        `证据: ${mem.evidenceCount} 次`,
+        `更新: ${formatMemoryDate(mem.updatedAt)}`,
+      ].join(' | ');
+
+      elements.push({
+        tag: 'div',
+        text: {
+          tag: 'lark_md',
+          content: `**${idx}. [${typeLabel}]** ${escapeMarkdown(mem.content)}\n${meta}`,
+        },
+        extra: {
+          tag: 'button',
+          text: { tag: 'plain_text', content: '删除' },
+          type: 'danger',
+          value: { action: 'memory_delete', memoryId: mem.id, userId },
+          confirm: {
+            title: { tag: 'plain_text', content: '确认删除' },
+            text: { tag: 'plain_text', content: `删除记忆: "${truncate(mem.content, 50)}"？` },
+          },
+        },
+      });
+    }
+  }
+
+  // 底部操作栏
+  elements.push({ tag: 'hr' });
+  const actions: Record<string, unknown>[] = [];
+
+  if (page > 1) {
+    actions.push({
+      tag: 'button',
+      text: { tag: 'plain_text', content: '上一页' },
+      type: 'default',
+      value: { action: 'memory_page', page: page - 1, agentId, userId, ...(typeFilter ? { type: typeFilter } : {}) },
+    });
+  }
+  if (page < totalPages) {
+    actions.push({
+      tag: 'button',
+      text: { tag: 'plain_text', content: '下一页' },
+      type: 'default',
+      value: { action: 'memory_page', page: page + 1, agentId, userId, ...(typeFilter ? { type: typeFilter } : {}) },
+    });
+  }
+  if (totalCount > 0) {
+    actions.push({
+      tag: 'button',
+      text: { tag: 'plain_text', content: '清除全部' },
+      type: 'danger',
+      value: { action: 'memory_clear_request', agentId, userId },
+    });
+  }
+
+  if (actions.length > 0) {
+    elements.push({ tag: 'action', actions });
+  }
+
+  return {
+    config: { wide_screen_mode: true },
+    header: {
+      title: { tag: 'plain_text', content: `记忆管理 — 第 ${page}/${totalPages} 页` },
+      template: 'turquoise',
+    },
+    elements,
+  };
+}
+
+/**
+ * 记忆搜索结果卡片
+ */
+export function buildMemorySearchCard(
+  results: MemorySearchResult[],
+  query: string,
+  userId: string,
+): Record<string, unknown> {
+  const elements: Record<string, unknown>[] = [
+    { tag: 'div', text: { tag: 'lark_md', content: `搜索关键词: **${escapeMarkdown(query)}**  共 ${results.length} 条结果` } },
+    { tag: 'hr' },
+  ];
+
+  if (results.length === 0) {
+    elements.push({
+      tag: 'div',
+      text: { tag: 'lark_md', content: '未找到匹配的记忆' },
+    });
+  } else {
+    for (let i = 0; i < results.length; i++) {
+      const { memory: mem, finalScore } = results[i];
+      const typeLabel = MEMORY_TYPE_LABELS[mem.type] ?? mem.type;
+      const meta = [
+        `相关度: ${finalScore.toFixed(2)}`,
+        `置信度: ${mem.confidence.toFixed(2)}`,
+        `更新: ${formatMemoryDate(mem.updatedAt)}`,
+      ].join(' | ');
+
+      elements.push({
+        tag: 'div',
+        text: {
+          tag: 'lark_md',
+          content: `**${i + 1}. [${typeLabel}]** ${escapeMarkdown(mem.content)}\n${meta}`,
+        },
+        extra: {
+          tag: 'button',
+          text: { tag: 'plain_text', content: '删除' },
+          type: 'danger',
+          value: { action: 'memory_delete', memoryId: mem.id, userId },
+          confirm: {
+            title: { tag: 'plain_text', content: '确认删除' },
+            text: { tag: 'plain_text', content: `删除记忆: "${truncate(mem.content, 50)}"？` },
+          },
+        },
+      });
+    }
+  }
+
+  return {
+    config: { wide_screen_mode: true },
+    header: {
+      title: { tag: 'plain_text', content: '记忆搜索结果' },
+      template: 'turquoise',
+    },
+    elements,
+  };
+}
+
+/**
+ * 清除全部记忆确认卡片
+ */
+export function buildMemoryClearConfirmCard(
+  count: number,
+  agentId: string,
+  userId: string,
+): Record<string, unknown> {
+  return {
+    config: { wide_screen_mode: true },
+    header: {
+      title: { tag: 'plain_text', content: '确认清除全部记忆' },
+      template: 'red',
+    },
+    elements: [
+      {
+        tag: 'div',
+        text: { tag: 'lark_md', content: `即将清除 **${count}** 条记忆，此操作不可撤销。` },
+      },
+      {
+        tag: 'action',
+        actions: [
+          {
+            tag: 'button',
+            text: { tag: 'plain_text', content: '确认清除' },
+            type: 'danger',
+            value: { action: 'memory_clear_confirm', agentId, userId },
+          },
+          {
+            tag: 'button',
+            text: { tag: 'plain_text', content: '取消' },
+            type: 'default',
+            value: { action: 'memory_cancel' },
+          },
+        ],
+      },
+    ],
+  };
+}
+
+/**
+ * 记忆操作结果卡片（删除/清除后的反馈）
+ */
+export function buildMemoryResultCard(
+  message: string,
+  success: boolean,
+): Record<string, unknown> {
+  return {
+    config: { wide_screen_mode: true },
+    header: {
+      title: { tag: 'plain_text', content: success ? '操作成功' : '操作失败' },
+      template: success ? 'green' : 'red',
+    },
+    elements: [
+      { tag: 'div', text: { tag: 'lark_md', content: message } },
+    ],
+  };
 }
