@@ -57,8 +57,25 @@ describe('getRepoIdentity', () => {
     expect(identity).toBe('github.com/org/repo.git');
   });
 
-  it('should resolve local path remote to absolute path', () => {
-    mockExecFileSync.mockReturnValue(Buffer.from('/home/ubuntu/projects/myrepo\n'));
+  it('should follow local path remote to find upstream URL', () => {
+    // 1st call: workspace origin → local path
+    // 2nd call: local path origin → GitHub URL
+    mockExecFileSync
+      .mockReturnValueOnce(Buffer.from('/home/ubuntu/projects/myrepo\n'))
+      .mockReturnValueOnce(Buffer.from('https://github.com/org/myrepo.git\n'));
+
+    const identity = getRepoIdentity('/tmp/workspaces/myrepo-feat-bbb222');
+
+    expect(identity).toBe('github.com/org/myrepo.git');
+    expect(mockExecFileSync).toHaveBeenCalledTimes(2);
+  });
+
+  it('should stop at local path if it has no remote', () => {
+    // 1st call: workspace origin → local path
+    // 2nd call: local path has no remote → throws
+    mockExecFileSync
+      .mockReturnValueOnce(Buffer.from('/home/ubuntu/projects/myrepo\n'))
+      .mockImplementationOnce(() => { throw new Error('no remote'); });
 
     const identity = getRepoIdentity('/tmp/workspaces/myrepo-feat-bbb222');
 
@@ -109,20 +126,39 @@ describe('getRepoIdentity', () => {
   });
 
   it('should handle remote URL normalization failure gracefully', () => {
-    // An unparseable remote URL — resolved relative to workDir
-    mockExecFileSync.mockReturnValue(Buffer.from('not-a-valid-url\n'));
+    // Unparseable remote → treated as local path → follow fails (not a git repo)
+    mockExecFileSync
+      .mockReturnValueOnce(Buffer.from('not-a-valid-url\n'))
+      .mockImplementationOnce(() => { throw new Error('not a git repo'); });
 
     const identity = getRepoIdentity('/tmp/workspaces/weird-repo');
 
-    // Falls through to path resolution: resolve(workDir, remoteUrl)
     expect(identity).toBe('/tmp/workspaces/weird-repo/not-a-valid-url');
   });
 
   it('should resolve relative remote path against workDir, not process.cwd', () => {
-    mockExecFileSync.mockReturnValue(Buffer.from('../other-repo\n'));
+    // Relative path → resolved against workDir → follow that path
+    mockExecFileSync
+      .mockReturnValueOnce(Buffer.from('../other-repo\n'))
+      .mockImplementationOnce(() => { throw new Error('not a git repo'); });
 
     const identity = getRepoIdentity('/tmp/workspaces/myrepo-feat-aaa111');
 
     expect(identity).toBe('/tmp/workspaces/other-repo');
+  });
+
+  it('should not loop on circular local references', () => {
+    // repo-a → repo-b → repo-a (circular)
+    mockExecFileSync.mockImplementation((_cmd, args) => {
+      const dir = (args as string[])[1]; // -C <dir>
+      if (dir === '/repos/repo-a') return Buffer.from('/repos/repo-b\n');
+      if (dir === '/repos/repo-b') return Buffer.from('/repos/repo-a\n');
+      throw new Error('unexpected dir');
+    });
+
+    const identity = getRepoIdentity('/repos/repo-a');
+
+    // Should stop at the circular ref, not hang
+    expect(identity).toBe('/repos/repo-a');
   });
 });
