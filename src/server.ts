@@ -1,3 +1,4 @@
+import type { Server } from 'node:http';
 import express from 'express';
 import * as lark from '@larksuiteoapi/node-sdk';
 import { config, isMultiBotMode } from './config.js';
@@ -5,6 +6,9 @@ import { logger } from './utils/logger.js';
 import { createEventDispatcher, createCardActionHandler } from './feishu/event-handler.js';
 import { accountManager } from './feishu/multi-account.js';
 import { handleOAuthCallback, isOAuthConfigured } from './feishu/oauth.js';
+
+/** HTTP 服务器实例（用于 graceful shutdown 时关闭释放端口） */
+let httpServer: Server | undefined;
 
 /**
  * 启动服务
@@ -85,7 +89,7 @@ function startWebhookMode(eventDispatcher: lark.EventDispatcher, port: number): 
     lark.adaptExpress(cardHandler, { autoChallenge: true }),
   );
 
-  app.listen(port, () => {
+  httpServer = app.listen(port, () => {
     logger.info({ port, mode: 'webhook' }, 'Server started (HTTP Webhook mode)');
     logger.info(`  Webhook URL: http://localhost:${port}/feishu/webhook`);
     logger.info(`  Card action URL: http://localhost:${port}/feishu/card`);
@@ -131,7 +135,7 @@ function startWebSocketMode(eventDispatcher: lark.EventDispatcher, port: number)
     lark.adaptExpress(cardHandler, { autoChallenge: true }),
   );
 
-  app.listen(port, () => {
+  httpServer = app.listen(port, () => {
     logger.info({ port, mode: 'websocket' }, 'Health check + card action server started');
     logger.info(`  Card action URL: http://localhost:${port}/feishu/card`);
   });
@@ -188,7 +192,19 @@ function startMultiBotWebSocketMode(_sharedDispatcher: lark.EventDispatcher, por
     lark.adaptExpress(cardHandler, { autoChallenge: true }),
   );
 
-  app.listen(port, () => {
+  httpServer = app.listen(port, () => {
     logger.info({ port, mode: 'multi-bot-websocket', accounts: accounts.length }, 'Multi-bot server started');
+  });
+}
+
+/**
+ * 关闭 HTTP 服务器（释放端口），用于 graceful shutdown
+ */
+export function closeServer(): Promise<void> {
+  return new Promise((resolve) => {
+    if (!httpServer) { resolve(); return; }
+    httpServer.close(() => resolve());
+    // 如果 close 超过 2 秒还没完成，强制继续
+    setTimeout(resolve, 2000);
   });
 }
