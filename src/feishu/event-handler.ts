@@ -1457,17 +1457,27 @@ async function executeDirectTask(
   let threadId: string | undefined = eventThreadId;
 
   try {
-    // 快速确认：用小模型立即生成自然短回复，与主流程并行
-    // fire-and-forget，不阻塞主流程
-    void generateQuickAck(rawPrompt).then((ackText) => {
-      if (!ackText) return;
-      if (threadReplyMsgId) {
-        return feishuClient.replyTextInThread(threadReplyMsgId, ackText);
+    // 快速确认：用小模型判断消息类型并生成短回复
+    // 纯问候类消息直接回复后跳过 Claude，其他类型照常走完整查询
+    const quickAck = await generateQuickAck(rawPrompt);
+    if (quickAck) {
+      try {
+        if (threadReplyMsgId) {
+          await feishuClient.replyTextInThread(threadReplyMsgId, quickAck.text);
+        } else {
+          await feishuClient.replyText(messageId, quickAck.text);
+        }
+      } catch (err) {
+        logger.warn({ err }, 'Quick ack send failed (non-blocking)');
       }
-      return feishuClient.replyText(messageId, ackText);
-    }).catch((err) => {
-      logger.warn({ err }, 'Quick ack send failed (non-blocking)');
-    });
+
+      // 纯问候消息：已回复，跳过 Claude 完整查询
+      if (quickAck.type === 'greeting') {
+        logger.info({ text: quickAck.text }, 'Greeting detected, skipping Claude query');
+        sessionManager.setStatus(chatId, userId, 'idle', agentId);
+        return;
+      }
+    }
 
     // Thread session 管理（话题内独立对话）
     let threadSession = eventThreadId

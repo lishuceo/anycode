@@ -31,36 +31,50 @@ function getClient(): Promise<import('openai').default | null> {
   return clientReady;
 }
 
-const SYSTEM_PROMPT = `你是一个AI助手。用户刚发来一条消息，你需要生成一句简短的中文口语回应，表示你收到了消息并开始处理。
+const SYSTEM_PROMPT = `你是一个AI助手。用户刚发来一条消息，你需要：
+1. 判断消息类型
+2. 生成一句简短的中文口语回应
 
-规则：
+请严格按以下 JSON 格式回复，不要输出任何其他内容：
+{"type":"greeting","text":"你好呀"}
+
+type 取值规则：
+- "greeting"：消息是**纯问候/寒暄**，除了打招呼没有任何实质内容。如：你好、嗨、早、在吗、哈喽
+- "other"：消息包含提问、指令、请求或任何实质内容，即使开头有问候也算 other。如：你好帮我看个bug、你是谁、帮我查下PR
+
+text 规则：
 - 只回复一句话，不超过15个字
 - 自然随意的口语风格，像同事之间说话
 - 不要重复用户的话
 - 不要使用emoji
 - 不要使用"您"，用"你"
 - 不要说"请稍候"这种客服腔
-- 绝对不要回答用户的问题，你的角色只是"确认收到"，真正的回答会由后续流程生成
-- 先判断消息类型：问候/闲聊、提问、还是指令，再选择对应风格
 - 每次回复要有变化，不要总用同一句话
 
-消息类型和对应风格（不要原样照抄，用自己的话）：
-问候/闲聊类（你好、嗨、早、在吗 等）：自然地打招呼回应，如：你好呀、嗨、在的、哈喽、早呀、嘿 在呢
-提问类：嗯让我看看、这个我查一下、我先了解下情况、稍等我看看、容我想想、好问题 我查下
-指令类：收到 这就弄、好嘞马上搞、OK我去改、没问题 马上、了解 着手弄、好的 开搞`;
+不同 type 的 text 风格（不要原样照抄，用自己的话）：
+greeting：自然地打招呼回应，如：你好呀、嗨、在的、哈喽、早呀、嘿 在呢
+other：确认收到，如：收到 这就弄、好嘞马上搞、嗯让我看看、这个我查一下`;
+
+/** Quick ack result with message classification */
+export interface QuickAckResult {
+  /** 回复文本 */
+  text: string;
+  /** 消息分类: greeting = 纯问候（可跳过 Claude）, other = 需要 Claude 处理 */
+  type: 'greeting' | 'other';
+}
 
 /**
- * 用小模型生成一句自然的快速确认回复。
+ * 用小模型生成一句自然的快速确认回复，同时返回消息分类。
  * 带超时保护，超时返回 null。
  *
  * @param userMessage 用户消息（截取前 200 字）
  * @param personaHint 可选的角色提示（从 persona 文件提取的关键描述）
- * @returns 短回复文本，或 null（超时/失败/未配置）
+ * @returns QuickAckResult（含分类和文本），或 null（超时/失败/未配置）
  */
 export async function generateQuickAck(
   userMessage: string,
   personaHint?: string,
-): Promise<string | null> {
+): Promise<QuickAckResult | null> {
   if (!config.quickAck.enabled) return null;
 
   const client = await getClient();
@@ -78,7 +92,7 @@ export async function generateQuickAck(
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userMessage.slice(0, 200) },
         ],
-        max_tokens: 30,
+        max_tokens: 60,
         temperature: 0.8,
         // DashScope extension: disable thinking chain for Qwen3 reasoning models
         enable_thinking: false,
@@ -94,15 +108,43 @@ export async function generateQuickAck(
       return null;
     }
 
-    const text = result.choices?.[0]?.message?.content?.trim();
-    if (text) {
-      logger.info({ text }, 'Quick ack generated');
-    }
-    return text || null;
+    const raw = result.choices?.[0]?.message?.content?.trim();
+    if (!raw) return null;
+
+    return parseQuickAckResponse(raw);
   } catch (err) {
     logger.warn({ err }, 'Quick ack generation failed');
     return null;
   }
+}
+
+/**
+ * Parse the JSON response from the quick-ack model.
+ * Falls back to type=other with raw text if JSON parsing fails.
+ */
+export function parseQuickAckResponse(raw: string): QuickAckResult | null {
+  try {
+    // Try to extract JSON from the response (model might wrap in markdown code blocks)
+    const jsonMatch = raw.match(/\{[^}]+\}/);
+    if (jsonMatch) {
+      const parsed = JSON.parse(jsonMatch[0]);
+      const text = typeof parsed.text === 'string' ? parsed.text.trim() : '';
+      const type = parsed.type === 'greeting' ? 'greeting' : 'other';
+      if (text) {
+        logger.info({ text, type }, 'Quick ack generated');
+        return { text, type };
+      }
+    }
+  } catch {
+    // JSON parse failed — fall through
+  }
+
+  // Fallback: treat as "other" with raw text (backwards compatible)
+  if (raw) {
+    logger.info({ text: raw, type: 'other', fallback: true }, 'Quick ack generated (fallback)');
+    return { text: raw, type: 'other' };
+  }
+  return null;
 }
 
 /**
