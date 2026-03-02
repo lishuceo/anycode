@@ -1178,12 +1178,7 @@ async function executeClaudeTask(
         'Skipping resume: cwd mismatch (workspace switched), starting fresh session',
       );
     }
-    if (images?.length && canResume) {
-      logger.info(
-        { sessionKey, threadId, imageCount: images.length },
-        'Skipping resume: image message uses AsyncIterable prompt (incompatible with resume)',
-      );
-    }
+    // NOTE: 图片消息（AsyncIterable prompt）也支持 resume，SDK 的 resume 是 CLI 参数与 prompt 投递方式正交
 
     // readOnly: agent 配置优先，如果 agent 是 readonly 则强制只读；
     // 否则回退到 owner 检查（dev agent 中非 owner 也是只读）
@@ -1216,8 +1211,7 @@ async function executeClaudeTask(
       settingSources: agentCfg?.settingSources,
       toolAllow: agentCfg?.toolAllow,
       toolDeny: agentCfg?.toolDeny,
-      // 有图片时不 resume（AsyncIterable prompt 模式与 resume 不兼容）
-      resumeSessionId: images?.length ? undefined : (canResume ? activeConversationId : undefined),
+      resumeSessionId: canResume ? activeConversationId : undefined,
       storedSystemPromptHash: activePromptHash,
       onProgress,
       onWorkspaceChanged: isFirstMessage ? onWorkspaceChanged : undefined,
@@ -1494,8 +1488,7 @@ async function executeDirectTask(
     const activePromptHash = eventThreadId ? threadSession?.systemPromptHash : session.systemPromptHash;
     const canResume = activeConversationId
       && (!activeConversationCwd || activeConversationCwd === workingDir);
-    // 有图片时不 resume（AsyncIterable 与 resume 不兼容）
-    const resumeSessionId = (images?.length || !canResume) ? undefined : activeConversationId;
+    const resumeSessionId = canResume ? activeConversationId : undefined;
 
     // 每次 @bot 都注入最新聊天历史（resume 时通过 afterMsgId 去重，只注入新消息）
     let effectivePrompt = rawPrompt;
