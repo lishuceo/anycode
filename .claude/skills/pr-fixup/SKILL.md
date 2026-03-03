@@ -24,6 +24,39 @@ argument-hint: "[PR number, default: current branch's PR]"
 
 ---
 
+### Step 0: 检查 Merge 冲突
+
+每轮开始前先检查 PR 是否有 merge 冲突：
+
+```bash
+gh pr view PR_NUMBER --json mergeable,mergeStateStatus -q '{mergeable: .mergeable, state: .mergeStateStatus}'
+```
+
+**判断逻辑：**
+
+| mergeable | 处理 |
+|-----------|------|
+| `MERGEABLE` | 无冲突，继续下一步 |
+| `CONFLICTING` | 有冲突，尝试自动 rebase |
+| `UNKNOWN` | GitHub 还在计算，等待 10 秒后重查（最多 3 次） |
+
+**自动 rebase 流程：**
+
+1. 确定 base branch：`gh pr view PR_NUMBER --json baseRefName -q .baseRefName`
+2. 执行 rebase：
+```bash
+git fetch origin BASE_BRANCH
+git rebase origin/BASE_BRANCH
+```
+3. 如果 rebase **成功**（无冲突）：
+   - `git push --force-with-lease` 更新 PR
+   - 输出 "🔄 已自动 rebase 解决冲突，等待 CI 重新运行..."
+   - 回到 Step 1
+4. 如果 rebase **失败**（有无法自动解决的冲突）：
+   - `git rebase --abort` 取消
+   - 输出冲突文件列表，提示用户手动解决
+   - **停止循环**，不要尝试自动合并冲突
+
 ### Step 1: 等待所有 CI checks 完成
 
 轮询 PR 的所有 status checks：
