@@ -553,6 +553,74 @@ export function buildToolProgressCard(
   };
 }
 
+/**
+ * 将文本截断到指定 UTF-8 字节上限，保留尾部（最新内容）。
+ * 超限时从头部截断，保证完整 UTF-8 字符边界。
+ */
+function truncateToByteLimit(text: string, maxBytes: number): { text: string; truncated: boolean } {
+  // 快速路径：byteLength 是 O(n) 扫描但不分配 Buffer
+  if (Buffer.byteLength(text, 'utf-8') <= maxBytes) return { text, truncated: false };
+
+  const buf = Buffer.from(text, 'utf-8');
+  // 从尾部保留 maxBytes，找到合法的 UTF-8 字符起始位置
+  let start = buf.length - maxBytes;
+  // UTF-8 continuation bytes: 10xxxxxx (0x80-0xBF), 跳到下一个 leading byte
+  while (start < buf.length && (buf[start] & 0xc0) === 0x80) start++;
+  return { text: buf.subarray(start).toString('utf-8'), truncated: true };
+}
+
+/** 飞书卡片 content 字节上限（留 2KB 给 JSON 结构开销） */
+const CARD_TEXT_MAX_BYTES = 28000;
+
+/** 构建累积文本内容卡片（原地更新，显示 agent 输出文本） */
+export function buildTextContentCard(
+  text: string,
+  turnCount: number,
+  completed: boolean = false,
+): Record<string, unknown> {
+  const { text: displayText, truncated } = truncateToByteLimit(text, CARD_TEXT_MAX_BYTES);
+
+  const content = truncated
+    ? `_(前部分内容已省略)_\n\n${displayText}`
+    : displayText;
+
+  const headerTitle = completed
+    ? '💬 Agent 输出'
+    : '💬 Agent 输出 - 生成中';
+  const headerTemplate = completed ? 'turquoise' : 'wathet';
+
+  const footerParts: string[] = [];
+  if (!completed) footerParts.push('⏳ 生成中');
+  footerParts.push(`🔄 ${turnCount} 轮`);
+
+  return {
+    config: { wide_screen_mode: true },
+    header: {
+      title: { tag: 'plain_text', content: headerTitle },
+      template: headerTemplate,
+    },
+    elements: [
+      {
+        tag: 'div',
+        text: {
+          tag: 'lark_md',
+          content: content || '_(暂无输出)_',
+        },
+      },
+      { tag: 'hr' },
+      {
+        tag: 'note',
+        elements: [
+          {
+            tag: 'plain_text',
+            content: footerParts.join(' | '),
+          },
+        ],
+      },
+    ],
+  };
+}
+
 /** 构建单轮 turn 消息卡片（逐条展示） */
 export function buildTurnCard(turn: TurnInfo): Record<string, unknown> {
   const parts: string[] = [];

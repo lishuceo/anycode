@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildProgressCard, buildResultCard, buildStreamingCard, buildPipelineCard, buildStatusCard, buildTurnCard, buildToolProgressCard, buildOverviewCard, buildSimpleResultCard } from '../message-builder.js';
+import { buildProgressCard, buildResultCard, buildStreamingCard, buildPipelineCard, buildStatusCard, buildTurnCard, buildToolProgressCard, buildTextContentCard, buildOverviewCard, buildSimpleResultCard } from '../message-builder.js';
 import type { TurnInfo, ToolCallInfo, ActivityStatus } from '../../claude/types.js';
 
 describe('buildProgressCard', () => {
@@ -500,5 +500,52 @@ describe('buildToolProgressCard', () => {
     const card = buildToolProgressCard([], 1) as any;
     const body = card.elements[0].text.content as string;
     expect(body).toContain('_(无工具调用)_');
+  });
+});
+
+describe('buildTextContentCard', () => {
+  it('should show text with wathet header when in progress', () => {
+    const card = buildTextContentCard('这是 agent 的输出', 3) as any;
+    expect(card.header.template).toBe('wathet');
+    expect(card.header.title.content).toContain('生成中');
+    const body = card.elements[0].text.content as string;
+    expect(body).toBe('这是 agent 的输出');
+    const note = card.elements[2].elements[0].content as string;
+    expect(note).toContain('⏳ 生成中');
+    expect(note).toContain('3 轮');
+  });
+
+  it('should show turquoise header when completed', () => {
+    const card = buildTextContentCard('最终结果', 5, true) as any;
+    expect(card.header.template).toBe('turquoise');
+    expect(card.header.title.content).toBe('💬 Agent 输出');
+    expect(card.header.title.content).not.toContain('生成中');
+    const note = card.elements[2].elements[0].content as string;
+    expect(note).not.toContain('⏳');
+    expect(note).toContain('5 轮');
+  });
+
+  it('should not truncate short text', () => {
+    const shortText = '短文本内容';
+    const card = buildTextContentCard(shortText, 1) as any;
+    const body = card.elements[0].text.content as string;
+    expect(body).toBe(shortText);
+    expect(body).not.toContain('已省略');
+  });
+
+  it('should truncate long text keeping tail and adding prefix', () => {
+    const longText = '前'.repeat(5000) + '后'.repeat(5000);
+    const card = buildTextContentCard(longText, 2) as any;
+    const body = card.elements[0].text.content as string;
+    expect(body).toContain('已省略');
+    expect(body).toContain('后后后');
+    const serialized = JSON.stringify(card);
+    expect(Buffer.byteLength(serialized, 'utf-8')).toBeLessThan(30720);
+  });
+
+  it('should show placeholder for empty text', () => {
+    const card = buildTextContentCard('', 1) as any;
+    const body = card.elements[0].text.content as string;
+    expect(body).toContain('暂无输出');
   });
 });
