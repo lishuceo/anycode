@@ -6,7 +6,7 @@ import { taskQueue } from '../session/queue.js';
 import { claudeExecutor } from '../claude/executor.js';
 import { DEFAULT_IMAGE_PROMPT } from '../claude/types.js';
 import type { TurnInfo, ToolCallInfo, ImageAttachment } from '../claude/types.js';
-import { buildResultCard, buildStatusCard, buildCancelledCard, buildPipelineCard, buildPipelineConfirmCard, buildProgressCard, buildToolProgressCard, buildSimpleResultCard } from './message-builder.js';
+import { buildResultCard, buildStatusCard, buildCancelledCard, buildPipelineCard, buildPipelineConfirmCard, buildProgressCard, buildToolProgressCard, buildTextContentCard, buildSimpleResultCard } from './message-builder.js';
 import { TOTAL_PHASES } from '../pipeline/types.js';
 import { feishuClient, runWithAccountId } from './client.js';
 import { config, isMultiBotMode } from '../config.js';
@@ -1130,16 +1130,48 @@ async function executeClaudeTask(
 
   // 构造逐条 turn 回调
   // 策略：缓冲最后一个 turn，收到新 turn 时将前一个 turn 的 tool calls 刷入累积器，
-  // 原地更新进度卡片。结束时最后一个 turn 合并进结果卡片。
+  // 原地更新进度卡片。文本内容同步刷入文本卡片。结束时最后一个 turn 合并进结果卡片。
   let turnCount = 0;
   let pendingTurn: TurnInfo | undefined;
   const accumulatedToolCalls: ToolCallInfo[] = [];
+  let accumulatedText = '';
+  let textCardMsgId: string | undefined;
+  let textCardFailed = false;
+
+  /** 将文本追加到累积文本 */
+  const appendText = (text: string) => {
+    accumulatedText += (accumulatedText ? '\n\n' : '') + text;
+  };
+
+  /** 追加文本（可选）并创建/更新文本卡片 */
+  const flushTextCard = async (extraText?: string, completed: boolean = false) => {
+    if (extraText) appendText(extraText);
+    if (!accumulatedText || !threadReplyMsgId || textCardFailed) return;
+    try {
+      if (!textCardMsgId) {
+        textCardMsgId = await feishuClient.replyCardInThread(
+          threadReplyMsgId,
+          buildTextContentCard(accumulatedText, turnCount, completed),
+        ) ?? undefined;
+        if (!textCardMsgId) textCardFailed = true;
+      } else {
+        await feishuClient.updateCard(
+          textCardMsgId,
+          buildTextContentCard(accumulatedText, turnCount, completed),
+        );
+      }
+    } catch (err) {
+      logger.warn({ err }, 'Failed to update text content card');
+      textCardFailed = true;
+    }
+  };
 
   const onTurn = async (turn: TurnInfo) => {
     turnCount = turn.turnIndex;
-    // 将前一个 turn 的 tool calls 刷入累积器，原地更新进度卡片
+    // 将前一个 turn 的 tool calls 和文本刷入累积器，原地更新进度卡片和文本卡片
     if (pendingTurn) {
       accumulatedToolCalls.push(...pendingTurn.toolCalls);
+      if (pendingTurn.textContent) appendText(pendingTurn.textContent);
       if (progressCardMsgId && !progressCardFailed) {
         try {
           await feishuClient.updateCard(
@@ -1151,6 +1183,7 @@ async function executeClaudeTask(
           progressCardFailed = true;
         }
       }
+      await flushTextCard();
     }
     // 缓冲当前 turn
     pendingTurn = turn;
@@ -1313,6 +1346,9 @@ async function executeClaudeTask(
         );
       }
 
+      // 将最后一个 turn 的文本也刷入文本卡片并标记完成
+      await flushTextCard(pendingTurn?.textContent, true);
+
       await sendResultCard(
         prompt, restartResult, totalDurationMs, totalCostUsd,
         threadReplyMsgId, chatId, threadReplyMsgId ? pendingTurn : undefined, turnCount,
@@ -1369,11 +1405,17 @@ async function executeClaudeTask(
 
     // 进度卡片切换为完成态
     if (progressCardMsgId) {
+      const allToolCalls = pendingTurn
+        ? [...accumulatedToolCalls, ...pendingTurn.toolCalls]
+        : accumulatedToolCalls;
       await feishuClient.updateCard(
         progressCardMsgId,
-        buildToolProgressCard(accumulatedToolCalls, turnCount, undefined, true),
+        buildToolProgressCard(allToolCalls, turnCount, undefined, true),
       );
     }
+
+    // 将最后一个 turn 的文本也刷入文本卡片并标记完成
+    await flushTextCard(pendingTurn?.textContent, true);
 
     await sendResultCard(
       prompt, result, result.durationMs, result.costUsd,
@@ -1399,6 +1441,8 @@ async function executeClaudeTask(
         buildToolProgressCard(allToolCalls, turnCount, undefined, true),
       ).catch(() => {});
     }
+    // 文本卡片 best-effort 刷新
+    await flushTextCard(pendingTurn?.textContent, true).catch(() => {});
     const errorReply = `❌ 执行出错: ${(err as Error).message}`;
     if (threadReplyMsgId) {
       await feishuClient.replyTextInThread(threadReplyMsgId, errorReply);
