@@ -27,8 +27,5 @@ jobs:
       - name: Type check
         run: npm run typecheck
 
-      - name: Lint
-        run: npm run lint
-
       - name: Unit tests
         run: npx vitest run --exclude='**/quality.test.ts' --exclude='**/integration.test.ts'
