@@ -667,10 +667,10 @@ describe('PipelineOrchestrator', () => {
     });
 
     it('should expose current session key via getCurrentSessionKey()', async () => {
-      let capturedKey: string | undefined;
+      let _capturedKey: string | undefined;
 
       mockExecute.mockImplementation(async (opts) => {
-        capturedKey = opts.sessionKey;
+        _capturedKey = opts.sessionKey;
         return makeResult({ output: 'plan' });
       });
 

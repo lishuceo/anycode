@@ -219,7 +219,7 @@ describe('ClaudeExecutor', () => {
   describe('killSessionsForChat', () => {
     it('should kill all session key patterns for a chat', async () => {
       // 直接往 runningQueries 注入 mock entries 来测试 killSessionsForChat
-      const mockClose = vi.fn();
+      const _mockClose = vi.fn();
       const mockQuery1 = { close: vi.fn() };
       const mockQuery2 = { close: vi.fn() };
       const mockQuery3 = { close: vi.fn() };

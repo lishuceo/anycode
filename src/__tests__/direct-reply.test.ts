@@ -122,10 +122,10 @@ describe('createDiscussionMcpServer', () => {
 describe('ReplyMode type', () => {
   it('is a valid union type', async () => {
     // Import the type to verify it exists and is properly defined
-    const types = await import('../agent/types.js');
+    const _types = await import('../agent/types.js');
     // Verify the type system works by constructing valid values
-    const direct: typeof types extends { ReplyMode: infer R } ? R : 'direct' = 'direct';
-    const thread: typeof types extends { ReplyMode: infer R } ? R : 'thread' = 'thread';
+    const direct: typeof _types extends { ReplyMode: infer R } ? R : 'direct' = 'direct';
+    const thread: typeof _types extends { ReplyMode: infer R } ? R : 'thread' = 'thread';
     expect(direct).toBe('direct');
     expect(thread).toBe('thread');
   });

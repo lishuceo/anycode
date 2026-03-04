@@ -108,7 +108,7 @@ describe('HybridSearch', () => {
     });
 
     it('should include recency decay in scoring', async () => {
-      const mem = store.create(makeInput({ content: 'recent and old test data' }));
+      const _mem = store.create(makeInput({ content: 'recent and old test data' }));
 
       const results = await search.search({
         query: 'recent',

@@ -186,7 +186,7 @@ vi.mock('../workspace/manager.js', () => ({
   setupWorkspace: vi.fn(),
 }));
 
-import { ChatBotRegistry, chatBotRegistry } from '../feishu/bot-registry.js';
+import { chatBotRegistry } from '../feishu/bot-registry.js';
 
 describe('Bot event handlers', () => {
   let handleBotAddedEvent: (data: Record<string, unknown>, accountId: string) => void;

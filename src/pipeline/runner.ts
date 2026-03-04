@@ -8,7 +8,6 @@ import { PHASE_META, TOTAL_PHASES } from './types.js';
 import {
   buildPipelineConfirmCard,
   buildPipelineCard,
-  buildCancelledCard,
   buildInterruptedCard,
   buildGreetingCardReady,
 } from '../feishu/message-builder.js';
