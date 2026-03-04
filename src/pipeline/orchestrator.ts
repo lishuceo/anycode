@@ -2,7 +2,6 @@ import { claudeExecutor } from '../claude/executor.js';
 import { logger } from '../utils/logger.js';
 import type { ClaudeResult } from '../claude/types.js';
 import type {
-  PipelinePhase,
   PipelineState,
   PipelineCallbacks,
   PipelineResult,

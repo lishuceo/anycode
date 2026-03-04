@@ -88,11 +88,11 @@ describe('AccountManager', () => {
 describe('RequestContext', () => {
   it('should create context with getFeishuClient', async () => {
     // Initialize accountManager first
-    const { AccountManager } = await import('../feishu/multi-account.js');
+    const { AccountManager: _AccountManager } = await import('../feishu/multi-account.js');
     const { accountManager } = await import('../feishu/multi-account.js');
 
     // Use single bot mode for simplicity
-    (accountManager as InstanceType<typeof AccountManager>).initializeSingleBot('cli_x', 'sec_x');
+    (accountManager as InstanceType<typeof _AccountManager>).initializeSingleBot('cli_x', 'sec_x');
 
     const { createRequestContext } = await import('../feishu/request-context.js');
 

@@ -117,7 +117,7 @@ describe('场景2: 事实纠正 (supersede)', () => {
       tags: ['runtime', 'nodejs'],
     }));
 
-    const newFact = store.supersede(oldFact.id, mem({
+    const _newFact = store.supersede(oldFact.id, mem({
       type: 'fact',
       content: '项目已升级到 Node.js 20',
       tags: ['runtime', 'nodejs'],
