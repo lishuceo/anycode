@@ -1,4 +1,4 @@
-import { readdirSync, statSync, readFileSync, openSync, readSync, closeSync } from 'node:fs';
+import { readdirSync, statSync, readFileSync, openSync, readSync, closeSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { config } from '../config.js';
 import { logger } from '../utils/logger.js';
@@ -41,6 +41,8 @@ function discoverLocalProjects(projectsDir: string): Array<{ name: string; descr
     } catch {
       continue;
     }
+    // 跳过非 git 仓库目录（如编译产物 target/、build/ 等）
+    if (!existsSync(join(dirPath, '.git'))) continue;
     // 尝试从 package.json 读取 description
     let description = '';
     try {
@@ -249,7 +251,7 @@ export async function routeWorkspace(
     'Routing decision',
   );
 
-  // 验证 use_existing 的 workdir 存在
+  // 验证 use_existing 的 workdir 存在且是 git 仓库
   if (decision.decision === 'use_existing') {
     if (!decision.workdir) {
       logger.warn({ chatId, userId }, 'use_existing decision missing workdir, using fallback');
@@ -263,6 +265,15 @@ export async function routeWorkspace(
         decision: 'use_default',
         workdir: getFallbackWorkdir(),
         warning: `⚠️ 路由目标目录 \`${decision.workdir}\` 不存在，已回退到默认目录`,
+      };
+    }
+    // 验证目标目录是 git 仓库（防止匹配到编译产物等非仓库目录）
+    if (!existsSync(join(decision.workdir, '.git'))) {
+      logger.warn({ chatId, userId, workdir: decision.workdir }, 'use_existing workdir is not a git repository');
+      return {
+        decision: 'use_default',
+        workdir: getFallbackWorkdir(),
+        warning: `⚠️ 路由目标目录 \`${decision.workdir}\` 不是 git 仓库，已回退到默认目录`,
       };
     }
   }
