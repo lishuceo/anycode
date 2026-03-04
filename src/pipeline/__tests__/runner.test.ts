@@ -1,8 +1,7 @@
-import { describe, it, expect, vi, afterEach, afterAll, beforeAll } from 'vitest';
+import { describe, it, expect, vi, afterEach, afterAll } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import type { PipelineStore } from '../store.js';
 
 // Mock all external dependencies
 vi.mock('../../utils/logger.js', () => ({

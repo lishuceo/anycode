@@ -50,11 +50,11 @@ vi.mock('../../session/manager.js', () => ({
 
 vi.mock('../../session/queue.js', () => {
   // 简化版 TaskQueue 用于测试
-  const queues = new Map<string, Array<{ resolve: (v: string) => void; reject: (e: Error) => void }>>();
+  const _queues = new Map<string, Array<{ resolve: (v: string) => void; reject: (e: Error) => void }>>();
   return {
     taskQueue: {
       enqueue: vi.fn((_chatId: string, _userId: string, _msg: string, _msgId: string) => {
-        return new Promise<string>((resolve, reject) => {
+        return new Promise<string>((_resolve, _reject) => {
           // 不实际入队，测试中直接由 processQueue 驱动
         });
       }),

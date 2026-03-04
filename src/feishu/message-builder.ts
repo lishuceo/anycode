@@ -3,7 +3,7 @@
  * 用于构建执行状态卡片、结果卡片等
  */
 
-import { PHASE_META, TOTAL_PHASES } from '../pipeline/types.js';
+import { PHASE_META } from '../pipeline/types.js';
 import type { PipelinePhase } from '../pipeline/types.js';
 import type { TurnInfo, ToolCallInfo } from '../claude/types.js';
 import type { Memory, MemorySearchResult } from '../memory/types.js';

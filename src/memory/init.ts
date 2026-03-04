@@ -13,7 +13,7 @@ import type { EmbeddingProvider } from './embeddings.js';
 let memoryStore: MemoryStore | null = null;
 let hybridSearch: HybridSearch | null = null;
 let memoryDb: MemoryDatabase | null = null;
-let embeddingProvider: EmbeddingProvider | null = null;
+let _embeddingProvider: EmbeddingProvider | null = null;
 let initialized = false;
 
 /**
@@ -37,7 +37,7 @@ export async function initializeMemory(): Promise<void> {
       )
     : new NoopEmbeddingProvider(config.memory.embeddingDimension);
 
-  embeddingProvider = ep;
+  _embeddingProvider = ep;
 
   memoryDb = await MemoryDatabase.create(
     config.memory.dbPath,
@@ -107,6 +107,6 @@ export function closeMemory(): void {
   }
   memoryStore = null;
   hybridSearch = null;
-  embeddingProvider = null;
+  _embeddingProvider = null;
   initialized = false;
 }

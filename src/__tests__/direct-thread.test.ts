@@ -392,7 +392,7 @@ describe('formatHistoryMessages total budget guard', () => {
 // and per-thread vs global resume strategy.
 // ============================================================
 
-const mockExecute = vi.fn();
+const _mockExecute = vi.fn();
 const mockSessionGetOrCreate = vi.fn();
 const mockGetThreadSession = vi.fn();
 const mockUpsertThreadSession = vi.fn();
