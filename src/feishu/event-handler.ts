@@ -1346,8 +1346,8 @@ async function executeClaudeTask(
         );
       }
 
-      // 将最后一个 turn 的文本也刷入文本卡片并标记完成
-      await flushTextCard(pendingTurn?.textContent, true);
+      // 文本卡片标记完成（最后一个 turn 的文本由结果卡片展示，不重复追加）
+      await flushTextCard(undefined, true);
 
       await sendResultCard(
         prompt, restartResult, totalDurationMs, totalCostUsd,
@@ -1414,8 +1414,8 @@ async function executeClaudeTask(
       );
     }
 
-    // 将最后一个 turn 的文本也刷入文本卡片并标记完成
-    await flushTextCard(pendingTurn?.textContent, true);
+    // 文本卡片标记完成（最后一个 turn 的文本由结果卡片展示，不重复追加）
+    await flushTextCard(undefined, true);
 
     await sendResultCard(
       prompt, result, result.durationMs, result.costUsd,
