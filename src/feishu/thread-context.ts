@@ -3,7 +3,7 @@ import { basename } from 'node:path';
 import { config } from '../config.js';
 import { logger } from '../utils/logger.js';
 import { sessionManager } from '../session/manager.js';
-import { routeWorkspace } from '../claude/router.js';
+import { routeWorkspace, type RoutingDecision } from '../claude/router.js';
 import { isAutoWorkspacePath, ensureIsolatedWorkspace } from '../workspace/isolation.js';
 import { setupWorkspace } from '../workspace/manager.js';
 import { isOwner } from '../utils/security.js';
@@ -55,6 +55,25 @@ export interface ResolveParams {
   agentId?: string;
   /** 是否为 /dev pipeline 模式（存入 routing state，clarification 后恢复） */
   pipelineMode?: boolean;
+}
+
+/**
+ * 根据路由决策创建或隔离工作区
+ *
+ * clone_remote: 通过 setupWorkspace 从 bare cache 克隆到隔离工作区
+ * use_existing / use_default: 通过 ensureIsolatedWorkspace 隔离本地仓库
+ */
+function resolveWorkdir(
+  decision: RoutingDecision,
+  isolationMode: 'readonly' | 'writable',
+): { workingDir: string; warning?: string } {
+  if (decision.decision === 'clone_remote' && decision.repo_url) {
+    const result = setupWorkspace({ repoUrl: decision.repo_url, mode: isolationMode });
+    return { workingDir: result.workspacePath, warning: result.warning };
+  }
+  const workingDir = decision.workdir || config.claude.defaultWorkDir;
+  const isolated = ensureIsolatedWorkspace(workingDir, isolationMode);
+  return { workingDir: isolated.workingDir, warning: isolated.warning };
 }
 
 /**
@@ -158,17 +177,9 @@ export async function resolveThreadContext(params: ResolveParams): Promise<Resol
       warning = decision.warning;
       try {
         const isolationMode = isOwner(userId) ? 'writable' : (decision.mode || 'readonly');
-        if (decision.decision === 'clone_remote' && decision.repo_url) {
-          // clone_remote: 通过 setupWorkspace 克隆远程仓库到隔离工作区
-          const result = setupWorkspace({ repoUrl: decision.repo_url, mode: isolationMode });
-          workingDir = result.workspacePath;
-          warning = warning || result.warning;
-        } else {
-          workingDir = decision.workdir || config.claude.defaultWorkDir;
-          const isolated = ensureIsolatedWorkspace(workingDir, isolationMode);
-          workingDir = isolated.workingDir;
-          warning = warning || isolated.warning;
-        }
+        const resolved = resolveWorkdir(decision, isolationMode);
+        workingDir = resolved.workingDir;
+        warning = warning || resolved.warning;
       } catch (err) {
         const errorMsg = `❌ 无法创建隔离工作区: ${(err as Error).message}`;
         if (threadReplyMsgId) {
@@ -223,17 +234,9 @@ export async function resolveThreadContext(params: ResolveParams): Promise<Resol
     warning = decision.warning;
     try {
       const isolationMode = isOwner(userId) ? 'writable' : (decision.mode || 'readonly');
-      if (decision.decision === 'clone_remote' && decision.repo_url) {
-        // clone_remote: 通过 setupWorkspace 克隆远程仓库到隔离工作区
-        const result = setupWorkspace({ repoUrl: decision.repo_url, mode: isolationMode });
-        workingDir = result.workspacePath;
-        warning = warning || result.warning;
-      } else {
-        workingDir = decision.workdir || config.claude.defaultWorkDir;
-        const isolated = ensureIsolatedWorkspace(workingDir, isolationMode);
-        workingDir = isolated.workingDir;
-        warning = warning || isolated.warning;
-      }
+      const resolved = resolveWorkdir(decision, isolationMode);
+      workingDir = resolved.workingDir;
+      warning = warning || resolved.warning;
     } catch (err) {
       const errorMsg = `❌ 无法创建隔离工作区: ${(err as Error).message}`;
       if (threadReplyMsgId) {
