@@ -316,7 +316,7 @@ describe('Part 2: 抽取质量', () => {
   const scorecard: { name: string; expectedCount: number; actualCount: number; typeMatch: number; keywordMatch: number }[] = [];
 
   for (const tc of EXTRACTION_CASES) {
-    it(tc.name, { timeout: 120000 }, async () => {
+    it(tc.name, { timeout: 240000 }, async () => {
       if (!HAS_KEY) {
         console.log('⏭️  跳过: 需要 DASHSCOPE_API_KEY');
         return;
@@ -351,13 +351,15 @@ describe('Part 2: 抽取质量', () => {
 `;
 
       const response = await client.chat.completions.create({
-        model: 'qwen3.5-plus',
+        model: process.env.MEMORY_EXTRACTION_MODEL || 'qwen3.5-flash',
         messages: [
           { role: 'system', content: extractionPrompt },
           { role: 'user', content: tc.conversation },
         ],
         temperature: 0.1,
-      });
+        // DashScope extension: 关闭思考模式加速响应
+        enable_thinking: false,
+      } as never);
 
       const rawContent = response.choices?.[0]?.message?.content ?? '';
       const memories = parseExtractionResponse(rawContent);

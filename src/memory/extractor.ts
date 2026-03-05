@@ -127,7 +127,9 @@ export async function extractMemories(
         { role: 'user', content: conversation },
       ],
       temperature: 0.1,
-    });
+      // DashScope extension: 记忆抽取是结构化输出任务，关闭思考模式加速响应
+      enable_thinking: false,
+    } as never);
 
     const rawContent = response.choices?.[0]?.message?.content;
     if (!rawContent) return;

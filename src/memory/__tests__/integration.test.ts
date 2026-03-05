@@ -445,13 +445,15 @@ describe('场景7: 记忆抽取 (Qwen)', () => {
 我会在后续开发中注意这些约定。`;
 
     const response = await client.chat.completions.create({
-      model: 'qwen3.5-plus',
+      model: process.env.MEMORY_EXTRACTION_MODEL || 'qwen3.5-flash',
       messages: [
         { role: 'system', content: extractionPrompt },
         { role: 'user', content: conversation },
       ],
       temperature: 0.1,
-    });
+      // DashScope extension: 关闭思考模式加速响应
+      enable_thinking: false,
+    } as never);
 
     const rawContent = response.choices?.[0]?.message?.content ?? '';
     console.log('\n🧠 Qwen 抽取原始输出:');
