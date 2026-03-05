@@ -68,7 +68,7 @@ function resolveWorkdir(
   isolationMode: 'readonly' | 'writable',
 ): { workingDir: string; warning?: string } {
   if (decision.decision === 'clone_remote' && decision.repo_url) {
-    const result = setupWorkspace({ repoUrl: decision.repo_url, mode: isolationMode });
+    const result = setupWorkspace({ repoUrl: decision.repo_url, mode: isolationMode, sourceBranch: decision.branch });
     return { workingDir: result.workspacePath, warning: result.warning };
   }
   const workingDir = decision.workdir || config.claude.defaultWorkDir;
