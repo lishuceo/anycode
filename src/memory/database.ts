@@ -25,6 +25,8 @@ export interface MemoryRow {
   valid_at: string;
   invalid_at: string | null;
   superseded_by: string | null;
+  supersedes: string | null;
+  supersede_reason: string | null;
   ttl: string | null;
   source_chat_id: string | null;
   source_message_id: string | null;
@@ -85,14 +87,14 @@ export class MemoryDatabase {
         id, agent_id, user_id, chat_id, workspace_dir,
         type, content, tags, metadata,
         confidence, confidence_level, evidence_count,
-        valid_at, invalid_at, superseded_by, ttl,
+        valid_at, invalid_at, superseded_by, supersedes, supersede_reason, ttl,
         source_chat_id, source_message_id,
         created_at, updated_at, last_accessed_at
       ) VALUES (
         @id, @agent_id, @user_id, @chat_id, @workspace_dir,
         @type, @content, @tags, @metadata,
         @confidence, @confidence_level, @evidence_count,
-        @valid_at, @invalid_at, @superseded_by, @ttl,
+        @valid_at, @invalid_at, @superseded_by, @supersedes, @supersede_reason, @ttl,
         @source_chat_id, @source_message_id,
         @created_at, @updated_at, @last_accessed_at
       )
@@ -246,6 +248,16 @@ export class MemoryDatabase {
       CREATE INDEX IF NOT EXISTS idx_memories_valid ON memories(invalid_at);
       CREATE INDEX IF NOT EXISTS idx_memories_workspace ON memories(workspace_dir);
     `);
+
+    // ── Migration: add supersede chain columns (idempotent) ──
+    const columns = db.prepare("PRAGMA table_info('memories')").all() as Array<{ name: string }>;
+    const colNames = new Set(columns.map(c => c.name));
+    if (!colNames.has('supersedes')) {
+      db.exec('ALTER TABLE memories ADD COLUMN supersedes TEXT');
+    }
+    if (!colNames.has('supersede_reason')) {
+      db.exec('ALTER TABLE memories ADD COLUMN supersede_reason TEXT');
+    }
 
     // vec0 virtual table (conditional, with cosine distance)
     if (vectorEnabled) {
@@ -456,6 +468,8 @@ export class MemoryDatabase {
       validAt: row.valid_at,
       invalidAt: row.invalid_at,
       supersededBy: row.superseded_by,
+      supersedes: row.supersedes ?? null,
+      supersedeReason: row.supersede_reason ?? null,
       ttl: row.ttl,
       sourceChatId: row.source_chat_id,
       sourceMessageId: row.source_message_id,
@@ -482,6 +496,8 @@ export class MemoryDatabase {
       valid_at: row.valid_at,
       invalid_at: row.invalid_at,
       superseded_by: row.superseded_by,
+      supersedes: row.supersedes,
+      supersede_reason: row.supersede_reason,
       ttl: row.ttl,
       source_chat_id: row.source_chat_id,
       source_message_id: row.source_message_id,

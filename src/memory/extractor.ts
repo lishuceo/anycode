@@ -25,6 +25,8 @@ interface ExtractedMemory {
   tags: string[];
   ttl: string | null;
   metadata: Record<string, unknown>;
+  /** Hint for why this supersedes an older memory (extracted from conversation) */
+  supersedeHint: string | null;
 }
 
 const VALID_TYPES = new Set<string>(['fact', 'preference', 'state', 'decision', 'relation']);
@@ -67,7 +69,8 @@ const EXTRACTION_PROMPT = `你是一个记忆提取器。从以下对话中提�
   "confidence": 0.0~1.0,
   "tags": ["tag1", "tag2"],
   "ttl": "ISO 8601 日期" | null,
-  "metadata": {}
+  "metadata": {},
+  "supersede_hint": "变更原因 (1 句话)" | null
 }
 
 ## 提取规则
@@ -78,6 +81,13 @@ const EXTRACTION_PROMPT = `你是一个记忆提取器。从以下对话中提�
 - fact 的 confidence 通常为 1.0，除非用户表达不确定 ("好像是")
 - 每次对话最多提取 5 条记忆（避免噪声）
 - 如果对话中没有值得记忆的信息，返回空数组 []
+
+## 覆盖规则
+当对话中出现事实更新或决策变更时 (如 "从 X 迁移到 Y"、"不再用 X 改用 Y"):
+- 提取新记忆
+- 在 supersede_hint 字段写明变更原因 (1 句话)
+- 示例: "从 Jest 迁移到 Vitest" → supersede_hint: "Vitest 速度更快"
+- 如果不涉及覆盖旧事实，supersede_hint 设为 null
 
 ## 对话内容
 `;
@@ -170,19 +180,21 @@ export function parseExtractionResponse(raw: string): ExtractedMemory[] {
 
 function validateMemories(arr: unknown[]): ExtractedMemory[] {
   if (!Array.isArray(arr)) return [];
-  return arr.filter((item): item is ExtractedMemory => {
+  const valid = arr.filter((item): item is Record<string, unknown> => {
     if (typeof item !== 'object' || item === null) return false;
     const obj = item as Record<string, unknown>;
-    return VALID_TYPES.has(obj.type as string) && typeof obj.content === 'string' && obj.content.length > 0;
-  }).map((item) => ({
-    type: item.type,
-    content: item.content,
-    confidence: typeof item.confidence === 'number' ? item.confidence : 0.7,
-    tags: Array.isArray(item.tags) ? item.tags.filter((t): t is string => typeof t === 'string') : [],
-    ttl: typeof item.ttl === 'string' ? item.ttl : null,
-    metadata: typeof item.metadata === 'object' && item.metadata !== null
-      ? item.metadata as Record<string, unknown>
+    return VALID_TYPES.has(obj.type as string) && typeof obj.content === 'string' && (obj.content as string).length > 0;
+  });
+  return valid.map((obj) => ({
+    type: obj.type as MemoryType,
+    content: obj.content as string,
+    confidence: typeof obj.confidence === 'number' ? obj.confidence : 0.7,
+    tags: Array.isArray(obj.tags) ? (obj.tags as unknown[]).filter((t): t is string => typeof t === 'string') : [],
+    ttl: typeof obj.ttl === 'string' ? obj.ttl : null,
+    metadata: typeof obj.metadata === 'object' && obj.metadata !== null
+      ? obj.metadata as Record<string, unknown>
       : {},
+    supersedeHint: typeof obj.supersede_hint === 'string' ? obj.supersede_hint : null,
   }));
 }
 
@@ -201,7 +213,11 @@ async function processExtractedMemory(
       if (mem.type === 'fact' || mem.type === 'decision') {
         // Facts/decisions: supersede if content differs
         if (bestConflict.content !== mem.content) {
-          store.supersede(bestConflict.id, buildCreateInput(mem, context));
+          store.supersede(
+            bestConflict.id,
+            buildCreateInput(mem, context),
+            mem.supersedeHint ?? '内容更新',
+          );
           return;
         }
       }

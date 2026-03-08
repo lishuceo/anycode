@@ -169,6 +169,24 @@ describe('parseExtractionResponse', () => {
     expect(result).toHaveLength(1);
     expect(result[0].content).toBe('valid');
   });
+
+  it('should parse supersede_hint when present', () => {
+    const raw = JSON.stringify([
+      { type: 'fact', content: 'Uses Vitest', confidence: 1.0, supersede_hint: 'Vitest 速度更快' },
+    ]);
+
+    const result = parseExtractionResponse(raw);
+    expect(result[0].supersedeHint).toBe('Vitest 速度更快');
+  });
+
+  it('should default supersedeHint to null when missing', () => {
+    const raw = JSON.stringify([
+      { type: 'fact', content: 'Node 20', confidence: 1.0 },
+    ]);
+
+    const result = parseExtractionResponse(raw);
+    expect(result[0].supersedeHint).toBeNull();
+  });
 });
 
 describe('extractMemories', () => {

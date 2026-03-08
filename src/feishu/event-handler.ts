@@ -1254,6 +1254,7 @@ async function executeClaudeTask(
       images,
       knowledgeContent,
       disableWorkspaceTool: !isFirstMessage,
+      agentId,
       ...(customSystemPrompt ? { systemPromptOverride: customSystemPrompt } : {}),
     });
 
@@ -1313,6 +1314,7 @@ async function executeClaudeTask(
         knowledgeContent,
         memoryContext,
         disableWorkspaceTool: true,
+        agentId,
         ...(customSystemPrompt ? { systemPromptOverride: customSystemPrompt } : {}),
       });
 
@@ -1591,6 +1593,7 @@ async function executeDirectTask(
       resumeSessionId,
       storedSystemPromptHash: activePromptHash,
       images,
+      agentId,
       // 不需要 workspace-manager 工具（Chat Agent 不切换工作区）
       disableWorkspaceTool: true,
       // 注入 discussion-tools MCP server

@@ -79,6 +79,8 @@ export class MemoryStore {
       valid_at: now,
       invalid_at: null,
       superseded_by: null,
+      supersedes: input.supersedes ?? null,
+      supersede_reason: input.supersedeReason ?? null,
       ttl: input.ttl ?? null,
       source_chat_id: input.sourceChatId ?? null,
       source_message_id: input.sourceMessageId ?? null,
@@ -106,10 +108,16 @@ export class MemoryStore {
 
   /**
    * Supersede an old memory with a new one.
-   * Marks the old memory as invalid and links to the new one.
+   * Marks the old memory as invalid and links bidirectionally.
+   * @param reason — why the old memory is being superseded (stored on the new memory)
    */
-  supersede(oldId: string, newInput: MemoryCreateInput): Memory {
-    const newMemory = this.create(newInput);
+  supersede(oldId: string, newInput: MemoryCreateInput, reason?: string): Memory {
+    // Set reverse pointer + reason on the new memory
+    const newMemory = this.create({
+      ...newInput,
+      supersedes: oldId,
+      supersedeReason: reason ?? newInput.supersedeReason ?? null,
+    });
     this.db.supersedeMemory(oldId, newMemory.id);
 
     // Clean up old vector
@@ -213,6 +221,28 @@ export class MemoryStore {
       }
     }
     return ids.length;
+  }
+
+  /**
+   * Walk the supersede chain backwards from a memory.
+   * Returns ancestors (oldest first) up to maxDepth.
+   */
+  getSupersedChain(memoryId: string, maxDepth: number = 5): Memory[] {
+    const chain: Memory[] = [];
+    let currentId: string | null = memoryId;
+
+    for (let i = 0; i < maxDepth && currentId; i++) {
+      const mem = this.get(currentId);
+      if (!mem?.supersedes) break;
+
+      const ancestor = this.get(mem.supersedes);
+      if (!ancestor) break;
+
+      chain.unshift(ancestor); // oldest first
+      currentId = ancestor.id;
+    }
+
+    return chain;
   }
 
   /** Wait for all pending async embedding operations to complete */
