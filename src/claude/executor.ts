@@ -67,6 +67,8 @@ export interface ExecuteInput extends ExecuteOptions {
   storedSystemPromptHash?: string;
   /** 强制禁用 thinking（仅影响本次调用，不改变全局配置） */
   disableThinking?: boolean;
+  /** Agent ID（用于记忆系统隔离，来自 agentRegistry） */
+  agentId?: string;
 }
 
 /** 构建工作区管理系统提示词（注入实际目录路径） */
@@ -308,12 +310,12 @@ export class ClaudeExecutor {
       const memStore = getMemoryStore();
       const memSearch = getHybridSearch();
       if (memStore && memSearch) {
-        // sessionKey 格式: "agent:{agentId}:{chatId}:{userId}" 或旧格式 "chatId:userId"
+        // userId 从 sessionKey 解析: "chatId:userId" 或 "chatId:userId:threadId" 或 "routing:chatId:userId[:threadId]"
         const memKeyParts = sessionKey.split(':');
-        const memAgentId = memKeyParts.length >= 4 ? memKeyParts[1] : 'default';
-        const memUserId = memKeyParts.length >= 4 ? memKeyParts[3] : memKeyParts[1] || undefined;
+        const isRouting = memKeyParts[0] === 'routing';
+        const memUserId = isRouting ? memKeyParts[2] : memKeyParts[1];
         mcpServers['memory-tools'] = createMemorySearchMcpServer(memStore, memSearch, {
-          agentId: memAgentId,
+          agentId: input.agentId ?? 'default',
           userId: memUserId,
           workspaceDir: workingDir,
         });

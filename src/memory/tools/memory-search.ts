@@ -99,8 +99,8 @@ export function createMemorySearchMcpServer(
                 lines.push(`  替代原因: ${mem.supersedeReason}`);
               }
 
-              // Walk supersede chain backwards for context
-              if (mem.supersedes || mem.supersededBy) {
+              // Walk supersede chain backwards for context (only if this memory supersedes an older one)
+              if (mem.supersedes) {
                 const chain = store.getSupersedChain(mem.id);
                 if (chain.length > 0) {
                   lines.push(`  历史链:`);
