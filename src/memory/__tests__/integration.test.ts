@@ -595,9 +595,81 @@ describe('场景9: 抽取→注入全链路', () => {
 });
 
 // ─────────────────────────────────────────────────────
-// Scenario 10: 综合汇总
+// Scenario 10: Supersede 链（双向指针 + reason）
 // ─────────────────────────────────────────────────────
-describe('场景10: 综合汇总', () => {
+describe('场景10: Supersede 双向链 + reason', () => {
+  it('应支持带 reason 的双向 supersede', async () => {
+    const m1 = store.create(mem({
+      type: 'decision',
+      content: '数据库选用 MySQL',
+      tags: ['database'],
+    }));
+    const m2 = store.supersede(m1.id, mem({
+      type: 'decision',
+      content: '数据库迁移到 PostgreSQL',
+      tags: ['database'],
+    }), '需要 JSONB 支持');
+    const m3 = store.supersede(m2.id, mem({
+      type: 'decision',
+      content: '数据库迁移到 CockroachDB',
+      tags: ['database'],
+    }), '需要多区域部署');
+
+    await store.flush();
+
+    // 正向检查: 旧记忆指向新记忆
+    const old1 = store.get(m1.id)!;
+    expect(old1.supersededBy).toBe(m2.id);
+    expect(old1.invalidAt).not.toBeNull();
+
+    // 反向检查: 新记忆指向旧记忆 + reason
+    const cur = store.get(m3.id)!;
+    expect(cur.supersedes).toBe(m2.id);
+    expect(cur.supersedeReason).toBe('需要多区域部署');
+
+    // 链遍历: 从最新记忆往回走
+    const chain = store.getSupersedChain(m3.id);
+    expect(chain).toHaveLength(2);
+    expect(chain[0].content).toBe('数据库选用 MySQL');
+    expect(chain[1].content).toBe('数据库迁移到 PostgreSQL');
+
+    console.log('\n🔗 Supersede 链:');
+    console.log(`  ${chain[0].content} → (${m2.supersedeReason}) → ${chain[1].content} → (${cur.supersedeReason}) → ${cur.content}`);
+  });
+
+  it('includeInvalid 应能搜到已归档的决策', async () => {
+    // 搜索 MySQL（已被 supersede 归档）
+    const archived = await search.search({
+      query: 'MySQL',
+      agentId: 'dev-agent',
+      userId: 'user-test',
+      includeInvalid: true,
+      types: ['decision'],
+    });
+
+    console.log('\n🔍 搜索已归档 "MySQL" (includeInvalid=true):');
+    for (const r of archived) {
+      console.log(`  [${r.memory.type}] ${r.memory.content} (invalidAt: ${r.memory.invalidAt ?? 'null'})`);
+    }
+
+    expect(archived.some(r => r.memory.content.includes('MySQL'))).toBe(true);
+
+    // 默认搜索不应返回已归档
+    const active = await search.search({
+      query: 'MySQL',
+      agentId: 'dev-agent',
+      userId: 'user-test',
+      types: ['decision'],
+    });
+
+    expect(active.every(r => r.memory.invalidAt === null)).toBe(true);
+  });
+});
+
+// ─────────────────────────────────────────────────────
+// Scenario 11: 综合汇总
+// ─────────────────────────────────────────────────────
+describe('场景11: 综合汇总', () => {
   it('打印数据库统计信息', () => {
     const stats = db.db.prepare(`
       SELECT

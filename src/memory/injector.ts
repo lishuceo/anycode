@@ -104,7 +104,8 @@ export function formatMemories(results: MemorySearchResult[]): string {
       } else if (type === 'fact' && mem.validAt) {
         line = `- ${mem.content} (since ${mem.validAt.split('T')[0]})`;
       } else if (type === 'decision' && mem.createdAt) {
-        line = `- ${mem.content} (${mem.createdAt.split('T')[0]})`;
+        const reason = mem.supersedeReason ? `, 原因: ${mem.supersedeReason}` : '';
+        line = `- ${mem.content} (${mem.createdAt.split('T')[0]}${reason})`;
       } else {
         const confidenceTag = mem.confidence < 0.6 ? ' (confidence: low)' : '';
         line = `- ${mem.content}${confidenceTag}`;

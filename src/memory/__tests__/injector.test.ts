@@ -64,6 +64,8 @@ function makeResult(overrides: {
       validAt: overrides.validAt ?? now,
       invalidAt: null,
       supersededBy: null,
+      supersedes: null,
+      supersedeReason: null,
       ttl: overrides.ttl ?? null,
       sourceChatId: null,
       sourceMessageId: null,

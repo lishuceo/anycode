@@ -34,3 +34,6 @@ export { injectMemories } from './injector.js';
 export type { InjectionContext } from './injector.js';
 
 export { handleMemoryCommand, handleMemoryCardAction } from './commands.js';
+
+export { createMemorySearchMcpServer } from './tools/memory-search.js';
+export type { MemorySearchToolContext } from './tools/memory-search.js';
