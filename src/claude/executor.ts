@@ -6,6 +6,8 @@ import { config } from '../config.js';
 import { logger } from '../utils/logger.js';
 import { createWorkspaceMcpServer } from '../workspace/tool.js';
 import { createFeishuToolsMcpServer } from '../feishu/tools/index.js';
+import { createMemorySearchMcpServer } from '../memory/tools/memory-search.js';
+import { getMemoryStore, getHybridSearch, isMemoryEnabled } from '../memory/init.js';
 import { isAutoWorkspacePath, isServiceOwnRepo } from '../workspace/isolation.js';
 import type { ClaudeResult, ExecuteOptions, ProgressCallback, TurnInfo, ToolCallInfo, ImageAttachment, MultimodalContentBlock } from './types.js';
 
@@ -301,6 +303,23 @@ export class ClaudeExecutor {
       }
     }
 
+    // Memory search MCP tool (Agent 主动搜索记忆)
+    if (isMemoryEnabled()) {
+      const memStore = getMemoryStore();
+      const memSearch = getHybridSearch();
+      if (memStore && memSearch) {
+        // sessionKey 格式: "agent:{agentId}:{chatId}:{userId}" 或旧格式 "chatId:userId"
+        const memKeyParts = sessionKey.split(':');
+        const memAgentId = memKeyParts.length >= 4 ? memKeyParts[1] : 'default';
+        const memUserId = memKeyParts.length >= 4 ? memKeyParts[3] : memKeyParts[1] || undefined;
+        mcpServers['memory-tools'] = createMemorySearchMcpServer(memStore, memSearch, {
+          agentId: memAgentId,
+          userId: memUserId,
+          workspaceDir: workingDir,
+        });
+      }
+    }
+
     // 合并调用方传入的额外 MCP servers（如 discussion-tools）
     if (input.additionalMcpServers) {
       Object.assign(mcpServers, input.additionalMcpServers);
@@ -408,6 +427,11 @@ export class ClaudeExecutor {
             // discussion-tools: Chat Agent 话题升级工具，readonly 下允许
             if (toolName.startsWith('mcp__discussion-tools__')) {
               logger.info({ toolName, readOnly }, 'canUseTool allowed — discussion tool in read-only mode');
+              return { behavior: 'allow' as const, updatedInput: inputObj };
+            }
+            // memory-tools: 记忆搜索工具，read-only 操作，readonly 下允许
+            if (toolName.startsWith('mcp__memory-tools__')) {
+              logger.info({ toolName, readOnly }, 'canUseTool allowed — memory search tool in read-only mode');
               return { behavior: 'allow' as const, updatedInput: inputObj };
             }
             // 所有其他 MCP 工具（含 workspace-manager、未来新增）：deny

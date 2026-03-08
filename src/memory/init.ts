@@ -83,9 +83,11 @@ export function runMemoryMaintenance(): void {
     `).run(now, now, now);
 
     // Clean very old low-confidence memories (via store to also clean vec0)
+    // Exempt decision/fact: their historical trail has long-term value
     const rows = memoryDb.db.prepare(`
       SELECT id FROM memories
       WHERE confidence < 0.1 AND created_at < ?
+        AND type NOT IN ('decision', 'fact')
     `).all(cutoff90d) as Array<{ id: string }>;
 
     for (const row of rows) {

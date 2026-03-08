@@ -130,11 +130,35 @@ describe('Memory Init', () => {
       expect(results).toHaveLength(0);
     });
 
-    it('should clean very old low-confidence memories', async () => {
+    it('should clean very old low-confidence non-exempt memories', async () => {
       await initializeMemory();
       const store = getMemoryStore()!;
 
       const mem = store.create({
+        agentId: 'test',
+        userId: 'user1',
+        type: 'state',
+        content: 'low confidence old state',
+        confidenceLevel: 'L0',
+        confidence: 0.05,
+      });
+
+      // Backdate to >90 days ago
+      const oldDate = new Date(Date.now() - 91 * 24 * 60 * 60 * 1000).toISOString();
+      const db = (store as any).db;
+      db.db.prepare('UPDATE memories SET created_at = ? WHERE id = ?').run(oldDate, mem.id);
+
+      runMemoryMaintenance();
+
+      // state type should be deleted
+      expect(store.get(mem.id)).toBeUndefined();
+    });
+
+    it('should NOT clean old low-confidence decision/fact memories (exempt)', async () => {
+      await initializeMemory();
+      const store = getMemoryStore()!;
+
+      const factMem = store.create({
         agentId: 'test',
         userId: 'user1',
         type: 'fact',
@@ -142,17 +166,26 @@ describe('Memory Init', () => {
         confidenceLevel: 'L0',
         confidence: 0.05,
       });
+      const decisionMem = store.create({
+        agentId: 'test',
+        userId: 'user1',
+        type: 'decision',
+        content: 'low confidence old decision',
+        confidenceLevel: 'L0',
+        confidence: 0.05,
+      });
 
       // Backdate to >90 days ago
       const oldDate = new Date(Date.now() - 91 * 24 * 60 * 60 * 1000).toISOString();
-      // Access internal db to backdate (test-only hack)
       const db = (store as any).db;
-      db.db.prepare('UPDATE memories SET created_at = ? WHERE id = ?').run(oldDate, mem.id);
+      db.db.prepare('UPDATE memories SET created_at = ? WHERE id = ?').run(oldDate, factMem.id);
+      db.db.prepare('UPDATE memories SET created_at = ? WHERE id = ?').run(oldDate, decisionMem.id);
 
       runMemoryMaintenance();
 
-      // Should be deleted
-      expect(store.get(mem.id)).toBeUndefined();
+      // fact and decision should be preserved (exempt from hard-delete)
+      expect(store.get(factMem.id)).toBeDefined();
+      expect(store.get(decisionMem.id)).toBeDefined();
     });
 
     it('should NOT clean recent low-confidence memories', async () => {

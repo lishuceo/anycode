@@ -138,6 +138,56 @@ describe('MemoryStore', () => {
       expect(oldRow!.invalid_at).not.toBeNull();
       expect(oldRow!.superseded_by).toBe(newMem.id);
     });
+
+    it('should set bidirectional pointers and reason', () => {
+      const old = store.create(makeInput({ content: 'MySQL database' }));
+      const newMem = store.supersede(old.id, makeInput({ content: 'PostgreSQL database' }), '需要 JSONB 支持');
+
+      // New memory has reverse pointer + reason
+      expect(newMem.supersedes).toBe(old.id);
+      expect(newMem.supersedeReason).toBe('需要 JSONB 支持');
+
+      // Old memory has forward pointer
+      const oldRow = db.getMemory(old.id);
+      expect(oldRow!.superseded_by).toBe(newMem.id);
+    });
+
+    it('should default reason to null when not provided', () => {
+      const old = store.create(makeInput({ content: 'old fact' }));
+      const newMem = store.supersede(old.id, makeInput({ content: 'new fact' }));
+
+      expect(newMem.supersedes).toBe(old.id);
+      expect(newMem.supersedeReason).toBeNull();
+    });
+  });
+
+  describe('getSupersedChain()', () => {
+    it('should return empty array for memory with no ancestors', () => {
+      const mem = store.create(makeInput({ content: 'standalone' }));
+      const chain = store.getSupersedChain(mem.id);
+      expect(chain).toEqual([]);
+    });
+
+    it('should walk chain backwards', () => {
+      const m1 = store.create(makeInput({ content: 'MySQL' }));
+      const m2 = store.supersede(m1.id, makeInput({ content: 'PostgreSQL' }), 'JSONB');
+      const m3 = store.supersede(m2.id, makeInput({ content: 'CockroachDB' }), '多区域部署');
+
+      const chain = store.getSupersedChain(m3.id);
+      expect(chain).toHaveLength(2);
+      expect(chain[0].content).toBe('MySQL');       // oldest first
+      expect(chain[1].content).toBe('PostgreSQL');
+    });
+
+    it('should respect maxDepth', () => {
+      let prev = store.create(makeInput({ content: 'v1' }));
+      for (let i = 2; i <= 8; i++) {
+        prev = store.supersede(prev.id, makeInput({ content: `v${i}` }), `upgrade to v${i}`);
+      }
+      // Default maxDepth=5 should cap at 5 ancestors
+      const chain = store.getSupersedChain(prev.id, 3);
+      expect(chain.length).toBeLessThanOrEqual(3);
+    });
   });
 
   describe('get()', () => {
