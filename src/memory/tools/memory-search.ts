@@ -11,7 +11,7 @@ import { z } from 'zod';
 import { logger } from '../../utils/logger.js';
 import type { MemoryStore } from '../store.js';
 import type { HybridSearch } from '../search.js';
-import type { Memory, MemoryType } from '../types.js';
+import type { MemoryType } from '../types.js';
 
 /** Context needed to scope searches */
 export interface MemorySearchToolContext {
