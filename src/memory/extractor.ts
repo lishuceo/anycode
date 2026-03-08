@@ -180,22 +180,21 @@ export function parseExtractionResponse(raw: string): ExtractedMemory[] {
 
 function validateMemories(arr: unknown[]): ExtractedMemory[] {
   if (!Array.isArray(arr)) return [];
-  return arr.filter((item): item is ExtractedMemory => {
+  const valid = arr.filter((item): item is Record<string, unknown> => {
     if (typeof item !== 'object' || item === null) return false;
     const obj = item as Record<string, unknown>;
-    return VALID_TYPES.has(obj.type as string) && typeof obj.content === 'string' && obj.content.length > 0;
-  }).map((item) => ({
-    type: item.type,
-    content: item.content,
-    confidence: typeof item.confidence === 'number' ? item.confidence : 0.7,
-    tags: Array.isArray(item.tags) ? item.tags.filter((t): t is string => typeof t === 'string') : [],
-    ttl: typeof item.ttl === 'string' ? item.ttl : null,
-    metadata: typeof item.metadata === 'object' && item.metadata !== null
-      ? item.metadata as Record<string, unknown>
+    return VALID_TYPES.has(obj.type as string) && typeof obj.content === 'string' && (obj.content as string).length > 0;
+  });
+  return valid.map((obj) => ({
+    type: obj.type as MemoryType,
+    content: obj.content as string,
+    confidence: typeof obj.confidence === 'number' ? obj.confidence : 0.7,
+    tags: Array.isArray(obj.tags) ? (obj.tags as unknown[]).filter((t): t is string => typeof t === 'string') : [],
+    ttl: typeof obj.ttl === 'string' ? obj.ttl : null,
+    metadata: typeof obj.metadata === 'object' && obj.metadata !== null
+      ? obj.metadata as Record<string, unknown>
       : {},
-    supersedeHint: typeof (item as Record<string, unknown>).supersede_hint === 'string'
-      ? (item as Record<string, unknown>).supersede_hint as string
-      : null,
+    supersedeHint: typeof obj.supersede_hint === 'string' ? obj.supersede_hint : null,
   }));
 }
 
