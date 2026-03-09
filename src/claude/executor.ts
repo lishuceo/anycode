@@ -561,7 +561,10 @@ export class ClaudeExecutor {
               for (const block of message.message.content) {
                 if ('text' in block && block.text) {
                   // 剥离模型在普通文本中输出的 <thinking> 标签（Sonnet adaptive 模式下偶现）
-                  const cleaned = (block.text as string).replace(/<thinking>[\s\S]*?<\/thinking>\s*/g, '');
+                  // 同时处理未闭合的 <thinking> 标签（模型可能只输出开标签不闭合）
+                  const cleaned = (block.text as string)
+                    .replace(/<thinking>[\s\S]*?<\/thinking>\s*/g, '')
+                    .replace(/<thinking>[\s\S]*/g, '');
                   if (cleaned) {
                     output += cleaned;
                     turnText.push(cleaned);
@@ -654,9 +657,11 @@ export class ClaudeExecutor {
     // 解析结果消息
     if (resultMessage && resultMessage.type === 'result') {
       if (resultMessage.subtype === 'success') {
-        // 如果 output 为空但 result 有文本，使用 result
+        // 如果 output 为空但 result 有文本，使用 result（同样需要剥离 thinking 标签）
         if (!output && resultMessage.result) {
-          output = resultMessage.result;
+          output = resultMessage.result
+            .replace(/<thinking>[\s\S]*?<\/thinking>\s*/g, '')
+            .replace(/<thinking>[\s\S]*/g, '');
         }
 
         return {
