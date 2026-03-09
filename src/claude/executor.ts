@@ -379,9 +379,13 @@ export class ClaudeExecutor {
         stderr: (data: string) => logger.warn({ stderr: data.trim() }, 'Claude Code stderr'),
 
         // 清除嵌套检测环境变量，允许从 Claude Code 会话内启动子进程
+        // 注入 ANTHROPIC_BASE_URL 供 SDK 子进程使用自定义 API 端点
         env: (() => {
           const e = { ...process.env };
           delete e.CLAUDECODE;
+          if (config.claude.apiBaseUrl) {
+            e.ANTHROPIC_BASE_URL = config.claude.apiBaseUrl;
+          }
           return e;
         })(),
 

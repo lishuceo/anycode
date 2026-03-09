@@ -12,7 +12,7 @@ vi.mock('node:fs', () => ({
 
 vi.mock('../../config.js', () => ({
   config: {
-    claude: { defaultWorkDir: '/tmp/work', timeoutSeconds: 300, model: 'claude-opus-4-6', thinking: 'adaptive', effort: 'max', maxTurns: 500, maxBudgetUsd: 50 },
+    claude: { defaultWorkDir: '/tmp/work', timeoutSeconds: 300, model: 'claude-opus-4-6', thinking: 'adaptive', effort: 'max', maxTurns: 500, maxBudgetUsd: 50, apiBaseUrl: '' },
     repoCache: { dir: '/repos/cache' },
     workspace: { baseDir: '/tmp/workspaces' },
     feishu: { tools: { enabled: false, doc: true, wiki: true, drive: true, bitable: true } },
