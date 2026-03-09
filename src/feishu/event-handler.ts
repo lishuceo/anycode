@@ -1244,6 +1244,7 @@ async function executeClaudeTask(
       settingSources: agentCfg?.settingSources,
       toolAllow: agentCfg?.toolAllow,
       toolDeny: agentCfg?.toolDeny,
+      bashAllowPatterns: agentCfg?.bashAllowPatterns,
       resumeSessionId: canResume ? activeConversationId : undefined,
       storedSystemPromptHash: activePromptHash,
       onProgress,
