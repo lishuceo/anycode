@@ -49,6 +49,8 @@ export const AgentConfigInputSchema = z.object({
   persona: z.string().optional(),
   /** 知识文件列表（相对于 knowledgeDir 的文件名）。agent 级完整覆盖 defaults */
   knowledge: z.array(z.string()).optional(),
+  /** Bash 命令白名单正则（readOnly + toolAllow 含 Bash 时生效，仅匹配的命令被放行） */
+  bashAllowPatterns: z.array(z.string()).optional(),
 });
 
 // ─── Defaults（全部 optional） ──────────────────────────────

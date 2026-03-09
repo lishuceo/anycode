@@ -61,6 +61,8 @@ export interface AgentConfig {
   toolAllow?: string[];
   /** 工具禁止列表（优先级高于 allow，支持 glob） */
   toolDeny?: string[];
+  /** Bash 命令白名单正则（readOnly + toolAllow 含 Bash 时生效，仅匹配的命令被放行） */
+  bashAllowPatterns?: string[];
 }
 
 // ─── Binding 路由 ────────────────────────────────────────

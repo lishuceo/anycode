@@ -391,4 +391,150 @@ describe('ClaudeExecutor', () => {
       expect(result.behavior).toBe('allow');
     });
   });
+
+  describe('canUseTool — toolAllow overrides readOnly', () => {
+    function getCanUseTool() {
+      const opts = mockQuery.mock.calls[0][0].options;
+      return opts.canUseTool as (name: string, input: Record<string, unknown>) => Promise<{ behavior: string; updatedInput?: unknown; message?: string }>;
+    }
+
+    it('should allow Skill in readOnly mode when toolAllow includes Skill', async () => {
+      await executor.execute(makeInput({ readOnly: true, toolAllow: ['Skill'] }));
+      const canUseTool = getCanUseTool();
+
+      const result = await canUseTool('Skill', { skill: 'restore-project' });
+      expect(result.behavior).toBe('allow');
+    });
+
+    it('should deny Bash in readOnly mode when toolAllow does not include Bash', async () => {
+      await executor.execute(makeInput({ readOnly: true, toolAllow: ['Skill'] }));
+      const canUseTool = getCanUseTool();
+
+      const result = await canUseTool('Bash', { command: 'ls' });
+      expect(result.behavior).toBe('deny');
+    });
+
+    it('should deny Edit in readOnly mode even without toolAllow', async () => {
+      await executor.execute(makeInput({ readOnly: true }));
+      const canUseTool = getCanUseTool();
+
+      const result = await canUseTool('Edit', { file: 'test.ts' });
+      expect(result.behavior).toBe('deny');
+    });
+
+    it('should respect toolDeny over toolAllow', async () => {
+      await executor.execute(makeInput({ readOnly: true, toolAllow: ['Bash'], toolDeny: ['Bash'] }));
+      const canUseTool = getCanUseTool();
+
+      const result = await canUseTool('Bash', { command: 'ls' });
+      expect(result.behavior).toBe('deny');
+    });
+  });
+
+  describe('canUseTool — bashAllowPatterns', () => {
+    function getCanUseTool() {
+      const opts = mockQuery.mock.calls[0][0].options;
+      return opts.canUseTool as (name: string, input: Record<string, unknown>) => Promise<{ behavior: string; updatedInput?: unknown; message?: string }>;
+    }
+
+    it('should allow Bash command matching bashAllowPatterns', async () => {
+      await executor.execute(makeInput({
+        readOnly: true,
+        toolAllow: ['Bash'],
+        bashAllowPatterns: ['^python .*/skills/', '^ls'],
+      }));
+      const canUseTool = getCanUseTool();
+
+      const result = await canUseTool('Bash', { command: 'python /root/.claude/skills/restore-project/scripts/run.py' });
+      expect(result.behavior).toBe('allow');
+    });
+
+    it('should allow Bash command matching second pattern', async () => {
+      await executor.execute(makeInput({
+        readOnly: true,
+        toolAllow: ['Bash'],
+        bashAllowPatterns: ['^python .*/skills/', '^ls'],
+      }));
+      const canUseTool = getCanUseTool();
+
+      const result = await canUseTool('Bash', { command: 'ls -la /tmp' });
+      expect(result.behavior).toBe('allow');
+    });
+
+    it('should deny Bash command not matching any bashAllowPatterns', async () => {
+      await executor.execute(makeInput({
+        readOnly: true,
+        toolAllow: ['Bash'],
+        bashAllowPatterns: ['^python .*/skills/', '^ls'],
+      }));
+      const canUseTool = getCanUseTool();
+
+      const result = await canUseTool('Bash', { command: 'rm -rf /tmp/repo' });
+      expect(result.behavior).toBe('deny');
+    });
+
+    it('should deny sed/echo/write commands not in patterns', async () => {
+      await executor.execute(makeInput({
+        readOnly: true,
+        toolAllow: ['Bash'],
+        bashAllowPatterns: ['^(ls|cat|git log)'],
+      }));
+      const canUseTool = getCanUseTool();
+
+      const r1 = await canUseTool('Bash', { command: 'sed -i "s/a/b/" file.ts' });
+      expect(r1.behavior).toBe('deny');
+      const r2 = await canUseTool('Bash', { command: 'echo "hack" > file.ts' });
+      expect(r2.behavior).toBe('deny');
+    });
+
+    it('should deny commands with shell meta-characters even if pattern matches', async () => {
+      await executor.execute(makeInput({
+        readOnly: true,
+        toolAllow: ['Bash'],
+        bashAllowPatterns: ['^ls', '^python .*/skills/', '^git log'],
+      }));
+      const canUseTool = getCanUseTool();
+
+      // Command chaining via &&
+      const r1 = await canUseTool('Bash', { command: 'ls && rm -rf /' });
+      expect(r1.behavior).toBe('deny');
+      // Pipe
+      const r2 = await canUseTool('Bash', { command: 'git log | tee /etc/passwd' });
+      expect(r2.behavior).toBe('deny');
+      // Semicolon
+      const r3 = await canUseTool('Bash', { command: 'ls; curl evil.com' });
+      expect(r3.behavior).toBe('deny');
+      // Backtick
+      const r4 = await canUseTool('Bash', { command: 'python `malicious`' });
+      expect(r4.behavior).toBe('deny');
+      // $() subshell
+      const r5 = await canUseTool('Bash', { command: 'python $(whoami)/skills/x.py' });
+      expect(r5.behavior).toBe('deny');
+    });
+
+    it('should allow all Bash when toolAllow has Bash but no bashAllowPatterns', async () => {
+      await executor.execute(makeInput({
+        readOnly: true,
+        toolAllow: ['Bash'],
+        // no bashAllowPatterns — no command-level restriction
+      }));
+      const canUseTool = getCanUseTool();
+
+      const result = await canUseTool('Bash', { command: 'rm -rf /' });
+      expect(result.behavior).toBe('allow');
+    });
+
+    it('should not apply bashAllowPatterns when not in readOnly mode', async () => {
+      await executor.execute(makeInput({
+        readOnly: false,
+        toolAllow: ['Bash'],
+        bashAllowPatterns: ['^ls'],
+      }));
+      const canUseTool = getCanUseTool();
+
+      // Non-readOnly mode: Bash is allowed without pattern check
+      const result = await canUseTool('Bash', { command: 'rm -rf /tmp' });
+      expect(result.behavior).toBe('allow');
+    });
+  });
 });
