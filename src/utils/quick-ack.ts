@@ -9,7 +9,8 @@ import { logger } from './logger.js';
 // Lazy-initialized OpenAI client (DashScope compatible mode)
 let clientReady: Promise<import('openai').default | null> | null = null;
 
-function getClient(): Promise<import('openai').default | null> {
+/** Lazy-init DashScope OpenAI client（也供 thread-relevance 复用） */
+export function getClient(): Promise<import('openai').default | null> {
   if (clientReady) return clientReady;
 
   const apiKey = config.dashscope.apiKey;
