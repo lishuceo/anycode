@@ -420,8 +420,13 @@ export class ClaudeExecutor {
               // fall through: 不 return，让后面的 MCP readonly 逻辑决定
             } else {
               // readOnly + Bash + bashAllowPatterns：仅放行匹配白名单的命令
+              // 防御 shell 注入：先拒绝包含链式执行元字符的命令，再做正则匹配
               if (readOnly && toolName === 'Bash' && input.bashAllowPatterns?.length) {
                 const cmd = String(inputObj.command || '');
+                if (/[;|&`$]|\$\(/.test(cmd)) {
+                  logger.info({ toolName, cmd: cmd.slice(0, 100) }, 'canUseTool denied — Bash command contains shell meta-characters');
+                  return { behavior: 'deny' as const, message: '只读模式下不允许包含 shell 管道/链式执行的命令。' };
+                }
                 const allowed = input.bashAllowPatterns.some(p => new RegExp(p).test(cmd));
                 if (!allowed) {
                   logger.info({ toolName, cmd: cmd.slice(0, 100) }, 'canUseTool denied — Bash command not in bashAllowPatterns');
