@@ -117,7 +117,7 @@ async function buildDirectTaskHistory(
 }
 
 /** Match the production formatHistoryMessages logic (with total budget guard) */
-const TOTAL_BUDGET = 4000; // matches default CHAT_HISTORY_MAX_CHARS
+const TOTAL_BUDGET = 8000; // matches default CHAT_HISTORY_MAX_CHARS
 const PER_MSG_MAX = 500;
 
 function formatHistory(messages: SimpleMessage[]): string | undefined {
@@ -353,16 +353,16 @@ describe('formatHistoryMessages total budget guard', () => {
   });
 
   it('drops oldest messages when total exceeds budget', () => {
-    // Each message ~400 chars, 10 of them ≈ 4000+ chars → should drop some
-    const msgs = Array.from({ length: 12 }, (_, i) =>
-      makeMsg(`m${i}`, `msg-${i}-${'x'.repeat(380)}`),
+    // Each message ~500 chars (after truncation), 20 of them ≈ 10000+ chars → exceeds 8000 budget
+    const msgs = Array.from({ length: 20 }, (_, i) =>
+      makeMsg(`m${i}`, `msg-${i}-${'x'.repeat(490)}`),
     );
 
     const result = formatHistory(msgs);
     expect(result).toBeDefined();
 
     // Should keep most recent messages and drop oldest
-    expect(result).toContain('msg-11-');  // most recent kept
+    expect(result).toContain('msg-19-');  // most recent kept
     expect(result).toContain('已省略');    // drop indicator present
   });
 
