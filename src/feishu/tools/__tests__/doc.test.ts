@@ -12,6 +12,7 @@ vi.mock('../../../utils/logger.js', () => ({
 const mockDocxDocumentRawContent = vi.fn();
 const mockDocxDocumentCreate = vi.fn();
 const mockDocxDocumentBlockList = vi.fn();
+const mockDocxDocumentBlockBatchUpdate = vi.fn();
 const mockDocxDocumentBlockChildrenBatchDelete = vi.fn();
 const mockDocxDocumentBlockChildrenCreate = vi.fn();
 
@@ -25,6 +26,7 @@ vi.mock('../../client.js', () => ({
         },
         documentBlock: {
           list: (...args: unknown[]) => mockDocxDocumentBlockList(...args),
+          batchUpdate: (...args: unknown[]) => mockDocxDocumentBlockBatchUpdate(...args),
         },
         documentBlockChildren: {
           batchDelete: (...args: unknown[]) => mockDocxDocumentBlockChildrenBatchDelete(...args),
@@ -160,6 +162,126 @@ describe('feishu_doc tool', () => {
       const children = createCall.data.children;
       expect(children[0].block_type).toBe(4); // heading2
       expect(children[1].block_type).toBe(2); // text
+    });
+  });
+
+  describe('update_block action', () => {
+    it('should update block text content', async () => {
+      mockDocxDocumentBlockBatchUpdate.mockResolvedValue({ code: 0 });
+      const result = await capturedHandler({
+        action: 'update_block', doc_token: 'ABC123', block_id: 'blk_001', content: '新的文本内容',
+      });
+      expect(result.content[0].text).toBe('Block 已更新');
+      expect(mockDocxDocumentBlockBatchUpdate).toHaveBeenCalledWith({
+        path: { document_id: 'ABC123' },
+        data: {
+          requests: [{
+            block_id: 'blk_001',
+            update_text_elements: {
+              elements: [{ text_run: { content: '新的文本内容' } }],
+            },
+          }],
+        },
+      });
+    });
+
+    it('should support inline markdown in update', async () => {
+      mockDocxDocumentBlockBatchUpdate.mockResolvedValue({ code: 0 });
+      const result = await capturedHandler({
+        action: 'update_block', doc_token: 'ABC123', block_id: 'blk_001', content: '这是**加粗**文本',
+      });
+      expect(result.content[0].text).toBe('Block 已更新');
+      const call = mockDocxDocumentBlockBatchUpdate.mock.calls[0][0];
+      const elements = call.data.requests[0].update_text_elements.elements;
+      expect(elements[1].text_run.text_element_style.bold).toBe(true);
+    });
+
+    it('should return error when block_id is missing', async () => {
+      const result = await capturedHandler({
+        action: 'update_block', doc_token: 'ABC123', content: 'text',
+      });
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toContain('block_id');
+    });
+  });
+
+  describe('insert_blocks action', () => {
+    it('should insert markdown blocks at specified position', async () => {
+      mockDocxDocumentBlockChildrenCreate.mockResolvedValue({ code: 0 });
+      const result = await capturedHandler({
+        action: 'insert_blocks', doc_token: 'ABC123', block_id: 'page_1',
+        content: '## 插入标题', index: 2,
+      });
+      expect(result.content[0].text).toContain('1 个 block');
+      const call = mockDocxDocumentBlockChildrenCreate.mock.calls[0][0];
+      expect(call.path.block_id).toBe('page_1');
+      expect(call.data.index).toBe(2);
+      expect(call.data.children[0].block_type).toBe(4); // heading2
+    });
+
+    it('should insert without index (append to parent)', async () => {
+      mockDocxDocumentBlockChildrenCreate.mockResolvedValue({ code: 0 });
+      const result = await capturedHandler({
+        action: 'insert_blocks', doc_token: 'ABC123', block_id: 'page_1',
+        content: '新段落',
+      });
+      expect(result.content[0].text).toContain('1 个 block');
+      const call = mockDocxDocumentBlockChildrenCreate.mock.calls[0][0];
+      expect(call.data.index).toBeUndefined();
+    });
+
+    it('should return error when block_id is missing', async () => {
+      const result = await capturedHandler({
+        action: 'insert_blocks', doc_token: 'ABC123', content: 'text',
+      });
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toContain('block_id');
+    });
+  });
+
+  describe('delete_blocks action', () => {
+    it('should delete a block by id', async () => {
+      mockDocxDocumentBlockList.mockResolvedValue({
+        code: 0,
+        data: {
+          items: [
+            { block_id: 'page_1', block_type: 1, children: ['blk_a', 'blk_b', 'blk_c'] },
+            { block_id: 'blk_a', block_type: 2, parent_id: 'page_1' },
+            { block_id: 'blk_b', block_type: 3, parent_id: 'page_1' },
+            { block_id: 'blk_c', block_type: 2, parent_id: 'page_1' },
+          ],
+        },
+      });
+      mockDocxDocumentBlockChildrenBatchDelete.mockResolvedValue({ code: 0 });
+
+      const result = await capturedHandler({
+        action: 'delete_blocks', doc_token: 'ABC123', block_id: 'blk_b',
+      });
+      expect(result.content[0].text).toBe('Block 已删除');
+      expect(mockDocxDocumentBlockChildrenBatchDelete).toHaveBeenCalledWith({
+        path: { document_id: 'ABC123', block_id: 'page_1' },
+        data: { start_index: 1, end_index: 2 },
+      });
+    });
+
+    it('should return error when block not found', async () => {
+      mockDocxDocumentBlockList.mockResolvedValue({
+        code: 0,
+        data: { items: [{ block_id: 'page_1', block_type: 1 }] },
+      });
+      const result = await capturedHandler({
+        action: 'delete_blocks', doc_token: 'ABC123', block_id: 'nonexistent',
+      });
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toContain('未找到');
+    });
+
+    it('should return error when block_id is missing', async () => {
+      const result = await capturedHandler({
+        action: 'delete_blocks', doc_token: 'ABC123',
+      });
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toContain('block_id');
     });
   });
 
