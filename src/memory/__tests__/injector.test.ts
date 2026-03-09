@@ -140,7 +140,7 @@ describe('formatMemories', () => {
     ];
 
     const output = formatMemories(results);
-    expect(output).toContain('since 2026-02-15');
+    expect(output).toContain('(2026-02-15');
   });
 
   it('should include date for decisions', () => {
@@ -163,6 +163,32 @@ describe('formatMemories', () => {
 
     const output = formatMemories(results);
     expect(output).toContain('confidence: low');
+  });
+
+  it('should tag memories from other chats', () => {
+    const results = [
+      makeResult({ type: 'fact', content: '使用 PostgreSQL' }),
+    ];
+    // memory.chatId defaults to 'chat1', pass a different currentChatId
+    const output = formatMemories(results, 'chat_other');
+    expect(output).toContain('来自其他会话');
+  });
+
+  it('should not tag memories from current chat', () => {
+    const results = [
+      makeResult({ type: 'fact', content: '使用 PostgreSQL' }),
+    ];
+    // memory.chatId defaults to 'chat1', pass same as currentChatId
+    const output = formatMemories(results, 'chat1');
+    expect(output).not.toContain('来自其他会话');
+  });
+
+  it('should not tag memories when no currentChatId provided', () => {
+    const results = [
+      makeResult({ type: 'fact', content: '使用 PostgreSQL' }),
+    ];
+    const output = formatMemories(results);
+    expect(output).not.toContain('来自其他会话');
   });
 
   it('should not tag high-confidence memories', () => {
