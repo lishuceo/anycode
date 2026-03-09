@@ -144,6 +144,37 @@ describe('feishu_doc tool', () => {
       expect(children[0].block_type).toBe(3); // heading1
       expect(children[1].block_type).toBe(12); // bullet
     });
+
+    it('should return error when batchDelete fails', async () => {
+      mockDocxDocumentBlockList.mockResolvedValue({
+        code: 0,
+        data: {
+          items: [
+            { block_id: 'page_1', block_type: 1 },
+            { block_id: 'text_1', block_type: 2 },
+          ],
+        },
+      });
+      mockDocxDocumentBlockChildrenBatchDelete.mockResolvedValue({ code: 99999, msg: 'delete failed' });
+      const result = await capturedHandler({
+        action: 'write', doc_token: 'ABC123', content: '# 标题',
+      });
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toContain('99999');
+    });
+
+    it('should return error when create fails', async () => {
+      mockDocxDocumentBlockList.mockResolvedValue({
+        code: 0,
+        data: { items: [{ block_id: 'page_1', block_type: 1 }] },
+      });
+      mockDocxDocumentBlockChildrenCreate.mockResolvedValue({ code: 99999, msg: 'write failed' });
+      const result = await capturedHandler({
+        action: 'write', doc_token: 'ABC123', content: '# 标题',
+      });
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toContain('99999');
+    });
   });
 
   describe('append action', () => {
@@ -203,6 +234,15 @@ describe('feishu_doc tool', () => {
       expect(result.isError).toBe(true);
       expect(result.content[0].text).toContain('block_id');
     });
+
+    it('should return error on API failure', async () => {
+      mockDocxDocumentBlockBatchUpdate.mockResolvedValue({ code: 99999, msg: 'update failed' });
+      const result = await capturedHandler({
+        action: 'update_block', doc_token: 'ABC123', block_id: 'blk_001', content: 'text',
+      });
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toContain('99999');
+    });
   });
 
   describe('insert_blocks action', () => {
@@ -230,12 +270,39 @@ describe('feishu_doc tool', () => {
       expect(call.data.index).toBeUndefined();
     });
 
+    it('should increment index across multiple batches', async () => {
+      mockDocxDocumentBlockChildrenCreate.mockResolvedValue({ code: 0 });
+      // Create content that produces >50 blocks to trigger multiple batches
+      const lines = Array.from({ length: 60 }, (_, i) => `- item ${i}`).join('\n');
+      const result = await capturedHandler({
+        action: 'insert_blocks', doc_token: 'ABC123', block_id: 'page_1',
+        content: lines, index: 5,
+      });
+      expect(result.content[0].text).toContain('60 个 block');
+      expect(mockDocxDocumentBlockChildrenCreate).toHaveBeenCalledTimes(2);
+      // First batch at index 5
+      const call1 = mockDocxDocumentBlockChildrenCreate.mock.calls[0][0];
+      expect(call1.data.index).toBe(5);
+      // Second batch at index 5 + 50 = 55
+      const call2 = mockDocxDocumentBlockChildrenCreate.mock.calls[1][0];
+      expect(call2.data.index).toBe(55);
+    });
+
     it('should return error when block_id is missing', async () => {
       const result = await capturedHandler({
         action: 'insert_blocks', doc_token: 'ABC123', content: 'text',
       });
       expect(result.isError).toBe(true);
       expect(result.content[0].text).toContain('block_id');
+    });
+
+    it('should return error on API failure', async () => {
+      mockDocxDocumentBlockChildrenCreate.mockResolvedValue({ code: 99999, msg: 'insert failed' });
+      const result = await capturedHandler({
+        action: 'insert_blocks', doc_token: 'ABC123', block_id: 'page_1', content: '段落',
+      });
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toContain('99999');
     });
   });
 

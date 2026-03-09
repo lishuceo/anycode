@@ -23,7 +23,7 @@ export function feishuDocTool(chatId?: string) {
       '- append: 在文档末尾追加内容 (支持 Markdown 格式)',
       '- create: 创建新文档',
       '- list_blocks: 列出文档的 block 结构',
-      '- update_block: 更新指定 block 的文本内容 (需要 block_id，通过 list_blocks 获取)',
+      '- update_block: 更新指定 block 的文本内容 (仅支持行内 Markdown: 加粗/斜体/删除线/行内代码/链接，不支持标题/列表等块级语法。需要 block_id，通过 list_blocks 获取)',
       '- insert_blocks: 在指定位置插入新 block (需要 block_id 作为父 block，index 指定位置)',
       '- delete_blocks: 删除指定 block (需要 block_id)',
       '',
@@ -40,7 +40,7 @@ export function feishuDocTool(chatId?: string) {
       title: z.string().optional().describe('新文档标题 (create 时必填)'),
       folder_token: z.string().optional().describe('目标文件夹 token (create 时可选)'),
       block_id: z.string().optional().describe('目标 block ID (update_block/insert_blocks/delete_blocks 时必填，通过 list_blocks 获取)'),
-      index: z.number().optional().describe('插入位置索引 (insert_blocks 时可选，0-based，不指定则追加到父 block 末尾)'),
+      index: z.number().int().min(0).optional().describe('插入位置索引 (insert_blocks 时可选，0-based，不指定则追加到父 block 末尾)'),
     },
     async (args) => {
       const client = feishuClient.raw;
@@ -81,10 +81,11 @@ export function feishuDocTool(chatId?: string) {
               const pageBlock = (listResp.data?.items ?? []).find((b) => b.block_type === 1);
               const pageBlockId = pageBlock?.block_id ?? args.doc_token;
 
-              await client.docx.documentBlockChildren.batchDelete({
+              const delResp = await client.docx.documentBlockChildren.batchDelete({
                 path: { document_id: args.doc_token, block_id: pageBlockId },
                 data: { start_index: 0, end_index: blockIds.length },
               });
+              if (delResp.code !== 0) throw new Error(`删除 blocks 失败 (${delResp.code}): ${delResp.msg}`);
             }
 
             // 3. 将 Markdown 转换为 block 并批量写入
@@ -94,10 +95,11 @@ export function feishuDocTool(chatId?: string) {
             const blocks = markdownToBlocks(args.content);
             const batches = batchBlocks(blocks);
             for (const batch of batches) {
-              await client.docx.documentBlockChildren.create({
+              const createResp1 = await client.docx.documentBlockChildren.create({
                 path: { document_id: args.doc_token, block_id: pageBlockId2 },
                 data: { children: batch },
               });
+              if (createResp1.code !== 0) throw new Error(`写入 blocks 失败 (${createResp1.code}): ${createResp1.msg}`);
             }
             return { content: [{ type: 'text' as const, text: '文档已更新' }] };
           }
@@ -116,10 +118,11 @@ export function feishuDocTool(chatId?: string) {
             const appendBlocks = markdownToBlocks(args.content);
             const appendBatches = batchBlocks(appendBlocks);
             for (const batch of appendBatches) {
-              await client.docx.documentBlockChildren.create({
+              const createResp2 = await client.docx.documentBlockChildren.create({
                 path: { document_id: args.doc_token, block_id: pageBlockId3 },
                 data: { children: batch },
               });
+              if (createResp2.code !== 0) throw new Error(`追加 blocks 失败 (${createResp2.code}): ${createResp2.msg}`);
             }
             return { content: [{ type: 'text' as const, text: '内容已追加' }] };
           }
@@ -166,7 +169,7 @@ export function feishuDocTool(chatId?: string) {
             if (!args.block_id) throw new Error('update_block 操作需要 block_id');
             if (!args.content) throw new Error('update_block 操作需要 content');
             const updateElements = parseInlineMarkdown(args.content);
-            await client.docx.documentBlock.batchUpdate({
+            const updateResp = await client.docx.documentBlock.batchUpdate({
               path: { document_id: args.doc_token },
               data: {
                 requests: [{
@@ -175,6 +178,7 @@ export function feishuDocTool(chatId?: string) {
                 }],
               },
             });
+            if (updateResp.code !== 0) throw new Error(`更新 block 失败 (${updateResp.code}): ${updateResp.msg}`);
             return { content: [{ type: 'text' as const, text: 'Block 已更新' }] };
           }
 
@@ -184,14 +188,17 @@ export function feishuDocTool(chatId?: string) {
             if (!args.content) throw new Error('insert_blocks 操作需要 content');
             const insertedBlocks = markdownToBlocks(args.content);
             const insertBatches = batchBlocks(insertedBlocks);
+            let currentIndex = args.index;
             for (const batch of insertBatches) {
-              await client.docx.documentBlockChildren.create({
+              const createResp3 = await client.docx.documentBlockChildren.create({
                 path: { document_id: args.doc_token, block_id: args.block_id },
                 data: {
                   children: batch,
-                  ...(args.index != null ? { index: args.index } : {}),
+                  ...(currentIndex != null ? { index: currentIndex } : {}),
                 },
               });
+              if (createResp3.code !== 0) throw new Error(`插入 blocks 失败 (${createResp3.code}): ${createResp3.msg}`);
+              if (currentIndex != null) currentIndex += batch.length;
             }
             return { content: [{ type: 'text' as const, text: `已插入 ${insertedBlocks.length} 个 block` }] };
           }
@@ -214,10 +221,11 @@ export function feishuDocTool(chatId?: string) {
             const childrenIds = parentBlock?.children ?? [];
             const blockIndex = childrenIds.indexOf(args.block_id);
             if (blockIndex === -1) throw new Error(`block ${args.block_id} 不在父节点的 children 中`);
-            await client.docx.documentBlockChildren.batchDelete({
+            const delResp2 = await client.docx.documentBlockChildren.batchDelete({
               path: { document_id: args.doc_token, block_id: parentId },
               data: { start_index: blockIndex, end_index: blockIndex + 1 },
             });
+            if (delResp2.code !== 0) throw new Error(`删除 block 失败 (${delResp2.code}): ${delResp2.msg}`);
             return { content: [{ type: 'text' as const, text: 'Block 已删除' }] };
           }
 
