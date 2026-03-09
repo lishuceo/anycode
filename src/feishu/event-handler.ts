@@ -555,7 +555,8 @@ async function handleMessageEvent(data: MessageEventData, accountId: string = 'd
       : undefined;
 
     // 话题内消息：话题创建者 bot 无需 @mention 即可响应后续消息
-    // 前提：消息没有 @任何 bot 或人类 —— 显式 @mention 是明确的意图信号
+    // 前提：消息没有 @任何 bot —— 显式 @bot 是明确的意图信号
+    // @人类用户的情况由下游 Qwen 语义判断处理（可能是指代引用，不一定是跟人说话）
     // allBotOpenIds 仅包含各 bot 自身 fetchBotInfo 返回的 open_id（同一 app 视角）。
     // 但飞书 open_id 是 app 级别的：pm-bot 收到的 @张全栈 mention 的 open_id ≠ dev-bot 自己的 open_id。
     // 补充 chatBotRegistry 中通过被动收集（sender_type=app）记录的跨 app bot open_id。
