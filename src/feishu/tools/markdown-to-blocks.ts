@@ -113,7 +113,7 @@ export function parseInlineMarkdown(text: string): TextElement[] {
         elements.push({
           text_run: {
             content: match[3],
-            text_element_style: { link: { url: encodeURI(rawUrl) } },
+            text_element_style: { link: { url: rawUrl } },
           },
         });
       } else {
@@ -194,7 +194,7 @@ export function markdownToBlocks(markdown: string): FeishuBlock[] {
         codeLines.push(lines[i]);
         i++;
       }
-      i++; // skip closing ```
+      if (i < lines.length) i++; // skip closing ``` only if found
       const content = codeLines.join('\n');
       const chunks = splitLongContent(content);
       blocks.push({
