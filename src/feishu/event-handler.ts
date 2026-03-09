@@ -34,6 +34,7 @@ import { extractMemories } from '../memory/extractor.js';
 import { handleMemoryCommand, handleMemoryCardAction } from '../memory/commands.js';
 import { getRepoIdentity } from '../workspace/identity.js';
 import { generateQuickAck } from '../utils/quick-ack.js';
+import { checkThreadRelevance } from '../utils/thread-relevance.js';
 
 // 注册审批通过后的消息重新入队回调（避免 approval.ts → event-handler.ts 循环依赖）
 setOnApproved((chatId, userId, text, messageId, rootId, threadId) => {
@@ -554,10 +555,7 @@ async function handleMessageEvent(data: MessageEventData, accountId: string = 'd
       : undefined;
 
     // 话题内消息：话题创建者 bot 无需 @mention 即可响应后续消息
-    // 前提：消息没有 @任何 bot —— 显式 @mention 是明确的意图信号，
-    //       @了别的 bot 时话题创建者不应抢答（@人类用户不算，可能只是 tag 提醒）
-    // 仅限话题发起用户或 owner — 非 owner 的旁观者无 @mention 时静默忽略，
-    // 避免好奇路人的消息干扰 dev-bot 正在进行的工作
+    // 前提：消息没有 @任何 bot 或人类 —— 显式 @mention 是明确的意图信号
     // allBotOpenIds 仅包含各 bot 自身 fetchBotInfo 返回的 open_id（同一 app 视角）。
     // 但飞书 open_id 是 app 级别的：pm-bot 收到的 @张全栈 mention 的 open_id ≠ dev-bot 自己的 open_id。
     // 补充 chatBotRegistry 中通过被动收集（sender_type=app）记录的跨 app bot open_id。
@@ -568,8 +566,15 @@ async function handleMessageEvent(data: MessageEventData, accountId: string = 'd
     if (threadId && !anyBotMentioned && isThreadCreatorAgent(threadId, agentId)) {
       const ts = sessionManager.getThreadSession(threadId, agentId);
       if (ts && (isOwner(userId) || ts.userId === userId)) {
-        threadBypass = true;
-        logger.debug({ threadId, agentId, accountId }, 'Thread creator bypass: responding without @mention');
+        // 语义判断：用 Qwen 小模型判断无 @mention 的消息是否在跟 bot 对话
+        const botDisplayName = agentRegistry.get(agentId)?.displayName ?? 'bot';
+        const relevant = await checkThreadRelevance(text, botDisplayName);
+        if (relevant) {
+          threadBypass = true;
+          logger.debug({ threadId, agentId, accountId }, 'Thread creator bypass: responding without @mention');
+        } else {
+          logger.info({ threadId, agentId, text: text.slice(0, 100) }, 'Thread bypass skipped — message not directed at bot');
+        }
       }
     }
 
@@ -1506,7 +1511,8 @@ async function executeDirectTask(
   try {
     // 快速确认：用小模型判断消息类型并生成短回复
     // 纯问候类消息直接回复后跳过 Claude，其他类型照常走完整查询
-    const quickAck = await generateQuickAck(rawPrompt);
+    // 话题内消息跳过 quick-ack：bot 可能是被 threadBypass 隐式触发的，不是被明确 @的
+    const quickAck = eventThreadId ? null : await generateQuickAck(rawPrompt);
     if (quickAck) {
       let ackSent = false;
       try {
@@ -1740,6 +1746,12 @@ async function sendDirectReply(
   result: import('../claude/types.js').ClaudeResult,
   threadReplyMsgId?: string,
 ): Promise<void> {
+  // 成功但无输出（如模型 thinking 后决定不回复）→ 静默，不发 "(无输出)"
+  if (result.success && !result.output) {
+    logger.debug({ messageId }, 'Direct reply skipped — empty output (silent)');
+    return;
+  }
+
   const output = result.output || result.error || '(无输出)';
 
   if (!result.success) {
