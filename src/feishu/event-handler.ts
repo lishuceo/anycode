@@ -895,6 +895,7 @@ async function buildChatHistoryContext(
   threadId?: string,
   currentMessageId?: string,
   afterMsgId?: string,
+  selfBotOpenIds?: Set<string>,
 ): Promise<HistoryResult> {
   try {
     const containerId = threadId ?? chatId;
@@ -918,7 +919,7 @@ async function buildChatHistoryContext(
       // afterMsgId 不在列表中 → 可能消息已过期滚动，注入全部
     }
 
-    const text = await formatHistoryMessages(filtered, chatId);
+    const text = await formatHistoryMessages(filtered, chatId, selfBotOpenIds);
     return { text: text ?? undefined, newestMsgId };
   } catch (err) {
     logger.error({ err, chatId, threadId }, 'Failed to build chat history context');
@@ -954,16 +955,18 @@ async function resolveUserNames(
  * 格式化历史消息为上下文文本（共享逻辑）。
  *
  * 保护策略：
- * 1. 单条消息 > 500 字符时截断
- * 2. 总字符数超 CHAT_HISTORY_MAX_CHARS（默认 4000）时，从最旧的消息开始丢弃
+ * 1. 单条消息截断：用户消息 500 字符，自己的 bot 150 字符（resume 里有完整版），其他 bot 4000 字符
+ * 2. 总字符数超 CHAT_HISTORY_MAX_CHARS（默认 8000）时，从最旧的消息开始丢弃
  *
  * 当前 @bot 的消息不在 history 中（调用前已过滤），rawPrompt 始终完整保留。
  *
  * @param chatId 群聊 ID（用于解析用户名的 fallback 查询）
+ * @param selfBotOpenId 当前 bot 的 open_id（用于区分自己的回复和其他 bot 的回复）
  */
 async function formatHistoryMessages(
   messages: Array<{ messageId: string; senderId: string; senderType: 'user' | 'app'; content: string; msgType: string }>,
   chatId?: string,
+  selfBotOpenId?: string,
 ): Promise<string | undefined> {
   if (messages.length === 0) return undefined;
 
@@ -973,24 +976,30 @@ async function formatHistoryMessages(
     await resolveUserNames(userIds, chatId);
   }
 
-  const PER_MSG_MAX = 500;
+  const USER_MSG_MAX = 500;
+  const SELF_BOT_MSG_MAX = 150;   // resume 上下文里有完整版，这里只需定位
+  const OTHER_BOT_MSG_MAX = 4000; // 其他 bot 的回复需要较完整保留
   const header = [
     '## 飞书聊天近期上下文',
     '以下是用户 @bot 之前的聊天记录，帮助你理解当前对话的背景：',
     '',
   ].join('\n');
 
-  // 1. 格式化每条消息，单条截断
+  // 1. 格式化每条消息，按角色差异化截断
   const lines = messages.map(m => {
     let role: string;
+    let maxLen: number;
     if (m.senderType === 'app') {
-      role = '[Bot]';
+      const isSelf = selfBotOpenId && m.senderId === selfBotOpenId;
+      role = isSelf ? '[Bot(self)]' : '[Bot]';
+      maxLen = isSelf ? SELF_BOT_MSG_MAX : OTHER_BOT_MSG_MAX;
     } else {
       const name = m.senderId ? _userNameCache.get(m.senderId) : undefined;
       role = name ? `[${name}]` : '[用户]';
+      maxLen = USER_MSG_MAX;
     }
-    const text = m.content.length > PER_MSG_MAX
-      ? m.content.slice(0, PER_MSG_MAX) + '...'
+    const text = m.content.length > maxLen
+      ? m.content.slice(0, maxLen) + '...'
       : m.content;
     return `${role}: ${text}`;
   });
@@ -1119,15 +1128,25 @@ async function executeClaudeTask(
     historySummaries = combined;
   }
 
+  // 群聊话题中标注发送者身份，与历史消息的 [姓名] 格式保持一致
+  let senderTaggedPrompt = prompt;
+  if (threadId) {
+    await resolveUserNames([userId], chatId);
+    const senderName = _userNameCache.get(userId);
+    if (senderName) {
+      senderTaggedPrompt = `[${senderName}]: ${prompt}`;
+    }
+  }
+
   // 每次都注入增量飞书聊天历史，拼入 user prompt（不是 system prompt）
   // resume 时通过 afterMsgId 去重，只注入上次交互后新增的消息
   // 确保 dev-bot 能看到中间 @其他bot 的对话等未直接参与的消息
-  let effectivePrompt = prompt;
+  let effectivePrompt = senderTaggedPrompt;
   if (!historySummaries) {
     const afterMsgId = activeConversationId ? _historyDedup.get(sessionKey) : undefined;
     const history = await buildChatHistoryContext(chatId, threadId, messageId, afterMsgId);
     if (history.text) {
-      effectivePrompt = history.text + '\n\n---\n\n' + prompt;
+      effectivePrompt = history.text + '\n\n---\n\n' + senderTaggedPrompt;
     }
     if (history.newestMsgId) {
       _historyDedup.set(sessionKey, history.newestMsgId);
@@ -1556,12 +1575,22 @@ async function executeDirectTask(
       && (!activeConversationCwd || activeConversationCwd === workingDir);
     const resumeSessionId = canResume ? activeConversationId : undefined;
 
+    // 群聊/话题中标注发送者身份，避免多用户共享 session 时模型混淆对话对象
+    let senderTaggedPrompt = rawPrompt;
+    if (eventThreadId || chatId) {
+      await resolveUserNames([userId], chatId);
+      const senderName = _userNameCache.get(userId);
+      if (senderName) {
+        senderTaggedPrompt = `[${senderName}]: ${rawPrompt}`;
+      }
+    }
+
     // 每次 @bot 都注入最新聊天历史（resume 时通过 afterMsgId 去重，只注入新消息）
-    let effectivePrompt = rawPrompt;
+    let effectivePrompt = senderTaggedPrompt;
     const afterMsgId = activeConversationId ? _historyDedup.get(sessionKey) : undefined;
     const history = await buildDirectTaskHistory(chatId, eventThreadId, messageId, afterMsgId);
     if (history.text) {
-      effectivePrompt = history.text + '\n\n---\n\n' + rawPrompt;
+      effectivePrompt = history.text + '\n\n---\n\n' + senderTaggedPrompt;
     }
     if (history.newestMsgId) {
       _historyDedup.set(sessionKey, history.newestMsgId);
