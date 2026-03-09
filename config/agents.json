@@ -14,6 +14,11 @@
       "id": "pm",
       "displayName": "土豆儿",
       "replyMode": "direct",
+      "toolPolicy": {
+        "profile": "readonly",
+        "allow": ["Skill", "Bash"]
+      },
+      "bashAllowPatterns": ["^python .*/skills/", "^(ls|cat|head|tail|wc|find|grep|git (log|status|diff|show|branch))"],
       "persona": "./personas/pm.md",
       "knowledge": ["team.md", "product.md"]
     },

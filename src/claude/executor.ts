@@ -61,6 +61,8 @@ export interface ExecuteInput extends ExecuteOptions {
   toolAllow?: string[];
   /** 工具禁止列表（优先级最高，支持 glob 前缀） */
   toolDeny?: string[];
+  /** Bash 命令白名单正则（readOnly + toolAllow 含 Bash 时生效，仅匹配的命令被放行） */
+  bashAllowPatterns?: string[];
   /** 知识文件内容（注入到 system prompt 最前层，优先于 persona/workspace prompt） */
   knowledgeContent?: string;
   /** 上次保存的 system prompt hash（用于自动失效检测，hash 不匹配时跳过 resume） */
@@ -360,9 +362,17 @@ export class ClaudeExecutor {
       : withMemory;
 
     // 只读提示放入 user prompt（而非 system prompt），避免 per-user 差异导致 cache miss
-    const readOnlyPrefix = readOnly
-      ? '[系统提示：当前用户处于只读模式。你可以阅读和分析代码、回答问题，但不能修改文件或执行命令。不要尝试使用 Edit、Write、Bash 等工具。如果用户请求代码修改，告知他们需要管理员权限。]\n\n'
-      : '';
+    // toolAllow 放行的工具不列入禁止名单，避免提示与实际权限矛盾
+    let readOnlyPrefix = '';
+    if (readOnly) {
+      const allowSet = new Set(input.toolAllow ?? []);
+      const forbiddenTools = [...WRITE_TOOLS].filter(t => !allowSet.has(t));
+      if (forbiddenTools.length > 0) {
+        readOnlyPrefix = `[系统提示：当前用户处于只读模式。你可以阅读和分析代码、回答问题，但不能修改文件或执行命令。不要尝试使用 ${forbiddenTools.join('、')} 等工具。如果用户请求代码修改，告知他们需要管理员权限。${allowSet.size > 0 ? `你可以使用 ${[...allowSet].join('、')} 工具。` : ''}]\n\n`;
+      } else {
+        readOnlyPrefix = '[系统提示：当前用户处于受限模式，请谨慎使用写入类工具。]\n\n';
+      }
+    }
     const effectivePrompt = readOnlyPrefix + prompt;
 
     // 构建 SDK query
@@ -402,18 +412,27 @@ export class ClaudeExecutor {
             logger.info({ toolName }, 'canUseTool denied — agent toolDeny list');
             return { behavior: 'deny' as const, message: `工具 ${toolName} 被 agent 配置禁止。` };
           }
-          // per-agent 工具允许列表（不可覆盖 readOnly 对写入工具和 MCP 写工具的限制）
+          // per-agent 工具允许列表（管理员显式配置，可覆盖 readOnly 限制）
           if (input.toolAllow?.some(p => matchToolPattern(toolName, p))) {
-            if (readOnly && WRITE_TOOLS.has(toolName)) {
-              logger.warn({ toolName }, 'canUseTool denied — toolAllow cannot override readOnly for write tools');
-              return { behavior: 'deny' as const, message: '只读模式下 toolAllow 不能覆盖写入工具限制。' };
-            }
             // readOnly 模式下 MCP 工具不能通过 toolAllow 绕过 — 交给后续 MCP readonly 白名单检查
             if (readOnly && toolName.startsWith('mcp__')) {
               logger.info({ toolName }, 'canUseTool — toolAllow matched MCP tool in readOnly mode, deferring to MCP readonly check');
               // fall through: 不 return，让后面的 MCP readonly 逻辑决定
             } else {
-              logger.info({ toolName }, 'canUseTool allowed — agent toolAllow list');
+              // readOnly + Bash + bashAllowPatterns：仅放行匹配白名单的命令
+              if (readOnly && toolName === 'Bash' && input.bashAllowPatterns?.length) {
+                const cmd = String(inputObj.command || '');
+                const allowed = input.bashAllowPatterns.some(p => new RegExp(p).test(cmd));
+                if (!allowed) {
+                  logger.info({ toolName, cmd: cmd.slice(0, 100) }, 'canUseTool denied — Bash command not in bashAllowPatterns');
+                  return { behavior: 'deny' as const, message: '只读模式下该命令不在允许列表中。' };
+                }
+                logger.info({ toolName, cmd: cmd.slice(0, 100) }, 'canUseTool allowed — Bash command matches bashAllowPatterns');
+              } else if (readOnly && WRITE_TOOLS.has(toolName)) {
+                logger.info({ toolName }, 'canUseTool allowed — toolAllow overrides readOnly for write tool');
+              } else {
+                logger.info({ toolName }, 'canUseTool allowed — agent toolAllow list');
+              }
               return { behavior: 'allow' as const, updatedInput: inputObj };
             }
           }
@@ -536,8 +555,12 @@ export class ClaudeExecutor {
             if (message.message?.content) {
               for (const block of message.message.content) {
                 if ('text' in block && block.text) {
-                  output += block.text;
-                  turnText.push(block.text);
+                  // 剥离模型在普通文本中输出的 <thinking> 标签（Sonnet adaptive 模式下偶现）
+                  const cleaned = (block.text as string).replace(/<thinking>[\s\S]*?<\/thinking>\s*/g, '');
+                  if (cleaned) {
+                    output += cleaned;
+                    turnText.push(cleaned);
+                  }
                 }
                 if ('type' in block && block.type === 'tool_use' && 'name' in block && 'input' in block) {
                   turnTools.push({ name: block.name as string, input: block.input as Record<string, unknown> });

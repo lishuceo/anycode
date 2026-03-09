@@ -93,6 +93,7 @@ function mergeAgentConfig(input: AgentConfigInput, defaults: AgentDefaults): Age
     knowledge: input.knowledge ?? defaults.knowledge,
     toolAllow,
     toolDeny,
+    bashAllowPatterns: input.bashAllowPatterns,
   };
 }
 
