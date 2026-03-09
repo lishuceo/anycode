@@ -62,11 +62,15 @@ async function sendCardReply(
   card: Record<string, unknown>,
   userId?: string,
 ): Promise<void> {
-  // 优先使用临时卡片（仅发起人可见），话题内回退到普通卡片
+  // 话题内 → 话题回复；群聊 → 临时卡片（仅发起人可见）；私聊/fallback → 普通卡片
   if (threadReplyMsgId) {
     await feishuClient.replyCardInThread(threadReplyMsgId, card);
   } else if (userId) {
-    await feishuClient.sendEphemeralCard(chatId, userId, card);
+    const sent = await feishuClient.sendEphemeralCard(chatId, userId, card);
+    if (!sent) {
+      // 私聊不支持临时卡片，fallback 到普通卡片
+      await feishuClient.sendCard(chatId, card);
+    }
   } else {
     await feishuClient.sendCard(chatId, card);
   }
