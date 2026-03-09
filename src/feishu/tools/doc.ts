@@ -4,6 +4,7 @@ import { feishuClient } from '../client.js';
 import { logger } from '../../utils/logger.js';
 import { validateToken } from './validation.js';
 import { grantOwnerPermission, grantChatMembersPermission } from './permissions.js';
+import { markdownToBlocks, batchBlocks } from './markdown-to-blocks.js';
 
 /**
  * 飞书文档 MCP 工具
@@ -18,17 +19,19 @@ export function feishuDocTool(chatId?: string) {
       '',
       'Actions:',
       '- read: 读取文档纯文本内容',
-      '- write: 覆盖写入文档 (清空后写入纯文本)',
-      '- append: 在文档末尾追加文本',
+      '- write: 覆盖写入文档 (清空后写入 Markdown，自动转换为飞书富文本格式)',
+      '- append: 在文档末尾追加内容 (支持 Markdown 格式)',
       '- create: 创建新文档',
       '- list_blocks: 列出文档的 block 结构',
+      '',
+      'write/append 支持的 Markdown 语法: 标题(#)、加粗(**)、斜体(*)、删除线(~~)、行内代码(`)、链接、无序列表(-)、有序列表(1.)、代码块(```)、待办(- [ ])、分隔线(---)。',
       '',
       'URL Token 提取: /docx/ABC123 → doc_token: ABC123',
     ].join('\n'),
     {
       action: z.enum(['read', 'write', 'append', 'create', 'list_blocks']).describe('操作类型'),
       doc_token: z.string().optional().describe('文档 token (read/write/append/list_blocks 时必填)'),
-      content: z.string().optional().describe('写入/追加的文本内容 (write/append 时必填)'),
+      content: z.string().optional().describe('写入/追加的 Markdown 内容 (write/append 时必填，自动转换为飞书富文本)'),
       title: z.string().optional().describe('新文档标题 (create 时必填)'),
       folder_token: z.string().optional().describe('目标文件夹 token (create 时可选)'),
     },
@@ -76,21 +79,18 @@ export function feishuDocTool(chatId?: string) {
               });
             }
 
-            // 3. 创建新的文本 block
+            // 3. 将 Markdown 转换为 block 并批量写入
             const pageBlock2 = (listResp.data?.items ?? []).find((b) => b.block_type === 1);
             const pageBlockId2 = pageBlock2?.block_id ?? args.doc_token;
 
-            await client.docx.documentBlockChildren.create({
-              path: { document_id: args.doc_token, block_id: pageBlockId2 },
-              data: {
-                children: [{
-                  block_type: 2, // text block
-                  text: {
-                    elements: [{ text_run: { content: args.content } }],
-                  },
-                }],
-              },
-            });
+            const blocks = markdownToBlocks(args.content);
+            const batches = batchBlocks(blocks);
+            for (const batch of batches) {
+              await client.docx.documentBlockChildren.create({
+                path: { document_id: args.doc_token, block_id: pageBlockId2 },
+                data: { children: batch },
+              });
+            }
             return { content: [{ type: 'text' as const, text: '文档已更新' }] };
           }
 
@@ -105,17 +105,14 @@ export function feishuDocTool(chatId?: string) {
             const pageBlock3 = (listResp2.data?.items ?? []).find((b) => b.block_type === 1);
             const pageBlockId3 = pageBlock3?.block_id ?? args.doc_token;
 
-            await client.docx.documentBlockChildren.create({
-              path: { document_id: args.doc_token, block_id: pageBlockId3 },
-              data: {
-                children: [{
-                  block_type: 2,
-                  text: {
-                    elements: [{ text_run: { content: args.content } }],
-                  },
-                }],
-              },
-            });
+            const appendBlocks = markdownToBlocks(args.content);
+            const appendBatches = batchBlocks(appendBlocks);
+            for (const batch of appendBatches) {
+              await client.docx.documentBlockChildren.create({
+                path: { document_id: args.doc_token, block_id: pageBlockId3 },
+                data: { children: batch },
+              });
+            }
             return { content: [{ type: 'text' as const, text: '内容已追加' }] };
           }
 

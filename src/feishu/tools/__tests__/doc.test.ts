@@ -117,7 +117,7 @@ describe('feishu_doc tool', () => {
   });
 
   describe('write action', () => {
-    it('should clear and write document', async () => {
+    it('should clear and write document with markdown blocks', async () => {
       mockDocxDocumentBlockList.mockResolvedValue({
         code: 0,
         data: {
@@ -131,16 +131,21 @@ describe('feishu_doc tool', () => {
       mockDocxDocumentBlockChildrenCreate.mockResolvedValue({ code: 0 });
 
       const result = await capturedHandler({
-        action: 'write', doc_token: 'ABC123', content: '新内容',
+        action: 'write', doc_token: 'ABC123', content: '# 标题\n\n- 列表项',
       });
       expect(result.content[0].text).toBe('文档已更新');
       expect(mockDocxDocumentBlockChildrenBatchDelete).toHaveBeenCalled();
       expect(mockDocxDocumentBlockChildrenCreate).toHaveBeenCalled();
+      // Verify blocks contain heading and bullet, not a single text block
+      const createCall = mockDocxDocumentBlockChildrenCreate.mock.calls[0][0];
+      const children = createCall.data.children;
+      expect(children[0].block_type).toBe(3); // heading1
+      expect(children[1].block_type).toBe(12); // bullet
     });
   });
 
   describe('append action', () => {
-    it('should append content', async () => {
+    it('should append markdown content as blocks', async () => {
       mockDocxDocumentBlockList.mockResolvedValue({
         code: 0,
         data: { items: [{ block_id: 'page_1', block_type: 1 }] },
@@ -148,9 +153,13 @@ describe('feishu_doc tool', () => {
       mockDocxDocumentBlockChildrenCreate.mockResolvedValue({ code: 0 });
 
       const result = await capturedHandler({
-        action: 'append', doc_token: 'ABC123', content: '追加内容',
+        action: 'append', doc_token: 'ABC123', content: '## 小标题\n\n追加段落',
       });
       expect(result.content[0].text).toBe('内容已追加');
+      const createCall = mockDocxDocumentBlockChildrenCreate.mock.calls[0][0];
+      const children = createCall.data.children;
+      expect(children[0].block_type).toBe(4); // heading2
+      expect(children[1].block_type).toBe(2); // text
     });
   });
 
