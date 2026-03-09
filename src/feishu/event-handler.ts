@@ -931,6 +931,30 @@ async function buildChatHistoryContext(
 const _userNameCache = new Map<string, string>();
 
 /**
+ * 给话题/群聊中的消息添加发送者前缀 `[姓名]: 消息`。
+ * 非话题模式或用户名未知时原样返回。
+ */
+export async function tagSenderIdentity(
+  prompt: string,
+  userId: string,
+  chatId: string,
+  isThread: boolean,
+): Promise<string> {
+  if (!isThread) return prompt;
+  await resolveUserNames([userId], chatId);
+  const name = _userNameCache.get(userId);
+  return name ? `[${name}]: ${prompt}` : prompt;
+}
+
+/** 仅测试用：操作 _userNameCache */
+export function _testSetUserNameCache(userId: string, name: string): void {
+  _userNameCache.set(userId, name);
+}
+export function _testClearUserNameCache(): void {
+  _userNameCache.clear();
+}
+
+/**
  * 批量解析 open_id → 用户名（带缓存，去重后只查未命中的）
  */
 async function resolveUserNames(
@@ -961,12 +985,12 @@ async function resolveUserNames(
  * 当前 @bot 的消息不在 history 中（调用前已过滤），rawPrompt 始终完整保留。
  *
  * @param chatId 群聊 ID（用于解析用户名的 fallback 查询）
- * @param selfBotOpenId 当前 bot 的 open_id（用于区分自己的回复和其他 bot 的回复）
+ * @param selfBotOpenIds 所有自己管理的 bot open_id 集合（用于区分自己的回复和其他 bot 的回复）
  */
 async function formatHistoryMessages(
   messages: Array<{ messageId: string; senderId: string; senderType: 'user' | 'app'; content: string; msgType: string }>,
   chatId?: string,
-  selfBotOpenId?: string,
+  selfBotOpenIds?: Set<string>,
 ): Promise<string | undefined> {
   if (messages.length === 0) return undefined;
 
@@ -990,7 +1014,7 @@ async function formatHistoryMessages(
     let role: string;
     let maxLen: number;
     if (m.senderType === 'app') {
-      const isSelf = selfBotOpenId && m.senderId === selfBotOpenId;
+      const isSelf = selfBotOpenIds && selfBotOpenIds.has(m.senderId);
       role = isSelf ? '[Bot(self)]' : '[Bot]';
       maxLen = isSelf ? SELF_BOT_MSG_MAX : OTHER_BOT_MSG_MAX;
     } else {
@@ -1129,22 +1153,19 @@ async function executeClaudeTask(
   }
 
   // 群聊话题中标注发送者身份，与历史消息的 [姓名] 格式保持一致
-  let senderTaggedPrompt = prompt;
-  if (threadId) {
-    await resolveUserNames([userId], chatId);
-    const senderName = _userNameCache.get(userId);
-    if (senderName) {
-      senderTaggedPrompt = `[${senderName}]: ${prompt}`;
-    }
-  }
+  const senderTaggedPrompt = await tagSenderIdentity(prompt, userId, chatId, !!threadId);
 
   // 每次都注入增量飞书聊天历史，拼入 user prompt（不是 system prompt）
   // resume 时通过 afterMsgId 去重，只注入上次交互后新增的消息
   // 确保 dev-bot 能看到中间 @其他bot 的对话等未直接参与的消息
   let effectivePrompt = senderTaggedPrompt;
   if (!historySummaries) {
+    // 收集所有自己管理的 bot open_id，用于历史消息差异化截断
+    const selfBotOpenIds = accountManager.getAllBotOpenIds();
+    if (feishuClient.botOpenId) selfBotOpenIds.add(feishuClient.botOpenId);
+
     const afterMsgId = activeConversationId ? _historyDedup.get(sessionKey) : undefined;
-    const history = await buildChatHistoryContext(chatId, threadId, messageId, afterMsgId);
+    const history = await buildChatHistoryContext(chatId, threadId, messageId, afterMsgId, selfBotOpenIds);
     if (history.text) {
       effectivePrompt = history.text + '\n\n---\n\n' + senderTaggedPrompt;
     }
@@ -1576,19 +1597,15 @@ async function executeDirectTask(
     const resumeSessionId = canResume ? activeConversationId : undefined;
 
     // 群聊/话题中标注发送者身份，避免多用户共享 session 时模型混淆对话对象
-    let senderTaggedPrompt = rawPrompt;
-    if (eventThreadId || chatId) {
-      await resolveUserNames([userId], chatId);
-      const senderName = _userNameCache.get(userId);
-      if (senderName) {
-        senderTaggedPrompt = `[${senderName}]: ${rawPrompt}`;
-      }
-    }
+    const senderTaggedPrompt = await tagSenderIdentity(rawPrompt, userId, chatId, !!(eventThreadId || chatId));
 
     // 每次 @bot 都注入最新聊天历史（resume 时通过 afterMsgId 去重，只注入新消息）
+    const selfBotOpenIds = accountManager.getAllBotOpenIds();
+    if (feishuClient.botOpenId) selfBotOpenIds.add(feishuClient.botOpenId);
+
     let effectivePrompt = senderTaggedPrompt;
     const afterMsgId = activeConversationId ? _historyDedup.get(sessionKey) : undefined;
-    const history = await buildDirectTaskHistory(chatId, eventThreadId, messageId, afterMsgId);
+    const history = await buildDirectTaskHistory(chatId, eventThreadId, messageId, afterMsgId, selfBotOpenIds);
     if (history.text) {
       effectivePrompt = history.text + '\n\n---\n\n' + senderTaggedPrompt;
     }
@@ -1706,6 +1723,7 @@ async function buildDirectTaskHistory(
   threadId?: string,
   currentMessageId?: string,
   afterMsgId?: string,
+  selfBotOpenIds?: Set<string>,
 ): Promise<HistoryResult> {
   try {
     let messages: Array<{ messageId: string; senderId: string; senderType: 'user' | 'app'; content: string; msgType: string }>;
@@ -1757,7 +1775,7 @@ async function buildDirectTaskHistory(
       // afterMsgId 不在列表中 → 可能消息已过期滚动，注入全部
     }
 
-    const text = await formatHistoryMessages(messages, chatId);
+    const text = await formatHistoryMessages(messages, chatId, selfBotOpenIds);
     return { text: text ?? undefined, newestMsgId };
   } catch (err) {
     logger.error({ err, chatId, threadId }, 'Failed to build direct task history');
