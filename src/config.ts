@@ -81,6 +81,8 @@ export const config = {
   // Claude Code 配置
   claude: {
     defaultWorkDir: process.env.DEFAULT_WORK_DIR || '/home/ubuntu/projects',
+    /** Anthropic API Base URL（支持代理/自定义端点），默认官方地址 */
+    apiBaseUrl: process.env.ANTHROPIC_BASE_URL || '',
     /** 单步空闲超时 (秒)：某步骤长时间无 SDK 消息活动时 abort。不限制总执行时长 */
     timeoutSeconds: parseInt(process.env.CLAUDE_TIMEOUT || '300', 10),
     /** 模型名称，默认 claude-opus-4-6 (Opus 4.6) */
