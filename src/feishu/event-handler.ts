@@ -1276,7 +1276,7 @@ async function executeClaudeTask(
     // 使用 repo identity（而非带随机后缀的工作区路径）确保同仓库记忆互通
     const repoIdentity = getRepoIdentity(workingDir);
     const memoryContext = config.memory.enabled
-      ? await injectMemories(rawPrompt, { agentId, userId, workspaceDir: repoIdentity })
+      ? await injectMemories(rawPrompt, { agentId, userId, workspaceDir: repoIdentity, chatId })
       : '';
 
     const result = await claudeExecutor.execute({
@@ -1627,7 +1627,7 @@ async function executeDirectTask(
     // 记忆注入（使用 repo identity 确保同仓库记忆互通）
     const repoIdentity = getRepoIdentity(workingDir);
     const memoryContext = config.memory.enabled
-      ? await injectMemories(rawPrompt, { agentId, userId, workspaceDir: repoIdentity })
+      ? await injectMemories(rawPrompt, { agentId, userId, workspaceDir: repoIdentity, chatId })
       : '';
 
     const result = await claudeExecutor.execute({

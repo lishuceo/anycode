@@ -12,6 +12,7 @@ export interface InjectionContext {
   agentId: string;
   userId?: string;
   workspaceDir?: string;
+  chatId?: string;
 }
 
 /** Type display names */
@@ -54,7 +55,7 @@ export async function injectMemories(
       return '';
     }
 
-    const fragment = formatMemories(results);
+    const fragment = formatMemories(results, context.chatId);
     logger.info(
       { agentId: context.agentId, userId: context.userId, count: results.length, chars: fragment.length },
       'Memories injected into system prompt',
@@ -68,8 +69,9 @@ export async function injectMemories(
 
 /**
  * Format search results into a prompt fragment, respecting maxInjectTokens.
+ * @param currentChatId - When provided, memories are annotated with source context (current vs other chat).
  */
-export function formatMemories(results: MemorySearchResult[]): string {
+export function formatMemories(results: MemorySearchResult[], currentChatId?: string): string {
   const maxChars = config.memory.maxInjectTokens * 3;
 
   // Group by type
@@ -97,19 +99,33 @@ export function formatMemories(results: MemorySearchResult[]): string {
     const itemLines: string[] = [];
     for (const r of group) {
       const mem = r.memory;
-      let line: string;
+
+      // Date tag: for decisions use createdAt (when the decision was made);
+      // for other types prefer validAt (when the fact became true)
+      const dateStr = (type === 'decision'
+        ? (mem.createdAt || mem.validAt || '')
+        : (mem.validAt || mem.createdAt || '')
+      ).split('T')[0];
+
+      // Source tag: annotate whether this memory is from the current chat or another
+      const fromOtherChat = currentChatId && mem.chatId && mem.chatId !== currentChatId;
+
+      // Build annotation parts
+      const annotations: string[] = [];
 
       if (type === 'state' && mem.ttl) {
-        line = `- ${mem.content} (预计到 ${mem.ttl.split('T')[0]})`;
-      } else if (type === 'fact' && mem.validAt) {
-        line = `- ${mem.content} (since ${mem.validAt.split('T')[0]})`;
-      } else if (type === 'decision' && mem.createdAt) {
-        const reason = mem.supersedeReason ? `, 原因: ${mem.supersedeReason}` : '';
-        line = `- ${mem.content} (${mem.createdAt.split('T')[0]}${reason})`;
-      } else {
-        const confidenceTag = mem.confidence < 0.6 ? ' (confidence: low)' : '';
-        line = `- ${mem.content}${confidenceTag}`;
+        annotations.push(`预计到 ${mem.ttl.split('T')[0]}`);
+      } else if (type === 'decision' && mem.supersedeReason) {
+        annotations.push(dateStr, `原因: ${mem.supersedeReason}`);
+      } else if (dateStr) {
+        annotations.push(dateStr);
       }
+
+      if (mem.confidence < 0.6) annotations.push('confidence: low');
+      if (fromOtherChat) annotations.push('来自其他会话');
+
+      const tag = annotations.length > 0 ? ` (${annotations.join(', ')})` : '';
+      const line = `- ${mem.content}${tag}`;
 
       if (totalChars + header.length + 1 + line.length + 1 > maxChars) {
         budgetExhausted = true;
