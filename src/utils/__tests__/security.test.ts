@@ -57,16 +57,34 @@ describe('containsDangerousCommand', () => {
     expect(containsDangerousCommand('> /dev/sda')).toBe(true);
   });
 
-  it('should detect shutdown', () => {
+  it('should detect shutdown commands', () => {
     expect(containsDangerousCommand('shutdown -h now')).toBe(true);
+    expect(containsDangerousCommand('shutdown -r 5')).toBe(true);
+    expect(containsDangerousCommand('sudo shutdown -h now')).toBe(true);
   });
 
-  it('should detect reboot', () => {
+  it('should not false-positive on shutdown in text', () => {
+    expect(containsDangerousCommand('graceful shutdown handling')).toBe(false);
+    expect(containsDangerousCommand('the shutdown process was clean')).toBe(false);
+    expect(containsDangerousCommand('implements shutdown logic for the server')).toBe(false);
+  });
+
+  it('should detect reboot as standalone command', () => {
     expect(containsDangerousCommand('reboot')).toBe(true);
+    expect(containsDangerousCommand('sudo reboot')).toBe(true);
+  });
+
+  it('should not false-positive on reboot in text', () => {
+    expect(containsDangerousCommand('reboot the system after update')).toBe(false);
+    expect(containsDangerousCommand('auto-reboot is disabled')).toBe(false);
   });
 
   it('should detect init 0', () => {
     expect(containsDangerousCommand('init 0')).toBe(true);
+  });
+
+  it('should not false-positive on init in text', () => {
+    expect(containsDangerousCommand('reinit 0 times')).toBe(false);
   });
 
   it('should allow safe commands', () => {
