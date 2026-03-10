@@ -442,7 +442,7 @@ export class FeishuClient {
     containerId: string,
     containerType: 'chat' | 'thread' = 'chat',
     limit: number = 10,
-  ): Promise<Array<{ messageId: string; senderId: string; senderType: 'user' | 'app'; content: string; msgType: string }>> {
+  ): Promise<Array<{ messageId: string; senderId: string; senderType: 'user' | 'app'; content: string; msgType: string; createTime?: string }>> {
     try {
       const resp = await this.client.im.message.list({
         params: {
@@ -457,7 +457,7 @@ export class FeishuClient {
         return [];
       }
       const items = resp.data?.items ?? [];
-      const messages: Array<{ messageId: string; senderId: string; senderType: 'user' | 'app'; content: string; msgType: string }> = [];
+      const messages: Array<{ messageId: string; senderId: string; senderType: 'user' | 'app'; content: string; msgType: string; createTime?: string }> = [];
       for (const item of items) {
         if (item.deleted) continue;
         const msgType = item.msg_type ?? '';
@@ -501,6 +501,7 @@ export class FeishuClient {
           senderType,
           content: content.trim(),
           msgType,
+          createTime: item.create_time ?? undefined,
         });
       }
       // API 返回的是 ByCreateTimeDesc（最新在前），反转为时间正序
