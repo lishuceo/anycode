@@ -59,7 +59,7 @@ beforeEach(() => {
 
 describe('feishu_doc tool', () => {
   describe('read action', () => {
-    it('should return document content', async () => {
+    it('should return document content when within line limit', async () => {
       mockDocxDocumentRawContent.mockResolvedValue({
         code: 0,
         data: { content: '文档内容' },
@@ -70,6 +70,75 @@ describe('feishu_doc tool', () => {
         path: { document_id: 'ABC123' },
         params: { lang: 0 },
       });
+    });
+
+    it('should return empty doc marker for empty content', async () => {
+      mockDocxDocumentRawContent.mockResolvedValue({
+        code: 0,
+        data: { content: '' },
+      });
+      const result = await capturedHandler({ action: 'read', doc_token: 'ABC123' });
+      expect(result.content[0].text).toBe('(空文档)');
+    });
+
+    it('should auto-truncate documents exceeding 2000 lines', async () => {
+      // Generate 2500 lines of content
+      const lines = Array.from({ length: 2500 }, (_, i) => `line ${i + 1}`);
+      const fullContent = lines.join('\n');
+      mockDocxDocumentRawContent.mockResolvedValue({
+        code: 0,
+        data: { content: fullContent },
+      });
+      // Mock list_blocks for structure summary (no headings)
+      mockDocxDocumentBlockList.mockResolvedValue({
+        code: 0,
+        data: { items: [{ block_id: 'page_1', block_type: 1 }] },
+      });
+
+      const result = await capturedHandler({ action: 'read', doc_token: 'ABC123' });
+      const text = result.content[0].text;
+      // Should contain first 2000 lines
+      expect(text).toContain('line 1');
+      expect(text).toContain('line 2000');
+      // Should NOT contain line 2001+ in the main content
+      expect(text).toContain('文档已截断');
+      expect(text).toContain('2500 行');
+      expect(text).toContain('read_blocks');
+    });
+
+    it('should include heading structure in truncated output', async () => {
+      const lines = Array.from({ length: 2500 }, (_, i) => `line ${i + 1}`);
+      mockDocxDocumentRawContent.mockResolvedValue({
+        code: 0,
+        data: { content: lines.join('\n') },
+      });
+      mockDocxDocumentBlockList.mockResolvedValue({
+        code: 0,
+        data: {
+          items: [
+            { block_id: 'page_1', block_type: 1 },
+            { block_id: 'h1_1', block_type: 3, heading1: { elements: [{ text_run: { content: '第一章' } }] } },
+            { block_id: 'h2_1', block_type: 4, heading2: { elements: [{ text_run: { content: '第二节' } }] } },
+          ],
+        },
+      });
+
+      const result = await capturedHandler({ action: 'read', doc_token: 'ABC123' });
+      const text = result.content[0].text;
+      expect(text).toContain('目录');
+      expect(text).toContain('第一章');
+      expect(text).toContain('第二节');
+      expect(text).toContain('h1_1');
+    });
+
+    it('should not truncate documents with exactly 2000 lines', async () => {
+      const lines = Array.from({ length: 2000 }, (_, i) => `line ${i + 1}`);
+      mockDocxDocumentRawContent.mockResolvedValue({
+        code: 0,
+        data: { content: lines.join('\n') },
+      });
+      const result = await capturedHandler({ action: 'read', doc_token: 'ABC123' });
+      expect(result.content[0].text).not.toContain('文档已截断');
     });
 
     it('should return error when doc_token is missing', async () => {
@@ -141,13 +210,121 @@ describe('feishu_doc tool', () => {
   });
 
   describe('list_blocks action', () => {
-    it('should return block list', async () => {
+    it('should return concise block structure (tab-separated)', async () => {
       mockDocxDocumentBlockList.mockResolvedValue({
         code: 0,
-        data: { items: [{ block_id: 'b1', block_type: 1 }] },
+        data: {
+          items: [
+            { block_id: 'page_1', block_type: 1 },
+            { block_id: 'h1_1', block_type: 3, heading1: { elements: [{ text_run: { content: '标题内容' } }] } },
+            { block_id: 'txt_1', block_type: 2, text: { elements: [{ text_run: { content: '正文段落' } }] } },
+          ],
+        },
       });
       const result = await capturedHandler({ action: 'list_blocks', doc_token: 'ABC123' });
-      expect(result.content[0].text).toContain('b1');
+      const text = result.content[0].text;
+      // Should NOT contain raw JSON
+      expect(text).not.toContain('{');
+      // Should contain header
+      expect(text).toContain('block_id\ttype\tpreview');
+      expect(text).toContain('共 2 blocks'); // page block is skipped
+      // Should contain block info
+      expect(text).toContain('h1_1\theading1\t标题内容');
+      expect(text).toContain('txt_1\ttext\t正文段落');
+    });
+
+    it('should truncate long text in preview', async () => {
+      const longText = 'A'.repeat(100);
+      mockDocxDocumentBlockList.mockResolvedValue({
+        code: 0,
+        data: {
+          items: [
+            { block_id: 'page_1', block_type: 1 },
+            { block_id: 'txt_1', block_type: 2, text: { elements: [{ text_run: { content: longText } }] } },
+          ],
+        },
+      });
+      const result = await capturedHandler({ action: 'list_blocks', doc_token: 'ABC123' });
+      const text = result.content[0].text;
+      // Should truncate to 80 chars + ellipsis
+      expect(text).toContain('A'.repeat(80) + '…');
+      expect(text).not.toContain('A'.repeat(100));
+    });
+  });
+
+  describe('read_blocks action', () => {
+    it('should read a single block by id', async () => {
+      mockDocxDocumentBlockList.mockResolvedValue({
+        code: 0,
+        data: {
+          items: [
+            { block_id: 'page_1', block_type: 1, children: ['h1_1', 'txt_1'] },
+            { block_id: 'h1_1', block_type: 3, heading1: { elements: [{ text_run: { content: '标题' } }] } },
+            { block_id: 'txt_1', block_type: 2, text: { elements: [{ text_run: { content: '正文' } }] } },
+          ],
+        },
+      });
+      const result = await capturedHandler({ action: 'read_blocks', doc_token: 'ABC123', block_id: 'h1_1' });
+      const text = result.content[0].text;
+      expect(text).toContain('h1_1');
+      expect(text).toContain('标题');
+    });
+
+    it('should read multiple blocks by comma-separated ids', async () => {
+      mockDocxDocumentBlockList.mockResolvedValue({
+        code: 0,
+        data: {
+          items: [
+            { block_id: 'page_1', block_type: 1, children: ['h1_1', 'txt_1'] },
+            { block_id: 'h1_1', block_type: 3, heading1: { elements: [{ text_run: { content: '标题A' } }] } },
+            { block_id: 'txt_1', block_type: 2, text: { elements: [{ text_run: { content: '段落B' } }] } },
+          ],
+        },
+      });
+      const result = await capturedHandler({ action: 'read_blocks', doc_token: 'ABC123', block_id: 'h1_1,txt_1' });
+      const text = result.content[0].text;
+      expect(text).toContain('标题A');
+      expect(text).toContain('段落B');
+    });
+
+    it('should include children blocks recursively', async () => {
+      mockDocxDocumentBlockList.mockResolvedValue({
+        code: 0,
+        data: {
+          items: [
+            { block_id: 'page_1', block_type: 1, children: ['container_1'] },
+            { block_id: 'container_1', block_type: 34, children: ['child_1', 'child_2'] },
+            { block_id: 'child_1', block_type: 2, text: { elements: [{ text_run: { content: '子内容1' } }] } },
+            { block_id: 'child_2', block_type: 2, text: { elements: [{ text_run: { content: '子内容2' } }] } },
+          ],
+        },
+      });
+      const result = await capturedHandler({ action: 'read_blocks', doc_token: 'ABC123', block_id: 'container_1' });
+      const text = result.content[0].text;
+      expect(text).toContain('3 blocks'); // container + 2 children
+      expect(text).toContain('子内容1');
+      expect(text).toContain('子内容2');
+    });
+
+    it('should report not found for invalid block id', async () => {
+      mockDocxDocumentBlockList.mockResolvedValue({
+        code: 0,
+        data: { items: [{ block_id: 'page_1', block_type: 1 }] },
+      });
+      const result = await capturedHandler({ action: 'read_blocks', doc_token: 'ABC123', block_id: 'nonexistent' });
+      expect(result.content[0].text).toContain('未找到');
+    });
+
+    it('should return error when block_id is missing', async () => {
+      const result = await capturedHandler({ action: 'read_blocks', doc_token: 'ABC123' });
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toContain('block_id');
+    });
+
+    it('should return error when doc_token is missing', async () => {
+      const result = await capturedHandler({ action: 'read_blocks', block_id: 'b1' });
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toContain('doc_token');
     });
   });
 
