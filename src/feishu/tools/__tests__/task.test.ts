@@ -10,6 +10,8 @@ const mockTaskGet = vi.fn();
 const mockTaskList = vi.fn();
 const mockTaskPatch = vi.fn();
 const mockTaskDelete = vi.fn();
+const mockTaskAddMembers = vi.fn();
+const mockTaskRemoveMembers = vi.fn();
 const mockRequest = vi.fn();
 
 vi.mock('../../client.js', () => ({
@@ -27,6 +29,8 @@ vi.mock('../../client.js', () => ({
             get: (...args: unknown[]) => mockTaskGet(...args),
             patch: (...args: unknown[]) => mockTaskPatch(...args),
             delete: (...args: unknown[]) => mockTaskDelete(...args),
+            addMembers: (...args: unknown[]) => mockTaskAddMembers(...args),
+            removeMembers: (...args: unknown[]) => mockTaskRemoveMembers(...args),
           },
         },
       },
@@ -123,7 +127,7 @@ describe('parseDueDate', () => {
 
 describe('feishu_task tool', () => {
   describe('create', () => {
-    it('should create a task with only summary', async () => {
+    it('should create a task with only summary and include applink', async () => {
       mockTaskCreate.mockResolvedValue({
         code: 0,
         data: { task: { guid: 'TASK_001', summary: '开会' } },
@@ -131,6 +135,7 @@ describe('feishu_task tool', () => {
       const result = await capturedHandler({ action: 'create', summary: '开会' });
       expect(result.content[0].text).toContain('TASK_001');
       expect(result.content[0].text).toContain('开会');
+      expect(result.content[0].text).toContain('https://applink.feishu.cn/client/todo/detail?guid=TASK_001');
       expect(mockTaskCreate).toHaveBeenCalledWith(expect.objectContaining({
         data: expect.objectContaining({ summary: '开会' }),
         params: { user_id_type: 'open_id' },
@@ -403,6 +408,87 @@ describe('feishu_task tool', () => {
       const result = await capturedHandler({ action: 'delete' });
       expect(result.isError).toBe(true);
       expect(result.content[0].text).toContain('task_guid');
+    });
+  });
+
+  describe('add_members', () => {
+    it('should add members to a task', async () => {
+      mockTaskAddMembers.mockResolvedValue({ code: 0 });
+      const result = await capturedHandler({
+        action: 'add_members',
+        task_guid: 'TASK_001',
+        members: '[{"id": "ou_123", "role": "follower"}]',
+      });
+      expect(result.content[0].text).toBe('成员已添加');
+      expect(mockTaskAddMembers).toHaveBeenCalledWith(expect.objectContaining({
+        path: { task_guid: 'TASK_001' },
+        data: { members: [{ id: 'ou_123', role: 'follower' }] },
+        params: { user_id_type: 'open_id' },
+      }), undefined);
+    });
+
+    it('should require task_guid', async () => {
+      const result = await capturedHandler({
+        action: 'add_members',
+        members: '[{"id": "ou_123", "role": "assignee"}]',
+      });
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toContain('task_guid');
+    });
+
+    it('should require members', async () => {
+      const result = await capturedHandler({
+        action: 'add_members',
+        task_guid: 'TASK_001',
+      });
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toContain('members');
+    });
+
+    it('should handle API errors', async () => {
+      mockTaskAddMembers.mockResolvedValue({ code: 1470404, msg: 'task not found' });
+      const result = await capturedHandler({
+        action: 'add_members',
+        task_guid: 'TASK_001',
+        members: '[{"id": "ou_123", "role": "assignee"}]',
+      });
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toContain('1470404');
+    });
+  });
+
+  describe('remove_members', () => {
+    it('should remove members from a task', async () => {
+      mockTaskRemoveMembers.mockResolvedValue({ code: 0 });
+      const result = await capturedHandler({
+        action: 'remove_members',
+        task_guid: 'TASK_001',
+        members: '[{"id": "ou_123", "role": "follower"}]',
+      });
+      expect(result.content[0].text).toBe('成员已移除');
+      expect(mockTaskRemoveMembers).toHaveBeenCalledWith(expect.objectContaining({
+        path: { task_guid: 'TASK_001' },
+        data: { members: [{ id: 'ou_123', role: 'follower' }] },
+        params: { user_id_type: 'open_id' },
+      }), undefined);
+    });
+
+    it('should require task_guid', async () => {
+      const result = await capturedHandler({
+        action: 'remove_members',
+        members: '[{"id": "ou_123", "role": "assignee"}]',
+      });
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toContain('task_guid');
+    });
+
+    it('should require members', async () => {
+      const result = await capturedHandler({
+        action: 'remove_members',
+        task_guid: 'TASK_001',
+      });
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toContain('members');
     });
   });
 

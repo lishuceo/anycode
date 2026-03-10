@@ -116,6 +116,8 @@ export function feishuTaskTool(getUserToken?: () => Promise<string | undefined>)
       '- list: 查询任务列表 (支持 completed/page_size 过滤)',
       '- update: 编辑任务 (需要 task_guid + update_fields)',
       '- delete: 删除任务 (需要 task_guid)',
+      '- add_members: 添加任务成员 (需要 task_guid + members)',
+      '- remove_members: 移除任务成员 (需要 task_guid + members)',
       '',
       '时间格式 (due/start): Unix 秒级时间戳 或 ISO 日期 (如 "2026-03-15" 或 "2026-03-15T10:00:00")',
       'members 格式: JSON 数组 \'[{"id": "ou_xxx", "role": "assignee"}]\'',
@@ -123,7 +125,7 @@ export function feishuTaskTool(getUserToken?: () => Promise<string | undefined>)
       '  - completed_at: 设为当前时间表示完成任务，设为空字符串表示取消完成',
     ].join('\n'),
     {
-      action: z.enum(['create', 'get', 'list', 'update', 'delete']).describe('操作类型'),
+      action: z.enum(['create', 'get', 'list', 'update', 'delete', 'add_members', 'remove_members']).describe('操作类型'),
       // create / update 共用
       summary: z.string().optional().describe('任务标题 (create 时必填)'),
       description: z.string().optional().describe('任务描述'),
@@ -173,14 +175,16 @@ export function feishuTaskTool(getUserToken?: () => Promise<string | undefined>)
             }, userTokenOpt);
             if (resp.code !== 0) throw new Error(`创建任务失败 (${resp.code}): ${resp.msg}`);
             const task = resp.data?.task;
+            const guid = task?.guid ?? '(未知)';
             return {
               content: [{
                 type: 'text' as const,
                 text: [
                   '任务已创建',
-                  `guid: ${task?.guid ?? '(未知)'}`,
+                  `guid: ${guid}`,
                   `summary: ${task?.summary ?? ''}`,
                   task?.due ? `due: ${task.due.timestamp}` : '',
+                  guid !== '(未知)' ? `link: https://applink.feishu.cn/client/todo/detail?guid=${guid}` : '',
                 ].filter(Boolean).join('\n'),
               }],
             };
@@ -352,6 +356,42 @@ export function feishuTaskTool(getUserToken?: () => Promise<string | undefined>)
               content: [{
                 type: 'text' as const,
                 text: '任务已删除',
+              }],
+            };
+          }
+
+          case 'add_members': {
+            if (!args.task_guid) throw new Error('add_members 操作需要 task_guid');
+            if (!args.members) throw new Error('add_members 操作需要 members (JSON 数组)');
+            const addMembers = validateMembers(args.members);
+            const addResp = await client.task.v2.task.addMembers({
+              path: { task_guid: args.task_guid },
+              data: { members: addMembers },
+              params: { user_id_type: args.user_id_type ?? 'open_id' },
+            }, userTokenOpt);
+            if (addResp.code !== 0) throw new Error(`添加成员失败 (${addResp.code}): ${addResp.msg}`);
+            return {
+              content: [{
+                type: 'text' as const,
+                text: '成员已添加',
+              }],
+            };
+          }
+
+          case 'remove_members': {
+            if (!args.task_guid) throw new Error('remove_members 操作需要 task_guid');
+            if (!args.members) throw new Error('remove_members 操作需要 members (JSON 数组)');
+            const rmMembers = validateMembers(args.members);
+            const rmResp = await client.task.v2.task.removeMembers({
+              path: { task_guid: args.task_guid },
+              data: { members: rmMembers },
+              params: { user_id_type: args.user_id_type ?? 'open_id' },
+            }, userTokenOpt);
+            if (rmResp.code !== 0) throw new Error(`移除成员失败 (${rmResp.code}): ${rmResp.msg}`);
+            return {
+              content: [{
+                type: 'text' as const,
+                text: '成员已移除',
               }],
             };
           }
