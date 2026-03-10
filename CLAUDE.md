@@ -76,7 +76,7 @@ Environment variables loaded via dotenv (see `.env.example`):
 
 ## Testing Policy
 
-- **新功能必须附带单元测试** — 新增的模块/函数需要在 `tests/` 下有对应的 `.test.ts` 文件。
+- **新功能必须附带单元测试** — 新增的模块/函数需要在 `tests/` 下有对应的 `.test.ts` 文件。每个 feat commit 必须伴随对应的 test commit。
 - **Bug fix 需附带回归测试** — 修复的 bug 应有测试用例覆盖，防止回归。
 - **复杂改动须通过完整回归** — 涉及多模块或核心逻辑的改动，提交前需运行 `npx vitest run` 确保全部测试通过。
 - **PR 不得降低测试覆盖率** — 新增代码应有合理的测试覆盖，不允许只加功能不加测试。
