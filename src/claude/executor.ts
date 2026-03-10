@@ -19,6 +19,64 @@ import type { ClaudeResult, ExecuteOptions, ProgressCallback, TurnInfo, ToolCall
 // SDK 会自动管理工具执行、权限、流式输出等
 // ============================================================
 
+// Anthropic API 定价（per million tokens）
+// https://docs.anthropic.com/en/docs/about-claude/pricing
+const MODEL_PRICING: Record<string, { input: number; output: number; cacheWrite: number; cacheRead: number }> = {
+  'claude-opus-4-6':          { input: 5,   output: 25,  cacheWrite: 6.25,  cacheRead: 0.50 },
+  'claude-opus-4-5-20250620': { input: 5,   output: 25,  cacheWrite: 6.25,  cacheRead: 0.50 },
+  'claude-sonnet-4-6':        { input: 3,   output: 15,  cacheWrite: 3.75,  cacheRead: 0.30 },
+  'claude-sonnet-4-5-20241022': { input: 3, output: 15,  cacheWrite: 3.75,  cacheRead: 0.30 },
+  'claude-haiku-4-5-20251001': { input: 1,  output: 5,   cacheWrite: 1.25,  cacheRead: 0.10 },
+};
+const DEFAULT_PRICING = MODEL_PRICING['claude-opus-4-6']!;
+
+/**
+ * 用顶层 usage 字段计算本次 query 的实际费用。
+ *
+ * SDK 的 total_cost_usd / modelUsage 在 resume 首次 query 时会混入历史累计值，
+ * 而顶层 usage 仅包含本次 query 的 token 用量，因此自行按定价计算更准确。
+ *
+ * 当 usage 和 modelUsage 一致时（无 subagent、非首次 resume），计算结果 ≈ total_cost_usd。
+ * 当出现累计偏差时，本函数返回更合理的单次费用。
+ */
+function calculateCostFromUsage(
+  usage: { input_tokens: number; output_tokens: number; cache_creation_input_tokens: number; cache_read_input_tokens: number },
+  modelUsage: Record<string, { costUSD: number; inputTokens: number; outputTokens: number; cacheReadInputTokens: number; cacheCreationInputTokens: number }>,
+): number {
+  // 优先尝试：如果顶层 usage 和 modelUsage 的主模型一致（非累计偏差场景），直接用 SDK 报告的 costUSD
+  const models = Object.keys(modelUsage);
+  if (models.length === 1) {
+    const mu = modelUsage[models[0]!]!;
+    if (
+      mu.inputTokens === usage.input_tokens &&
+      mu.outputTokens === usage.output_tokens &&
+      mu.cacheCreationInputTokens === usage.cache_creation_input_tokens &&
+      mu.cacheReadInputTokens === usage.cache_read_input_tokens
+    ) {
+      return mu.costUSD;
+    }
+  }
+
+  // 存在偏差（resume 首次 query 或 subagent）：用顶层 usage 按定价计算
+  // 取 modelUsage 中主模型（cost 最高的那个）的定价
+  let pricing = DEFAULT_PRICING;
+  let maxCost = 0;
+  for (const [model, mu] of Object.entries(modelUsage)) {
+    if (mu.costUSD > maxCost) {
+      maxCost = mu.costUSD;
+      pricing = MODEL_PRICING[model] ?? DEFAULT_PRICING;
+    }
+  }
+
+  const M = 1_000_000;
+  return (
+    (usage.input_tokens * pricing.input) / M +
+    (usage.output_tokens * pricing.output) / M +
+    (usage.cache_creation_input_tokens * pricing.cacheWrite) / M +
+    (usage.cache_read_input_tokens * pricing.cacheRead) / M
+  );
+}
+
 /** 只读模式下禁止调用的写入类工具 */
 const WRITE_TOOLS = new Set([
   'Edit', 'Write', 'NotebookEdit', 'Bash', 'Skill',
@@ -660,10 +718,18 @@ export class ClaudeExecutor {
 
     // 解析结果消息
     if (resultMessage && resultMessage.type === 'result') {
+      // SDK 的 total_cost_usd / modelUsage / durationApiMs 在 resume 首次 query 时
+      // 会包含整个 session 的历史累计值，导致简单问题显示天价费用。
+      // 改用顶层 usage 字段（仅包含本次 query 的 token 用量）自行计算费用。
+      const queryCostUsd = (resultMessage.usage && resultMessage.modelUsage)
+        ? calculateCostFromUsage(resultMessage.usage, resultMessage.modelUsage)
+        : resultMessage.total_cost_usd;
+
       logger.info({
         sessionKey,
         subtype: resultMessage.subtype,
-        totalCostUsd: resultMessage.total_cost_usd,
+        sdkTotalCostUsd: resultMessage.total_cost_usd,
+        queryCostUsd,
         numTurns: resultMessage.num_turns,
         durationMs: resultMessage.duration_ms,
         durationApiMs: resultMessage.duration_api_ms,
@@ -686,7 +752,7 @@ export class ClaudeExecutor {
           systemPromptHash,
           durationMs: resultMessage.duration_ms ?? durationMs,
           durationApiMs: resultMessage.duration_api_ms,
-          costUsd: resultMessage.total_cost_usd,
+          costUsd: queryCostUsd,
           numTurns: resultMessage.num_turns,
           needsRestart: workspaceChanged,
           newWorkingDir,
@@ -702,7 +768,7 @@ export class ClaudeExecutor {
           systemPromptHash,
           durationMs: resultMessage.duration_ms ?? durationMs,
           durationApiMs: resultMessage.duration_api_ms,
-          costUsd: resultMessage.total_cost_usd,
+          costUsd: queryCostUsd,
           numTurns: resultMessage.num_turns,
           needsRestart: workspaceChanged,
           newWorkingDir,
