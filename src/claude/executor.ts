@@ -468,7 +468,11 @@ export class ClaudeExecutor {
             logger.info({ toolName, readOnly }, 'canUseTool denied — read-only mode (MCP tool)');
             return { behavior: 'deny' as const, message: '当前用户处于只读模式，无法使用此工具。' };
           }
-          logger.info({ toolName, inputKeys: Object.keys(inputObj) }, 'canUseTool called — auto allowing');
+          logger.info({
+            toolName,
+            inputKeys: Object.keys(inputObj),
+            ...(toolName === 'Bash' && inputObj.command ? { cmd: String(inputObj.command).slice(0, 200) } : {}),
+          }, 'canUseTool called — auto allowing');
           // updatedInput 必须显式传回，否则 SDK 内部 Zod 校验会因 undefined 报错
           return { behavior: 'allow' as const, updatedInput: inputObj };
         },
@@ -656,6 +660,17 @@ export class ClaudeExecutor {
 
     // 解析结果消息
     if (resultMessage && resultMessage.type === 'result') {
+      logger.info({
+        sessionKey,
+        subtype: resultMessage.subtype,
+        totalCostUsd: resultMessage.total_cost_usd,
+        numTurns: resultMessage.num_turns,
+        durationMs: resultMessage.duration_ms,
+        durationApiMs: resultMessage.duration_api_ms,
+        usage: resultMessage.usage,
+        modelUsage: resultMessage.modelUsage,
+      }, 'Claude Agent SDK query result');
+
       if (resultMessage.subtype === 'success') {
         // 如果 output 为空但 result 有文本，使用 result（同样需要剥离 thinking 标签）
         if (!output && resultMessage.result) {
