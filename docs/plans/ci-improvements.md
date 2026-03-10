@@ -1,3 +1,14 @@
+---
+summary: "CI/CD 改进：纯文档变更跳过 CI + PR review 优化"
+status: draft
+owner: lishuceo
+last_updated: "2026-03-04"
+read_when:
+  - 修改 CI/CD 工作流（.github/workflows/）
+  - 优化 PR 审查流程
+  - 添加文档相关的 CI 检查
+---
+
 # CI/CD 改进方案
 
 ## 1. 纯文档变更跳过 CI

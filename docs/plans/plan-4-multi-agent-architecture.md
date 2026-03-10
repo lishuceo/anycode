@@ -1,3 +1,14 @@
+---
+summary: "多 Agent 角色架构：Chat Agent + Dev Agent 分工协作"
+status: in_progress
+owner: lishuceo
+last_updated: "2026-02-25"
+read_when:
+  - 修改 Agent 角色定义或 prompt
+  - 调整 Chat Agent / Dev Agent 分工
+  - 开发 Agent 间通信或上下文传递
+---
+
 # Plan 4: 多 Agent 角色架构
 
 > 日期: 2026-02-24

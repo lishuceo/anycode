@@ -92,3 +92,30 @@ Environment variables loaded via dotenv (see `.env.example`):
 - `@anthropic-ai/claude-agent-sdk` for Claude Code execution
 - `@larksuiteoapi/node-sdk` for Feishu API + WebSocket events
 - Pino for structured logging, Zod available for validation
+
+## 开发计划文档
+
+文档按生命周期分三个目录：
+
+| 目录 | 内容 | 生命周期 |
+|------|------|----------|
+| `docs/plans/` | 活跃的实施计划 | 短期，完成后删除或标记 `status: completed` |
+| `docs/design/` | 长期架构设计 | 长期保留，持续维护 |
+| `docs/research/` | 调研分析 | 只读参考 |
+
+### Agent 工作流
+
+- **开始新任务前**，扫描 `docs/plans/*.md` 的 YAML front matter，读取 `summary` 和 `read_when` 字段，判断是否与当前任务相关。如果相关，先读完该计划再动手。
+- **新建计划文件**时，必须包含以下 front matter：
+
+```yaml
+---
+summary: "一句话描述"
+status: draft              # draft | in_progress | completed
+owner: git-id
+last_updated: "YYYY-MM-DD"
+read_when:
+  - 触发场景 1
+  - 触发场景 2
+---
+```

@@ -1,3 +1,14 @@
+---
+summary: "将 .env 平铺配置替换为结构化 JSON5 + Zod 校验 + 热重载"
+status: draft
+owner: lishuceo
+last_updated: "2026-02-23"
+read_when:
+  - 修改配置系统或 src/config.ts
+  - 新增配置项
+  - 需要配置热重载能力
+---
+
 # Plan 2: 结构化配置系统 + 热重载
 
 ## 目标

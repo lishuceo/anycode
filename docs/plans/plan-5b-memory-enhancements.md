@@ -1,3 +1,14 @@
+---
+summary: "记忆系统增强：历史记忆主动检索 + Supersede 链"
+status: draft
+owner: lishuceo
+last_updated: "2026-03-08"
+read_when:
+  - 修改记忆搜索或检索逻辑
+  - 处理历史记忆查询（如"为什么不用 MySQL"）
+  - 修改记忆的 supersede/invalidate 逻辑
+---
+
 # Plan 5b: 记忆系统增强 — 历史记忆主动检索与 Supersede 链
 
 > 日期: 2026-03-08

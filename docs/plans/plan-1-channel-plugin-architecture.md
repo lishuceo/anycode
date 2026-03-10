@@ -1,3 +1,14 @@
+---
+summary: "将飞书硬编码集成抽象为插件化渠道架构，支持扩展到 Telegram/Slack/Discord"
+status: draft
+owner: lishuceo
+last_updated: "2026-02-23"
+read_when:
+  - 新增消息渠道（Telegram/Slack/Discord 等）
+  - 修改消息收发、事件处理、卡片构建逻辑
+  - 重构 src/feishu/ 模块
+---
+
 # Plan 1: 插件化渠道架构
 
 ## 目标

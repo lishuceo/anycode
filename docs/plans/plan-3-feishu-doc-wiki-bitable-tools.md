@@ -1,3 +1,14 @@
+---
+summary: "为 Claude Agent 注入飞书文档/Wiki/多维表格 MCP 工具"
+status: completed
+owner: lishuceo
+last_updated: "2026-02-23"
+read_when:
+  - 开发飞书文档相关的 MCP 工具
+  - 修改 MCP 工具注入逻辑
+  - 扩展飞书 API 能力
+---
+
 # Plan 3: 飞书文档/Wiki/多维表格 MCP 工具
 
 ## 目标
