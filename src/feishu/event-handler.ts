@@ -319,8 +319,8 @@ function processQueue(queueKey: string, agentId: AgentId = 'dev'): void {
   const useDirectMode = agentCfg?.replyMode === 'direct';
 
   const executeFn = useDirectMode
-    ? executeDirectTask(task.message, task.chatId, task.userId, task.messageId, task.images, agentId, task.threadId, task.rootId)
-    : executeClaudeTask(task.message, task.chatId, task.userId, task.messageId, task.rootId, task.threadId, task.images, agentId);
+    ? executeDirectTask(task.message, task.chatId, task.userId, task.messageId, task.images, agentId, task.threadId, task.rootId, task.createTime)
+    : executeClaudeTask(task.message, task.chatId, task.userId, task.messageId, task.rootId, task.threadId, task.images, agentId, task.createTime);
 
   // 注册 task promise：graceful shutdown 时等待结果卡片发送完成
   claudeExecutor.registerTask(executeFn);
@@ -451,6 +451,8 @@ interface ParsedMessage {
   images?: ImageAttachment[];
   /** 发送者类型: 'user' = 人类用户, 'app' = 应用/机器人 */
   senderType?: string;
+  /** 消息创建时间（毫秒级时间戳字符串，来自飞书 message.create_time） */
+  createTime?: string;
 }
 
 /**
@@ -483,7 +485,7 @@ async function handleMessageEvent(data: MessageEventData, accountId: string = 'd
   const parsed = await parseMessage(data);
   if (!parsed) return;
 
-  const { text, messageId, userId, chatId, chatType, mentionedBot, rootId, threadId, images, mentions, senderType } = parsed;
+  const { text, messageId, userId, chatId, chatType, mentionedBot, rootId, threadId, images, mentions, senderType, createTime } = parsed;
 
   // -- 被动收集：消息发送者为 bot 时记录到 registry --
   if (senderType === 'app' && userId && chatId) {
@@ -648,7 +650,7 @@ async function handleMessageEvent(data: MessageEventData, accountId: string = 'd
   // enqueue 返回的 Promise 的错误处理在 processQueue/executeClaudeTask 中完成
   const isDirectMode = agentConfig?.replyMode === 'direct';
   const queueKey = makeQueueKey(chatId, effectiveThreadId, agentId, isDirectMode ? userId : undefined);
-  taskQueue.enqueue(queueKey, chatId, userId, effectiveText, messageId, rootId, effectiveThreadId, images).catch(() => {});
+  taskQueue.enqueue(queueKey, chatId, userId, effectiveText, messageId, rootId, effectiveThreadId, images, createTime).catch(() => {});
   processQueue(queueKey, agentId);
 }
 
@@ -976,6 +978,49 @@ async function resolveUserNames(
 }
 
 /**
+ * 将飞书毫秒级时间戳格式化为可读时间字符串。
+ * 同一天只显示 "HH:MM"，跨天显示 "MM-DD HH:MM"，跨年显示 "YYYY-MM-DD HH:MM"。
+ * 使用 UTC+8（中国标准时间）。
+ */
+function formatCreateTime(createTimeMs?: string): string | undefined {
+  if (!createTimeMs) return undefined;
+  const ms = Number(createTimeMs);
+  if (!ms || isNaN(ms)) return undefined;
+
+  const date = new Date(ms);
+  const now = new Date();
+
+  // 转换为 UTC+8 的各分量
+  const utc8Offset = 8 * 60 * 60 * 1000;
+  const d = new Date(date.getTime() + utc8Offset);
+  const n = new Date(now.getTime() + utc8Offset);
+
+  const hh = String(d.getUTCHours()).padStart(2, '0');
+  const mm = String(d.getUTCMinutes()).padStart(2, '0');
+
+  // 同一天：只显示时间
+  if (d.getUTCFullYear() === n.getUTCFullYear() &&
+      d.getUTCMonth() === n.getUTCMonth() &&
+      d.getUTCDate() === n.getUTCDate()) {
+    return `[${hh}:${mm}]`;
+  }
+
+  const mon = String(d.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(d.getUTCDate()).padStart(2, '0');
+
+  // 同一年：显示月-日 时间
+  if (d.getUTCFullYear() === n.getUTCFullYear()) {
+    return `[${mon}-${day} ${hh}:${mm}]`;
+  }
+
+  // 跨年：显示完整日期
+  return `[${d.getUTCFullYear()}-${mon}-${day} ${hh}:${mm}]`;
+}
+
+/** 仅测试用：导出 formatCreateTime */
+export const _testFormatCreateTime = formatCreateTime;
+
+/**
  * 格式化历史消息为上下文文本（共享逻辑）。
  *
  * 保护策略：
@@ -988,7 +1033,7 @@ async function resolveUserNames(
  * @param selfBotOpenIds 所有自己管理的 bot open_id 集合（用于区分自己的回复和其他 bot 的回复）
  */
 async function formatHistoryMessages(
-  messages: Array<{ messageId: string; senderId: string; senderType: 'user' | 'app'; content: string; msgType: string }>,
+  messages: Array<{ messageId: string; senderId: string; senderType: 'user' | 'app'; content: string; msgType: string; createTime?: string }>,
   chatId?: string,
   selfBotOpenIds?: Set<string>,
 ): Promise<string | undefined> {
@@ -1025,7 +1070,9 @@ async function formatHistoryMessages(
     const text = m.content.length > maxLen
       ? m.content.slice(0, maxLen) + '...'
       : m.content;
-    return `${role}: ${text}`;
+    // 时间前缀：毫秒时间戳 → "HH:MM" (UTC+8)
+    const timePrefix = formatCreateTime(m.createTime);
+    return timePrefix ? `${timePrefix} ${role}: ${text}` : `${role}: ${text}`;
   });
 
   // 2. 总量保护：如果超出预算，从最旧的消息开始丢弃（保留最近的）
@@ -1075,6 +1122,7 @@ async function executeClaudeTask(
   eventThreadId?: string,
   images?: ImageAttachment[],
   agentId: AgentId = 'dev',
+  createTime?: string,
 ): Promise<void> {
   // 1. 解析话题上下文（thread + 路由 + 工作区隔离 + greeting）
   const resolved = await resolveThreadContext({
@@ -1155,10 +1203,16 @@ async function executeClaudeTask(
   // 群聊话题中标注发送者身份，与历史消息的 [姓名] 格式保持一致
   const senderTaggedPrompt = await tagSenderIdentity(prompt, userId, chatId, !!threadId);
 
+  // 在用户消息末尾附带发送时间元数据（不放 system prompt，避免 cache miss）
+  const msgTimeSuffix = formatCreateTime(createTime);
+  const promptWithTime = msgTimeSuffix
+    ? `${senderTaggedPrompt}\n\n<msg-time>${msgTimeSuffix}</msg-time>`
+    : senderTaggedPrompt;
+
   // 每次都注入增量飞书聊天历史，拼入 user prompt（不是 system prompt）
   // resume 时通过 afterMsgId 去重，只注入上次交互后新增的消息
   // 确保 dev-bot 能看到中间 @其他bot 的对话等未直接参与的消息
-  let effectivePrompt = senderTaggedPrompt;
+  let effectivePrompt = promptWithTime;
   if (!historySummaries) {
     // 收集所有自己管理的 bot open_id，用于历史消息差异化截断
     const selfBotOpenIds = accountManager.getAllBotOpenIds();
@@ -1167,7 +1221,7 @@ async function executeClaudeTask(
     const afterMsgId = activeConversationId ? _historyDedup.get(sessionKey) : undefined;
     const history = await buildChatHistoryContext(chatId, threadId, messageId, afterMsgId, selfBotOpenIds);
     if (history.text) {
-      effectivePrompt = history.text + '\n\n---\n\n' + senderTaggedPrompt;
+      effectivePrompt = history.text + '\n\n---\n\n' + promptWithTime;
     }
     if (history.newestMsgId) {
       _historyDedup.set(sessionKey, history.newestMsgId);
@@ -1533,6 +1587,7 @@ async function executeDirectTask(
   agentId: AgentId = 'pm',
   eventThreadId?: string,
   rootId?: string,
+  createTime?: string,
 ): Promise<void> {
   const agentCfg = agentRegistry.getOrThrow(agentId);
   const session = sessionManager.getOrCreate(chatId, userId, agentId);
@@ -1599,15 +1654,21 @@ async function executeDirectTask(
     // 群聊/话题中标注发送者身份，避免多用户共享 session 时模型混淆对话对象
     const senderTaggedPrompt = await tagSenderIdentity(rawPrompt, userId, chatId, !!(eventThreadId || chatId));
 
+    // 在用户消息末尾附带发送时间元数据
+    const msgTimeSuffix = formatCreateTime(createTime);
+    const promptWithTime = msgTimeSuffix
+      ? `${senderTaggedPrompt}\n\n<msg-time>${msgTimeSuffix}</msg-time>`
+      : senderTaggedPrompt;
+
     // 每次 @bot 都注入最新聊天历史（resume 时通过 afterMsgId 去重，只注入新消息）
     const selfBotOpenIds = accountManager.getAllBotOpenIds();
     if (feishuClient.botOpenId) selfBotOpenIds.add(feishuClient.botOpenId);
 
-    let effectivePrompt = senderTaggedPrompt;
+    let effectivePrompt = promptWithTime;
     const afterMsgId = activeConversationId ? _historyDedup.get(sessionKey) : undefined;
     const history = await buildDirectTaskHistory(chatId, eventThreadId, messageId, afterMsgId, selfBotOpenIds);
     if (history.text) {
-      effectivePrompt = history.text + '\n\n---\n\n' + senderTaggedPrompt;
+      effectivePrompt = history.text + '\n\n---\n\n' + promptWithTime;
     }
     if (history.newestMsgId) {
       _historyDedup.set(sessionKey, history.newestMsgId);
@@ -1726,7 +1787,7 @@ async function buildDirectTaskHistory(
   selfBotOpenIds?: Set<string>,
 ): Promise<HistoryResult> {
   try {
-    let messages: Array<{ messageId: string; senderId: string; senderType: 'user' | 'app'; content: string; msgType: string }>;
+    let messages: Array<{ messageId: string; senderId: string; senderType: 'user' | 'app'; content: string; msgType: string; createTime?: string }>;
 
     if (!threadId) {
       // 主聊天区：直接取父群最近消息
@@ -2124,6 +2185,7 @@ async function parseMessage(data: MessageEventData): Promise<ParsedMessage | nul
     threadId: message.thread_id || undefined,
     images,
     senderType: sender.sender_type,
+    createTime: message.create_time || undefined,
   };
 }
 
