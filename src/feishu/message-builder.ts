@@ -75,7 +75,7 @@ export function buildProgressCard(prompt: string, statusText: string = '正在�
   return {
     config: { wide_screen_mode: true },
     header: {
-      title: { tag: 'plain_text', content: '🤖 Claude Code' },
+      title: { tag: 'plain_text', content: '🤖 Coding Agent' },
       template: 'blue',
     },
     elements: [
@@ -141,7 +141,7 @@ export function buildResultCard(
   return {
     config: { wide_screen_mode: true },
     header: {
-      title: { tag: 'plain_text', content: `🤖 Claude Code - ${status}` },
+      title: { tag: 'plain_text', content: `🤖 Coding Agent - ${status}` },
       template: headerTemplate,
     },
     elements,
@@ -163,7 +163,7 @@ export function buildStreamingCard(
   return {
     config: { wide_screen_mode: true },
     header: {
-      title: { tag: 'plain_text', content: '🤖 Claude Code - 执行中' },
+      title: { tag: 'plain_text', content: '🤖 Coding Agent - 执行中' },
       template: 'blue',
     },
     elements: [
@@ -229,10 +229,10 @@ export function buildPipelineCard(
 
   const headerTemplate = isDone ? 'green' : isFailed ? 'red' : 'blue';
   const headerTitle = isDone
-    ? '🤖 Claude Code - 管道完成'
+    ? '🤖 Coding Agent - 管道完成'
     : isFailed
-      ? '🤖 Claude Code - 管道失败'
-      : '🤖 Claude Code - 自动开发管道';
+      ? '🤖 Coding Agent - 管道失败'
+      : '🤖 Coding Agent - 自动开发管道';
 
   const elements: Record<string, unknown>[] = [
     {
@@ -342,7 +342,7 @@ export function buildStatusCard(
   return {
     config: { wide_screen_mode: true },
     header: {
-      title: { tag: 'plain_text', content: '🤖 Claude Code - 会话状态' },
+      title: { tag: 'plain_text', content: '🤖 Coding Agent - 会话状态' },
       template: 'indigo',
     },
     elements: [
@@ -376,7 +376,7 @@ export function buildPipelineConfirmCard(
   return {
     config: { wide_screen_mode: true },
     header: {
-      title: { tag: 'plain_text', content: '🤖 Claude Code - 自动开发管道' },
+      title: { tag: 'plain_text', content: '🤖 Coding Agent - 自动开发管道' },
       template: 'blue',
     },
     elements: [
@@ -435,7 +435,7 @@ export function buildCancelledCard(prompt: string): Record<string, unknown> {
   return {
     config: { wide_screen_mode: true },
     header: {
-      title: { tag: 'plain_text', content: '🤖 Claude Code - 已取消' },
+      title: { tag: 'plain_text', content: '🤖 Coding Agent - 已取消' },
       template: 'grey',
     },
     elements: [
@@ -465,7 +465,7 @@ export function buildInterruptedCard(
   return {
     config: { wide_screen_mode: true },
     header: {
-      title: { tag: 'plain_text', content: '🤖 Claude Code - 管道中断' },
+      title: { tag: 'plain_text', content: '🤖 Coding Agent - 管道中断' },
       template: 'orange',
     },
     elements: [
@@ -517,8 +517,8 @@ export function buildToolProgressCard(
   lines.push(...displayed.map(formatToolCall));
 
   const headerTitle = completed
-    ? '🤖 Claude Code - 活动记录'
-    : '🤖 Claude Code - 执行中';
+    ? '🤖 Coding Agent - 活动记录'
+    : '🤖 Coding Agent - 执行中';
   const headerTemplate = completed ? 'indigo' : 'blue';
 
   const footerParts: string[] = [];
@@ -679,7 +679,7 @@ export function buildOverviewCard(
   return {
     config: { wide_screen_mode: true },
     header: {
-      title: { tag: 'plain_text', content: '🤖 Claude Code' },
+      title: { tag: 'plain_text', content: '🤖 Coding Agent' },
       template: stateConfig.template,
     },
     elements: [
@@ -768,7 +768,7 @@ export function buildSimpleResultCard(
   return {
     config: { wide_screen_mode: true },
     header: {
-      title: { tag: 'plain_text', content: `🤖 Claude Code - ${status}` },
+      title: { tag: 'plain_text', content: `🤖 Coding Agent - ${status}` },
       template: headerTemplate,
     },
     elements,

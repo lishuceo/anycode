@@ -61,7 +61,7 @@ describe('serializeCard', () => {
   it('should handle nested objects with ${...} patterns', () => {
     const card = {
       config: { wide_screen_mode: true },
-      header: { title: { tag: 'plain_text', content: '🤖 Claude Code' } },
+      header: { title: { tag: 'plain_text', content: '🤖 Coding Agent' } },
       elements: [
         { tag: 'div', text: { tag: 'lark_md', content: 'line 1' } },
         { tag: 'div', text: { tag: 'lark_md', content: 'const key = `${prefix}:${suffix}`' } },
