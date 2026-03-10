@@ -96,6 +96,35 @@ function validateMembers(jsonStr: string): Array<{ id: string; role: string; typ
 }
 
 /**
+ * 校验 tasklists JSON 字符串，解析为飞书任务 API 要求的清单数组
+ *
+ * 格式: [{"tasklist_guid": "xxx", "section_guid": "yyy"}]
+ * - tasklist_guid: 必填，清单 ID（通过 list_tasklists 获取）
+ * - section_guid: 可选，清单中的分组 ID
+ */
+function validateTasklists(jsonStr: string): Array<{ tasklist_guid: string; section_guid?: string }> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(jsonStr);
+  } catch {
+    throw new Error('tasklists 不是有效的 JSON 字符串');
+  }
+  if (!Array.isArray(parsed)) {
+    throw new Error('tasklists 必须是 JSON 数组 (如 [{"tasklist_guid": "xxx"}])');
+  }
+  for (const item of parsed) {
+    if (typeof item !== 'object' || item === null) {
+      throw new Error('tasklists 数组元素必须是对象');
+    }
+    const obj = item as Record<string, unknown>;
+    if (typeof obj.tasklist_guid !== 'string' || !obj.tasklist_guid) {
+      throw new Error('tasklists 元素需要 tasklist_guid 字段');
+    }
+  }
+  return parsed as Array<{ tasklist_guid: string; section_guid?: string }>;
+}
+
+/**
  * 飞书任务 MCP 工具
  *
  * 支持操作: create / get / list / update
@@ -111,9 +140,10 @@ export function feishuTaskTool(getUserToken?: () => Promise<string | undefined>)
       '创建和管理飞书任务 (Task v2)。',
       '',
       'Actions:',
-      '- create: 创建任务 (需要 summary)',
+      '- create: 创建任务 (需要 summary, 可选 tasklists 指定归属清单)',
       '- get: 获取任务详情 (需要 task_guid)',
       '- list: 查询任务列表 (支持 completed/page_size 过滤)',
+      '- list_tasklists: 列出可用的任务清单 (返回 guid + name)',
       '- update: 编辑任务 (需要 task_guid + update_fields)',
       '- delete: 删除任务 (需要 task_guid)',
       '- add_members: 添加任务成员 (需要 task_guid + members)',
@@ -121,11 +151,12 @@ export function feishuTaskTool(getUserToken?: () => Promise<string | undefined>)
       '',
       '时间格式 (due/start): Unix 秒级时间戳 或 ISO 日期 (如 "2026-03-15" 或 "2026-03-15T10:00:00")',
       'members 格式: JSON 数组 \'[{"id": "ou_xxx", "role": "assignee"}]\'',
+      'tasklists 格式: JSON 数组 \'[{"tasklist_guid": "xxx"}]\' (通过 list_tasklists 获取可用清单)',
       'update_fields: 逗号分隔的字段名 (如 "summary,due,description,completed_at")',
       '  - completed_at: 设为当前时间表示完成任务，设为空字符串表示取消完成',
     ].join('\n'),
     {
-      action: z.enum(['create', 'get', 'list', 'update', 'delete', 'add_members', 'remove_members']).describe('操作类型'),
+      action: z.enum(['create', 'get', 'list', 'list_tasklists', 'update', 'delete', 'add_members', 'remove_members']).describe('操作类型'),
       // create / update 共用
       summary: z.string().optional().describe('任务标题 (create 时必填)'),
       description: z.string().optional().describe('任务描述'),
@@ -138,9 +169,10 @@ export function feishuTaskTool(getUserToken?: () => Promise<string | undefined>)
       update_fields: z.string().optional().describe('更新的字段名, 逗号分隔 (如 "summary,due")'),
       // create 专用
       members: z.string().optional().describe('成员 JSON 数组 (如 \'[{"id": "ou_xxx", "role": "assignee"}]\')'),
+      tasklists: z.string().optional().describe('归属清单 JSON 数组 (如 \'[{"tasklist_guid": "xxx"}]\', 通过 list_tasklists 获取)'),
       // list
-      page_size: z.number().optional().describe('每页任务数 (list 时可选, 默认 20)'),
-      page_token: z.string().optional().describe('分页 token (list 时可选)'),
+      page_size: z.number().optional().describe('每页数量 (list/list_tasklists 时可选, 默认 20)'),
+      page_token: z.string().optional().describe('分页 token (list/list_tasklists 时可选)'),
       completed: z.boolean().optional().describe('筛选已完成/未完成 (list 时可选)'),
       user_id_type: z.string().optional().describe('用户 ID 类型 (默认 open_id)'),
     },
@@ -167,6 +199,9 @@ export function feishuTaskTool(getUserToken?: () => Promise<string | undefined>)
             }
             if (args.members) {
               data.members = validateMembers(args.members);
+            }
+            if (args.tasklists) {
+              data.tasklists = validateTasklists(args.tasklists);
             }
 
             const resp = await client.task.v2.task.create({
@@ -303,6 +338,35 @@ export function feishuTaskTool(getUserToken?: () => Promise<string | undefined>)
                   has_more: resp.data?.has_more ?? false,
                   page_token: resp.data?.page_token,
                   _token_type: 'bot',
+                }, null, 2),
+              }],
+            };
+          }
+
+          case 'list_tasklists': {
+            const tlResp = await client.task.v2.tasklist.list({
+              params: {
+                page_size: args.page_size ?? 20,
+                ...(args.page_token ? { page_token: args.page_token } : {}),
+                user_id_type: args.user_id_type ?? 'open_id',
+              },
+            }, userTokenOpt);
+            if (tlResp.code !== 0) throw new Error(`查询任务清单失败 (${tlResp.code}): ${tlResp.msg}`);
+
+            const tasklists = (tlResp.data?.items ?? []).map((tl) => ({
+              guid: tl.guid,
+              name: tl.name,
+              creator_id: tl.creator?.id,
+              url: tl.url,
+            }));
+
+            return {
+              content: [{
+                type: 'text' as const,
+                text: JSON.stringify({
+                  items: tasklists,
+                  has_more: tlResp.data?.has_more ?? false,
+                  page_token: tlResp.data?.page_token,
                 }, null, 2),
               }],
             };
