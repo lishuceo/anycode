@@ -25,6 +25,7 @@ export class TaskQueue {
     rootId?: string,
     threadId?: string,
     images?: import('../claude/types.js').ImageAttachment[],
+    createTime?: string,
   ): Promise<string> {
     return new Promise((resolve, reject) => {
       const task: QueueTask = {
@@ -36,6 +37,7 @@ export class TaskQueue {
         rootId,
         threadId,
         images,
+        createTime,
         resolve,
         reject,
         createdAt: new Date(),
