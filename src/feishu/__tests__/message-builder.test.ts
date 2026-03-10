@@ -6,7 +6,7 @@ describe('buildProgressCard', () => {
   it('should build a card with the given prompt', () => {
     const card = buildProgressCard('list files') as any;
     expect(card.header.template).toBe('blue');
-    expect(card.header.title.content).toBe('🤖 Claude Code');
+    expect(card.header.title.content).toBe('🤖 Coding Agent');
     const promptEl = card.elements[0];
     expect(promptEl.text.content).toContain('list files');
   });
