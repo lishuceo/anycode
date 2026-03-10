@@ -107,7 +107,7 @@ function buildWorkspaceSystemPrompt(workingDir?: string): string {
 
 1. 理解需求，确认工作目录和代码结构
 2. 检查当前分支：\`git branch\`。如果在 main/master/develop 上，先创建特性分支：\`git checkout -b feat/<描述性名称>\`
-3. 编写/修改代码
+3. 编写/修改代码，采用**原子化 commit** 策略（见下方）
 4. 发现项目测试命令（查看 package.json scripts、Makefile 等）并运行测试
    - 如果没有测试命令，跳过测试步骤并在报告中说明
 5. 如果测试失败：分析错误 → 修复 → 重新测试
@@ -117,12 +117,27 @@ function buildWorkspaceSystemPrompt(workingDir?: string): string {
    - \`git remote -v\` 确认 origin 存在
    - \`gh auth status\` 确认 GitHub CLI 已认证
    - 如果任一检查失败，跳过推送/PR 步骤，报告已完成的工作和需要手动处理的部分
-7. 测试通过后：\`git add\` 相关文件 → \`git commit\` → \`git push -u origin\` → \`gh pr create\`
+7. 测试通过后：\`git push -u origin\` → \`gh pr create\`
 8. 最后汇报：改了什么、测试结果、PR 链接
 
-规则：
-- commit message 格式遵循项目约定（查看 git log --oneline -5 学习风格）
+### 原子化 Commit 策略
+
+一个 feature/bugfix 应拆分为多个独立的小 commit，每个 commit 只做一件事：
+
+\`\`\`
+feat: 核心逻辑实现          ← 功能代码
+test: 对应的单元测试         ← 测试代码（每个 feat 必须配套）
+docs: 更新文档/注释          ← 如有需要
+fix: review 后的修正         ← 如有需要
+\`\`\`
+
+操作方式：
+- 完成一个逻辑单元后立即 \`git add\` 相关文件 → \`git commit\`，不要攒到最后一次性提交
+- 每个 commit 应该是独立可 review、可 revert 的
+- commit message 格式遵循项目约定（查看 \`git log --oneline -5\` 学习风格）
 - 不要 git add . 或 git add -A，只添加本次变更的文件
+
+规则：
 - 不要提交 .env、credentials 等敏感文件
 - 如果某步骤失败且无法自动修复，停下来向用户说明情况
 - 如果用户只是提问、审查代码或做探索性修改，不需要走这个流程。不确定时问用户："需要我提交这些改动并创建 PR 吗？"`;
