@@ -21,7 +21,7 @@ export function feishuDocTool(chatId?: string) {
       '- read: 读取文档纯文本内容',
       '- write: 覆盖写入文档 (清空后写入 Markdown，自动转换为飞书富文本格式)',
       '- append: 在文档末尾追加内容 (支持 Markdown 格式)',
-      '- create: 创建新文档',
+      '- create: 创建新文档 (可同时传 content 写入内容，避免创建空文档)',
       '- list_blocks: 列出文档的 block 结构',
       '- update_block: 更新指定 block 的文本内容 (仅支持行内 Markdown: 加粗/斜体/删除线/行内代码/链接，不支持标题/列表等块级语法。需要 block_id，通过 list_blocks 获取)',
       '- insert_blocks: 在指定位置插入新 block (需要 block_id 作为父 block，index 指定位置)',
@@ -36,7 +36,7 @@ export function feishuDocTool(chatId?: string) {
     {
       action: z.enum(['read', 'write', 'append', 'create', 'list_blocks', 'update_block', 'insert_blocks', 'delete_blocks']).describe('操作类型'),
       doc_token: z.string().optional().describe('文档 token (read/write/append/list_blocks/update_block/insert_blocks/delete_blocks 时必填)'),
-      content: z.string().optional().describe('写入/追加的 Markdown 内容 (write/append/update_block/insert_blocks 时必填，自动转换为飞书富文本)'),
+      content: z.string().optional().describe('Markdown 内容 (write/append/update_block/insert_blocks 时必填；create 时可选，传入则创建后自动写入，避免空文档)'),
       title: z.string().optional().describe('新文档标题 (create 时必填)'),
       folder_token: z.string().optional().describe('目标文件夹 token (create 时可选)'),
       block_id: z.string().optional().describe('目标 block ID (update_block/insert_blocks/delete_blocks 时必填，通过 list_blocks 获取)'),
@@ -140,6 +140,21 @@ export function feishuDocTool(chatId?: string) {
             if (doc?.document_id) {
               await grantOwnerPermission(doc.document_id, 'docx');
               await grantChatMembersPermission(doc.document_id, 'docx', chatId);
+
+              // 如果提供了 content，创建后自动写入，避免空文档
+              if (args.content) {
+                const blocks = markdownToBlocks(args.content);
+                const batches = batchBlocks(blocks);
+                for (const batch of batches) {
+                  const writeResp = await client.docx.documentBlockChildren.create({
+                    path: { document_id: doc.document_id, block_id: doc.document_id },
+                    data: { children: batch },
+                  });
+                  if (writeResp.code !== 0) {
+                    logger.warn({ code: writeResp.code, msg: writeResp.msg }, 'create: 写入内容失败，文档已创建但为空');
+                  }
+                }
+              }
             }
             return {
               content: [{
