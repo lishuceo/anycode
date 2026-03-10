@@ -100,6 +100,39 @@ describe('feishu_doc tool', () => {
       expect(result.isError).toBeUndefined();
     });
 
+    it('should create a document with content when provided', async () => {
+      mockDocxDocumentCreate.mockResolvedValue({
+        code: 0,
+        data: { document: { document_id: 'NEW_TOKEN2', title: '带内容文档' } },
+      });
+      mockDocxDocumentBlockChildrenCreate.mockResolvedValue({ code: 0 });
+
+      const result = await capturedHandler({
+        action: 'create', title: '带内容文档', content: '# 标题\n\n正文内容',
+      });
+      expect(result.content[0].text).toContain('NEW_TOKEN2');
+      expect(result.isError).toBeUndefined();
+      // Should have called blockChildren.create to write content
+      expect(mockDocxDocumentBlockChildrenCreate).toHaveBeenCalled();
+      const call = mockDocxDocumentBlockChildrenCreate.mock.calls[0][0];
+      expect(call.path.document_id).toBe('NEW_TOKEN2');
+    });
+
+    it('should still succeed if content write fails after create', async () => {
+      mockDocxDocumentCreate.mockResolvedValue({
+        code: 0,
+        data: { document: { document_id: 'NEW_TOKEN3', title: '写入失败' } },
+      });
+      mockDocxDocumentBlockChildrenCreate.mockResolvedValue({ code: 99999, msg: 'write failed' });
+
+      const result = await capturedHandler({
+        action: 'create', title: '写入失败', content: '内容',
+      });
+      // Document was created, just content write failed — not a hard error
+      expect(result.content[0].text).toContain('NEW_TOKEN3');
+      expect(result.isError).toBeUndefined();
+    });
+
     it('should return error when title is missing', async () => {
       const result = await capturedHandler({ action: 'create' });
       expect(result.isError).toBe(true);
