@@ -2,16 +2,63 @@ name: CI
 
 on:
   pull_request:
-    paths-ignore:
-      - 'docs/**'
-      - '*.md'
 
 concurrency:
   group: ci-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
+  # Detect whether this PR is docs-only, so we can skip heavy jobs
+  docs-scope:
+    runs-on: ubuntu-latest
+    outputs:
+      docs_only: ${{ steps.check.outputs.docs_only }}
+      docs_changed: ${{ steps.check.outputs.docs_changed }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: check
+        run: |
+          CHANGED=$(git diff --name-only origin/${{ github.base_ref }}...HEAD)
+          DOCS_ONLY=true
+          DOCS_CHANGED=false
+          for f in $CHANGED; do
+            case "$f" in
+              docs/*|*.md|.markdownlint-cli2.jsonc)
+                DOCS_CHANGED=true
+                ;;
+              *)
+                DOCS_ONLY=false
+                ;;
+            esac
+          done
+          echo "docs_only=$DOCS_ONLY" >> "$GITHUB_OUTPUT"
+          echo "docs_changed=$DOCS_CHANGED" >> "$GITHUB_OUTPUT"
+
+  # Run docs quality checks when any docs files changed
+  check-docs:
+    needs: [docs-scope]
+    if: needs.docs-scope.outputs.docs_changed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Docs lint + link audit
+        run: npm run docs:check
+
+  # Run code checks only when non-docs files changed
   test:
+    needs: [docs-scope]
+    if: needs.docs-scope.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
