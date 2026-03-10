@@ -23,13 +23,13 @@ export function isOwner(userId: string): boolean {
 
 /** 危险命令模式 */
 const DANGEROUS_PATTERNS = [
-  /rm\s+-rf\s+\/(?!\S)/,  // rm -rf /
-  /mkfs\./,               // 格式化磁盘
-  /dd\s+if=/,             // dd 写盘
-  />\s*\/dev\/sd/,         // 写入磁盘设备
-  /shutdown/,
-  /reboot/,
-  /init\s+0/,
+  /rm\s+-rf\s+\/(?!\S)/,           // rm -rf /
+  /mkfs\./,                         // 格式化磁盘
+  /dd\s+if=/,                       // dd 写盘
+  />\s*\/dev\/sd/,                   // 写入磁盘设备
+  /\bshutdown\s+(-\w|now\b)/,        // shutdown -h now, shutdown -r 5, shutdown now 等实际关机命令
+  /\breboot\b\s*$/m,                // 单独的 reboot 命令（行尾）
+  /\binit\s+0/,                     // init 0
 ];
 
 /**
