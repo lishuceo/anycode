@@ -594,6 +594,62 @@ describe('feishu_task tool', () => {
 });
 
 // ============================================================
+// create with requesterId — 自动将发起人加为关注者
+// ============================================================
+
+describe('feishu_task tool with requesterId', () => {
+  let handlerWithRequester: (args: Record<string, unknown>) => Promise<unknown>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    feishuTaskTool(undefined, 'ou_requester_001');
+    handlerWithRequester = capturedHandler;
+  });
+
+  it('should auto-add requester as follower when no members specified', async () => {
+    mockTaskCreate.mockResolvedValue({
+      code: 0,
+      data: { task: { guid: 'TASK_AUTO', summary: '自动关注' } },
+    });
+    await handlerWithRequester({ action: 'create', summary: '自动关注' });
+    const callData = mockTaskCreate.mock.calls[0][0].data;
+    expect(callData.members).toEqual([{ id: 'ou_requester_001', role: 'follower' }]);
+  });
+
+  it('should auto-add requester as follower alongside existing members', async () => {
+    mockTaskCreate.mockResolvedValue({
+      code: 0,
+      data: { task: { guid: 'TASK_AUTO2', summary: '混合成员' } },
+    });
+    await handlerWithRequester({
+      action: 'create',
+      summary: '混合成员',
+      members: '[{"id": "ou_other", "role": "assignee"}]',
+    });
+    const callData = mockTaskCreate.mock.calls[0][0].data;
+    expect(callData.members).toEqual([
+      { id: 'ou_other', role: 'assignee' },
+      { id: 'ou_requester_001', role: 'follower' },
+    ]);
+  });
+
+  it('should not duplicate requester if already in members', async () => {
+    mockTaskCreate.mockResolvedValue({
+      code: 0,
+      data: { task: { guid: 'TASK_AUTO3', summary: '已存在' } },
+    });
+    await handlerWithRequester({
+      action: 'create',
+      summary: '已存在',
+      members: '[{"id": "ou_requester_001", "role": "assignee"}]',
+    });
+    const callData = mockTaskCreate.mock.calls[0][0].data;
+    // Should only have the original entry, not a duplicate
+    expect(callData.members).toEqual([{ id: 'ou_requester_001', role: 'assignee' }]);
+  });
+});
+
+// ============================================================
 // list with user_access_token (Task v2 API)
 // ============================================================
 
