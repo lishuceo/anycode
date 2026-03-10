@@ -854,9 +854,9 @@ async function handleSlashCommand(
   // /help - 帮助
   if (trimmed === '/help') {
     const helpText = [
-      '🤖 **Claude Code Bridge 使用帮助**',
+      '🤖 **Coding Agent 使用帮助**',
       '',
-      '直接发送文本消息即可让 Claude Code 执行任务。',
+      '直接发送文本消息即可让 Coding Agent 执行任务。',
       '',
       '**可用命令:**',
       '`/project <path>` - 切换工作目录',
