@@ -133,7 +133,7 @@ function validateTasklists(jsonStr: string): Array<{ tasklist_guid: string; sect
  *   有 user token 时 list 使用 Task v2 API（支持查看用户个人任务）；
  *   无 user token 时降级为 Task v1 API（仅 bot 创建的任务）。
  */
-export function feishuTaskTool(getUserToken?: () => Promise<string | undefined>) {
+export function feishuTaskTool(getUserToken?: () => Promise<string | undefined>, requesterId?: string) {
   return tool(
     'feishu_task',
     [
@@ -199,6 +199,15 @@ export function feishuTaskTool(getUserToken?: () => Promise<string | undefined>)
             }
             if (args.members) {
               data.members = validateMembers(args.members);
+            }
+            // 自动将发起请求的用户加为关注者（如果尚未在 members 中）
+            if (requesterId) {
+              const members = (data.members ?? []) as Array<{ id: string; role: string; type?: string }>;
+              const alreadyIncluded = members.some((m) => m.id === requesterId);
+              if (!alreadyIncluded) {
+                members.push({ id: requesterId, role: 'follower' });
+                data.members = members;
+              }
             }
             if (args.tasklists) {
               data.tasklists = validateTasklists(args.tasklists);

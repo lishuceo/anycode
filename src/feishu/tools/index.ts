@@ -27,8 +27,9 @@ export function createFeishuToolsMcpServer(chatId?: string, userId?: string) {
   if (config.feishu.tools.chat) tools.push(feishuChatTool(chatId));
   if (config.feishu.tools.contact) tools.push(feishuContactTool());
   // 通过闭包绑定当前用户的 token 获取函数，task 工具可透明使用 user_access_token
+  // 同时传入 userId，用于创建任务时自动将发起人加为关注者
   const getUserToken = userId ? () => getValidUserToken(userId) : undefined;
-  if (config.feishu.tools.task) tools.push(feishuTaskTool(getUserToken));
+  if (config.feishu.tools.task) tools.push(feishuTaskTool(getUserToken, userId));
 
   // 边界条件修复 (review 反馈): 所有子开关全 false 时不注入空 MCP 服务器
   if (tools.length === 0) return undefined;
