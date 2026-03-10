@@ -1051,3 +1051,92 @@ describe('parseMessage empty @mention handling', () => {
     expect(shouldDropMessage('   ', undefined, true)).toBe(false);
   });
 });
+
+// ============================================================
+// makeQueueKey + 并行执行策略测试
+//
+// 验证队列键构建逻辑：
+// - thread 模式无 threadId：用 messageId/userId 区分（per-message 并行）
+// - thread 模式有 threadId：同 thread 串行
+// - direct 模式无 threadId：用 userId 区分（per-user 并行）
+// ============================================================
+
+describe('queue key construction for parallel execution', () => {
+  /**
+   * 模拟 handleMessageEvent 中的 queue key 构建逻辑
+   * (从 event-handler.ts 提取)
+   */
+  function buildQueueKey(params: {
+    chatId: string;
+    threadId?: string;
+    agentId?: string;
+    userId?: string;
+    messageId: string;
+    replyMode: 'direct' | 'thread';
+  }): string {
+    const { chatId, threadId, agentId = 'dev', userId, messageId, replyMode } = params;
+    const isDirectMode = replyMode === 'direct';
+    const perMessageParallel = !threadId && !isDirectMode;
+
+    if (perMessageParallel) {
+      // makeQueueKey(chatId, undefined, agentId, messageId)
+      return `${agentId}:${chatId}:${messageId}`;
+    }
+    if (threadId) {
+      return `${agentId}:${chatId}:${threadId}`;
+    }
+    if (isDirectMode && userId) {
+      return `${agentId}:${chatId}:${userId}`;
+    }
+    return `${agentId}:${chatId}`;
+  }
+
+  it('p2p messages without threadId should get unique queue keys (parallel)', () => {
+    const key1 = buildQueueKey({ chatId: 'chat1', messageId: 'msg1', replyMode: 'thread' });
+    const key2 = buildQueueKey({ chatId: 'chat1', messageId: 'msg2', replyMode: 'thread' });
+    const key3 = buildQueueKey({ chatId: 'chat1', messageId: 'msg3', replyMode: 'thread' });
+
+    expect(key1).not.toBe(key2);
+    expect(key2).not.toBe(key3);
+    expect(key1).not.toBe(key3);
+  });
+
+  it('group messages without threadId should also get unique keys (parallel)', () => {
+    const key1 = buildQueueKey({ chatId: 'group1', messageId: 'msg1', userId: 'u1', replyMode: 'thread' });
+    const key2 = buildQueueKey({ chatId: 'group1', messageId: 'msg2', userId: 'u2', replyMode: 'thread' });
+
+    expect(key1).not.toBe(key2);
+  });
+
+  it('messages with threadId should share queue key (serial within thread)', () => {
+    const key1 = buildQueueKey({ chatId: 'chat1', threadId: 'th1', messageId: 'msg1', replyMode: 'thread' });
+    const key2 = buildQueueKey({ chatId: 'chat1', threadId: 'th1', messageId: 'msg2', replyMode: 'thread' });
+
+    expect(key1).toBe(key2);
+  });
+
+  it('different threads should have different queue keys (parallel across threads)', () => {
+    const key1 = buildQueueKey({ chatId: 'chat1', threadId: 'th1', messageId: 'msg1', replyMode: 'thread' });
+    const key2 = buildQueueKey({ chatId: 'chat1', threadId: 'th2', messageId: 'msg2', replyMode: 'thread' });
+
+    expect(key1).not.toBe(key2);
+  });
+
+  it('direct mode without threadId should use userId (per-user serial)', () => {
+    const key1 = buildQueueKey({ chatId: 'chat1', messageId: 'msg1', userId: 'u1', replyMode: 'direct' });
+    const key2 = buildQueueKey({ chatId: 'chat1', messageId: 'msg2', userId: 'u1', replyMode: 'direct' });
+    const key3 = buildQueueKey({ chatId: 'chat1', messageId: 'msg3', userId: 'u2', replyMode: 'direct' });
+
+    // Same user → same key (serial)
+    expect(key1).toBe(key2);
+    // Different user → different key (parallel)
+    expect(key1).not.toBe(key3);
+  });
+
+  it('direct mode with threadId should use threadId', () => {
+    const key1 = buildQueueKey({ chatId: 'chat1', threadId: 'th1', messageId: 'msg1', userId: 'u1', replyMode: 'direct' });
+    const key2 = buildQueueKey({ chatId: 'chat1', threadId: 'th1', messageId: 'msg2', userId: 'u1', replyMode: 'direct' });
+
+    expect(key1).toBe(key2);
+  });
+});
