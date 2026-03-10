@@ -1,0 +1,22 @@
+{
+  // Markdown lint config for docs
+  "globs": ["docs/**/*.md", "README.md"],
+  "ignores": ["node_modules/**"],
+  "config": {
+    // Disable rules that conflict with our docs style
+    "MD013": false,         // Line length — docs have tables and long lines
+    "MD025": false,         // Single title — front matter + # title coexist
+    "MD041": false,         // First line heading — front matter comes first
+    "MD036": false,         // Emphasis as heading — used in design docs
+    "MD040": false,         // Fenced code language — some code blocks are plain text
+    "MD046": false,         // Code block style — mixed styles OK
+    "MD060": false,         // Table column style — existing docs use compact tables
+    "MD032": false,         // Blanks around lists — too strict for our mixed CJK content
+    "MD031": false,         // Blanks around fences — existing docs style
+    "MD022": false,         // Blanks around headings — too strict for dense docs
+    "MD029": false,         // Ordered list prefix style — existing docs use actual numbers
+    "MD024": {              // Allow duplicate headings in different sections
+      "siblings_only": true
+    }
+  }
+}

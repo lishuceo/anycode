@@ -106,6 +106,7 @@ Environment variables loaded via dotenv (see `.env.example`):
 ### Agent 工作流
 
 - **开始新任务前**，扫描 `docs/plans/*.md` 的 YAML front matter，读取 `summary` 和 `read_when` 字段，判断是否与当前任务相关。如果相关，先读完该计划再动手。
+- 也可以运行 `node scripts/docs-list.mjs` 快速查看所有活跃计划的列表（支持 `--status in_progress` 过滤和 `--json` 输出）。
 - **新建计划文件**时，必须包含以下 front matter：
 
 ```yaml

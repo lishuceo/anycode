@@ -12,7 +12,14 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:coverage": "vitest run --coverage"
+    "test:coverage": "vitest run --coverage",
+    "docs:lint": "npx markdownlint-cli2",
+    "docs:lint:fix": "npx markdownlint-cli2 --fix",
+    "docs:check-links": "node scripts/docs-link-audit.mjs",
+    "docs:spellcheck": "bash scripts/docs-spellcheck.sh",
+    "docs:spellcheck:fix": "bash scripts/docs-spellcheck.sh --write",
+    "docs:check": "npm run docs:lint && npm run docs:check-links",
+    "docs:list": "node scripts/docs-list.mjs"
   },
   "keywords": [
     "feishu",
