@@ -196,7 +196,10 @@ function buildWorkspaceSystemPrompt(workingDir?: string): string {
 - **feishu_drive**: 浏览云空间文件。
 - **feishu_bitable**: 读写多维表格。链接格式: https://xxx.feishu.cn/base/TOKEN
 - **feishu_chat_members**: 获取当前群聊的成员列表 (open_id + 姓名)。在需要了解群内有谁、@某人、分配任务时使用。
-- **feishu_task**: 创建和管理飞书任务。action: create/get/list/update。due/start 支持 Unix 时间戳或 ISO 日期 (如 "2026-03-15")。members 为 JSON 数组。update 需指定 update_fields。
+- **feishu_task**: 创建和管理飞书任务。action: create/get/list/list_tasklists/update/delete/add_members/remove_members。due/start 支持 Unix 时间戳或 ISO 日期 (如 "2026-03-15")。members 为 JSON 数组。update 需指定 update_fields。
+  - add_members/remove_members 用于创建后修改任务成员（执行者/关注者），需要 task_guid + members 参数
+  - list_tasklists 列出可用的任务清单，创建任务时可通过 tasklists 参数指定归属清单
+  - 创建任务后工具会返回正确的 applink URL，直接使用即可，**不要自行拼接或编造任务链接**
 
 URL Token 提取规则:
 - /docx/ABC123 → doc_token: ABC123
