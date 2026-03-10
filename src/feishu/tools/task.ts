@@ -60,8 +60,10 @@ export function parseDueDate(input: string): string {
   const now = Math.floor(Date.now() / 1000);
   const oneYearLater = now + 365 * 86400;
   const humanDate = new Date(seconds * 1000).toISOString().slice(0, 10);
+  // 允许"今天"的日期通过: 将 now 对齐到当天 UTC 午夜
+  const todayMidnight = now - (now % 86400);
 
-  if (seconds < now) {
+  if (seconds < todayMidnight) {
     throw new Error(
       `日期 ${humanDate} 已过期（输入: "${trimmed}"）。截止/开始时间不能是过去`,
     );

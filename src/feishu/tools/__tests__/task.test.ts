@@ -143,12 +143,18 @@ describe('parseDueDate', () => {
   // ── 合理性校验 ──
 
   it('should reject past timestamps', () => {
-    const pastTs = String(nowSec - 86400); // 昨天
+    const pastTs = String(nowSec - 2 * 86400); // 2 天前（确保跨过 UTC 午夜）
     expect(() => parseDueDate(pastTs)).toThrow('已过期');
   });
 
   it('should reject past ISO dates', () => {
     expect(() => parseDueDate('2020-01-01')).toThrow('已过期');
+  });
+
+  it('should allow today as due date (all-day task scenario)', () => {
+    const todayStr = new Date(nowSec * 1000).toISOString().slice(0, 10);
+    // 今天的 UTC 午夜不应被拒绝
+    expect(() => parseDueDate(todayStr)).not.toThrow();
   });
 
   it('should reject dates more than 1 year in the future', () => {
