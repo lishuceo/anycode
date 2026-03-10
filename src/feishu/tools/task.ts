@@ -13,18 +13,21 @@ import { validateToken } from './validation.js';
 // ============================================================
 
 /**
- * 将用户输入的时间字符串解析为飞书 API 需要的秒级 Unix 时间戳字符串。
+ * 将用户输入的时间字符串解析为飞书 API 需要的毫秒级 Unix 时间戳字符串。
+ *
+ * 飞书 Task v2 API 的 due/start/completed_at 等时间字段均使用毫秒级时间戳
+ * （与 created_at / updated_at 一致，均为 13 位数字）。
  *
  * 支持格式:
- * - Unix 秒级时间戳: "1773532800"
- * - Unix 毫秒级时间戳: "1773532800000" → 自动转秒
+ * - Unix 秒级时间戳: "1773532800" → 自动转毫秒
+ * - Unix 毫秒级时间戳: "1773532800000" → 直接使用
  * - ISO date-only: "2026-03-15" → 追加 T00:00:00Z 按 UTC 解析
  * - ISO datetime 无时区: "2026-03-15T10:00:00" → 追加 Z 按 UTC 解析
  * - ISO datetime 带时区: "2026-03-15T10:00:00+08:00" → 按指定时区解析
  */
 export function parseDueDate(input: string): string {
   const trimmed = input.trim();
-  let seconds: number;
+  let ms: number;
 
   // 1. 纯数字 → 可能是 Unix 时间戳
   if (/^\d+$/.test(trimmed)) {
@@ -32,49 +35,48 @@ export function parseDueDate(input: string): string {
     // 合理的秒级时间戳范围: >1e9 (2001-09-09) 且 <1e10 (2286-11-20)
     // 排除 "20260315" 等被误判为时间戳的类日期数字串
     if (num > 1_000_000_000 && num < 10_000_000_000) {
-      seconds = num;
+      // 秒级时间戳 → 转毫秒
+      ms = num * 1000;
     } else if (num > 1_000_000_000_000 && num < 10_000_000_000_000) {
-      // 毫秒级时间戳 → 转秒
-      seconds = Math.floor(num / 1000);
+      // 毫秒级时间戳 → 直接使用
+      ms = num;
     } else {
       // 不在合理范围的纯数字，当作无效输入
       throw new Error(`无效的时间戳: ${trimmed}（秒级时间戳应在 1e9 ~ 1e10 范围内）`);
     }
   } else if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
     // 2. date-only 格式 (如 "2026-03-15") → 显式追加 T00:00:00Z 避免时区歧义
-    const ms = new Date(trimmed + 'T00:00:00Z').getTime();
+    ms = new Date(trimmed + 'T00:00:00Z').getTime();
     if (isNaN(ms)) throw new Error(`无效的日期: ${trimmed}`);
-    seconds = Math.floor(ms / 1000);
   } else {
     // 3. ISO datetime (带或不带时区)
     let dateStr = trimmed;
     if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?$/.test(dateStr)) {
       dateStr += 'Z';
     }
-    const ms = new Date(dateStr).getTime();
+    ms = new Date(dateStr).getTime();
     if (isNaN(ms)) throw new Error(`无效的日期格式: ${trimmed}`);
-    seconds = Math.floor(ms / 1000);
   }
 
   // 4. 合理性校验: 不能是过去，不能超过 1 年后
-  const now = Math.floor(Date.now() / 1000);
-  const oneYearLater = now + 365 * 86400;
-  const humanDate = new Date(seconds * 1000).toISOString().slice(0, 10);
+  const nowMs = Date.now();
+  const oneYearLaterMs = nowMs + 365 * 86400_000;
+  const humanDate = new Date(ms).toISOString().slice(0, 10);
   // 允许"今天"的日期通过: 将 now 对齐到当天 UTC 午夜
-  const todayMidnight = now - (now % 86400);
+  const todayMidnightMs = nowMs - (nowMs % 86400_000);
 
-  if (seconds < todayMidnight) {
+  if (ms < todayMidnightMs) {
     throw new Error(
       `日期 ${humanDate} 已过期（输入: "${trimmed}"）。截止/开始时间不能是过去`,
     );
   }
-  if (seconds > oneYearLater) {
+  if (ms > oneYearLaterMs) {
     throw new Error(
       `日期 ${humanDate} 超过 1 年后（输入: "${trimmed}"）。截止/开始时间最长不超过 1 年`,
     );
   }
 
-  return String(seconds);
+  return String(ms);
 }
 
 /**
@@ -242,7 +244,7 @@ export function feishuTaskTool(getUserToken?: () => Promise<string | undefined>,
                   '任务已创建',
                   `guid: ${guid}`,
                   `summary: ${task?.summary ?? ''}`,
-                  task?.due ? `due: ${task.due.timestamp} (${new Date(Number(task.due.timestamp) * 1000).toISOString().slice(0, 10)})` : '',
+                  task?.due ? `due: ${task.due.timestamp} (${new Date(Number(task.due.timestamp)).toISOString().slice(0, 10)})` : '',
                   guid !== '(未知)' ? `link: https://applink.feishu.cn/client/todo/detail?guid=${guid}` : '',
                 ].filter(Boolean).join('\n'),
               }],
@@ -414,7 +416,7 @@ export function feishuTaskTool(getUserToken?: () => Promise<string | undefined>,
             }
             // completed_at: 设为当前时间戳 → 标记完成；设为 "0" 或空 → 取消完成
             if (updateFieldsArr.includes('completed_at')) {
-              taskData.completed_at = String(Math.floor(Date.now() / 1000));
+              taskData.completed_at = String(Date.now());
             }
 
             const resp = await client.task.v2.task.patch({
@@ -429,11 +431,11 @@ export function feishuTaskTool(getUserToken?: () => Promise<string | undefined>,
             const updatedParts = ['任务已更新'];
             if (taskData.due) {
               const ts = (taskData.due as { timestamp: string }).timestamp;
-              updatedParts.push(`due: ${ts} (${new Date(Number(ts) * 1000).toISOString().slice(0, 10)})`);
+              updatedParts.push(`due: ${ts} (${new Date(Number(ts)).toISOString().slice(0, 10)})`);
             }
             if (taskData.start) {
               const ts = (taskData.start as { timestamp: string }).timestamp;
-              updatedParts.push(`start: ${ts} (${new Date(Number(ts) * 1000).toISOString().slice(0, 10)})`);
+              updatedParts.push(`start: ${ts} (${new Date(Number(ts)).toISOString().slice(0, 10)})`);
             }
             return {
               content: [{
