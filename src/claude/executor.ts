@@ -497,6 +497,10 @@ export class ClaudeExecutor {
         // 这样 .claude/skills/ 中的 SKILL.md 才能被加载和使用
         allowedTools: ['Skill'],
         canUseTool: async (toolName: string, inputObj: Record<string, unknown>) => {
+          // canUseTool 在每次工具执行前触发，说明 agent 仍在活跃工作
+          // 重置 idle timer 防止长时间 MCP 工具执行（如写飞书文档）导致误超时
+          resetIdleTimer();
+
           // per-agent 工具禁止列表（优先级最高）
           if (input.toolDeny?.some(p => matchToolPattern(toolName, p))) {
             logger.info({ toolName }, 'canUseTool denied — agent toolDeny list');
