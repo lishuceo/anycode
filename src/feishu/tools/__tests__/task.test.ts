@@ -1,6 +1,13 @@
 // @ts-nocheck — test file, vitest uses esbuild transform
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
+// ── 测试用动态日期（避免硬编码过期）──
+const _nowSec = Math.floor(Date.now() / 1000);
+/** 30 天后的秒级时间戳 (字符串) */
+const FUTURE_TS = String(_nowSec + 30 * 86400);
+/** 30 天后的 ISO 日期 "YYYY-MM-DD" */
+const FUTURE_DATE = new Date((_nowSec + 30 * 86400) * 1000).toISOString().slice(0, 10);
+
 vi.mock('../../../utils/logger.js', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
@@ -68,14 +75,17 @@ beforeEach(() => {
 // ============================================================
 
 describe('parseDueDate', () => {
+  // 用相对于"现在"的偏移量生成测试用时间戳，避免硬编码过期
+  const nowSec = Math.floor(Date.now() / 1000);
+  const futureTs = String(nowSec + 7 * 86400);       // 7 天后
+  const futureTsMs = String((nowSec + 7 * 86400) * 1000 + 123); // 7 天后 (毫秒)
+
   it('should pass through valid second-level timestamps', () => {
-    expect(parseDueDate('1773532800')).toBe('1773532800');
-    expect(parseDueDate('1700000000')).toBe('1700000000');
+    expect(parseDueDate(futureTs)).toBe(futureTs);
   });
 
   it('should convert millisecond timestamps to seconds', () => {
-    expect(parseDueDate('1773532800000')).toBe('1773532800');
-    expect(parseDueDate('1700000000123')).toBe('1700000000');
+    expect(parseDueDate(futureTsMs)).toBe(String(nowSec + 7 * 86400));
   });
 
   it('should reject out-of-range numeric strings (e.g. "20260315")', () => {
@@ -85,33 +95,39 @@ describe('parseDueDate', () => {
   });
 
   it('should parse date-only strings as UTC midnight', () => {
-    // 2026-03-15T00:00:00Z = 1773532800
-    const result = parseDueDate('2026-03-15');
-    expect(result).toBe(String(new Date('2026-03-15T00:00:00Z').getTime() / 1000));
+    // 用 30 天后的日期，确保在未来且在 1 年内
+    const futureDate = new Date((nowSec + 30 * 86400) * 1000);
+    const dateStr = futureDate.toISOString().slice(0, 10);
+    const result = parseDueDate(dateStr);
+    expect(result).toBe(String(new Date(dateStr + 'T00:00:00Z').getTime() / 1000));
   });
 
   it('should parse datetime without timezone as UTC', () => {
-    // "2026-03-15T10:00:00" should be treated as UTC
-    const result = parseDueDate('2026-03-15T10:00:00');
-    const expected = String(new Date('2026-03-15T10:00:00Z').getTime() / 1000);
+    const futureDate = new Date((nowSec + 30 * 86400) * 1000);
+    const dateStr = futureDate.toISOString().slice(0, 10);
+    const result = parseDueDate(`${dateStr}T10:00:00`);
+    const expected = String(new Date(`${dateStr}T10:00:00Z`).getTime() / 1000);
     expect(result).toBe(expected);
   });
 
   it('should parse datetime with short format (no seconds) as UTC', () => {
-    const result = parseDueDate('2026-03-15T10:00');
-    const expected = String(new Date('2026-03-15T10:00Z').getTime() / 1000);
+    const futureDate = new Date((nowSec + 30 * 86400) * 1000);
+    const dateStr = futureDate.toISOString().slice(0, 10);
+    const result = parseDueDate(`${dateStr}T10:00`);
+    const expected = String(new Date(`${dateStr}T10:00Z`).getTime() / 1000);
     expect(result).toBe(expected);
   });
 
   it('should preserve timezone in datetime with explicit timezone', () => {
-    const result = parseDueDate('2026-03-15T10:00:00+08:00');
-    const expected = String(new Date('2026-03-15T10:00:00+08:00').getTime() / 1000);
+    const futureDate = new Date((nowSec + 30 * 86400) * 1000);
+    const dateStr = futureDate.toISOString().slice(0, 10);
+    const result = parseDueDate(`${dateStr}T10:00:00+08:00`);
+    const expected = String(new Date(`${dateStr}T10:00:00+08:00`).getTime() / 1000);
     expect(result).toBe(expected);
   });
 
   it('should handle whitespace trimming', () => {
-    expect(parseDueDate('  1773532800  ')).toBe('1773532800');
-    expect(parseDueDate('  2026-03-15  ')).toBe(String(new Date('2026-03-15T00:00:00Z').getTime() / 1000));
+    expect(parseDueDate(`  ${futureTs}  `)).toBe(futureTs);
   });
 
   it('should throw on invalid date strings', () => {
@@ -122,6 +138,38 @@ describe('parseDueDate', () => {
 
   it('should throw on invalid date-only format', () => {
     expect(() => parseDueDate('9999-99-99')).toThrow('无效的日期');
+  });
+
+  // ── 合理性校验 ──
+
+  it('should reject past timestamps', () => {
+    const pastTs = String(nowSec - 2 * 86400); // 2 天前（确保跨过 UTC 午夜）
+    expect(() => parseDueDate(pastTs)).toThrow('已过期');
+  });
+
+  it('should reject past ISO dates', () => {
+    expect(() => parseDueDate('2020-01-01')).toThrow('已过期');
+  });
+
+  it('should allow today as due date (all-day task scenario)', () => {
+    const todayStr = new Date(nowSec * 1000).toISOString().slice(0, 10);
+    // 今天的 UTC 午夜不应被拒绝
+    expect(() => parseDueDate(todayStr)).not.toThrow();
+  });
+
+  it('should reject dates more than 1 year in the future', () => {
+    const twoYearsLater = String(nowSec + 2 * 365 * 86400);
+    expect(() => parseDueDate(twoYearsLater)).toThrow('超过 1 年');
+  });
+
+  it('should reject ISO dates more than 1 year in the future', () => {
+    const futureDate = new Date((nowSec + 400 * 86400) * 1000);
+    const dateStr = futureDate.toISOString().slice(0, 10);
+    expect(() => parseDueDate(dateStr)).toThrow('超过 1 年');
+  });
+
+  it('should include human-readable date in error messages', () => {
+    expect(() => parseDueDate('2020-01-01')).toThrow('2020-01-01');
   });
 });
 
@@ -147,20 +195,22 @@ describe('feishu_task tool', () => {
     });
 
     it('should create a task with due date and description', async () => {
+      const expectedTs = String(new Date(FUTURE_DATE + 'T00:00:00Z').getTime() / 1000);
       mockTaskCreate.mockResolvedValue({
         code: 0,
-        data: { task: { guid: 'TASK_002', summary: '发布版本', due: { timestamp: '1773532800' } } },
+        data: { task: { guid: 'TASK_002', summary: '发布版本', due: { timestamp: expectedTs } } },
       });
       const result = await capturedHandler({
         action: 'create',
         summary: '发布版本',
         description: '发布 v2.0',
-        due: '2026-03-15',
+        due: FUTURE_DATE,
       });
       expect(result.content[0].text).toContain('TASK_002');
+      expect(result.content[0].text).toContain(FUTURE_DATE); // 回显人类可读日期
       const callData = mockTaskCreate.mock.calls[0][0].data;
       expect(callData.description).toBe('发布 v2.0');
-      expect(callData.due.timestamp).toBe(String(new Date('2026-03-15T00:00:00Z').getTime() / 1000));
+      expect(callData.due.timestamp).toBe(expectedTs);
       expect(callData.due.is_all_day).toBe(false);
     });
 
@@ -187,7 +237,7 @@ describe('feishu_task tool', () => {
       await capturedHandler({
         action: 'create',
         summary: '全天任务',
-        due: '2026-03-15',
+        due: FUTURE_DATE,
         is_all_day: true,
       });
       const callData = mockTaskCreate.mock.calls[0][0].data;
@@ -326,17 +376,20 @@ describe('feishu_task tool', () => {
 
     it('should update multiple fields', async () => {
       mockTaskPatch.mockResolvedValue({ code: 0 });
-      await capturedHandler({
+      const result = await capturedHandler({
         action: 'update',
         task_guid: 'TASK_001',
         update_fields: 'summary, due',
         summary: '更新标题',
-        due: '1773532800',
+        due: FUTURE_TS,
       });
       const callData = mockTaskPatch.mock.calls[0][0].data;
       expect(callData.update_fields).toEqual(['summary', 'due']);
       expect(callData.task.summary).toBe('更新标题');
-      expect(callData.task.due.timestamp).toBe('1773532800');
+      expect(callData.task.due.timestamp).toBe(FUTURE_TS);
+      // 验证响应回显了人类可读日期
+      expect(result.content[0].text).toContain('任务已更新');
+      expect(result.content[0].text).toContain(FUTURE_DATE);
     });
 
     it('should require task_guid', async () => {
