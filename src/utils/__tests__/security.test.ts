@@ -61,6 +61,8 @@ describe('containsDangerousCommand', () => {
     expect(containsDangerousCommand('shutdown -h now')).toBe(true);
     expect(containsDangerousCommand('shutdown -r 5')).toBe(true);
     expect(containsDangerousCommand('sudo shutdown -h now')).toBe(true);
+    expect(containsDangerousCommand('shutdown')).toBe(true);
+    expect(containsDangerousCommand('shutdown +5')).toBe(true);
   });
 
   it('should not false-positive on shutdown in text', () => {
@@ -72,6 +74,8 @@ describe('containsDangerousCommand', () => {
   it('should detect reboot as standalone command', () => {
     expect(containsDangerousCommand('reboot')).toBe(true);
     expect(containsDangerousCommand('sudo reboot')).toBe(true);
+    expect(containsDangerousCommand('reboot -f')).toBe(true);
+    expect(containsDangerousCommand('reboot now')).toBe(true);
   });
 
   it('should not false-positive on reboot in text', () => {
