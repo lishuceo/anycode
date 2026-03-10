@@ -75,6 +75,37 @@ function discoverLocalProjects(projectsDir: string): Array<{ name: string; descr
   return projects.slice(0, 30);
 }
 
+/** 扫描缓存目录，提取已缓存的远程仓库信息（目录结构: host/org/repo.git） */
+function discoverCachedRepos(cacheDir: string): Array<{ name: string; fullName: string; url: string }> {
+  const repos: Array<{ name: string; fullName: string; url: string }> = [];
+  let hosts: string[];
+  try { hosts = readdirSync(cacheDir); } catch { return repos; }
+  for (const host of hosts) {
+    if (host.startsWith('.')) continue;
+    const hostPath = join(cacheDir, host);
+    let orgs: string[];
+    try {
+      if (!statSync(hostPath).isDirectory()) continue;
+      orgs = readdirSync(hostPath);
+    } catch { continue; }
+    for (const org of orgs) {
+      if (org.startsWith('.')) continue;
+      const orgPath = join(hostPath, org);
+      let entries: string[];
+      try {
+        if (!statSync(orgPath).isDirectory()) continue;
+        entries = readdirSync(orgPath);
+      } catch { continue; }
+      for (const entry of entries) {
+        if (!entry.endsWith('.git')) continue;
+        const repoName = entry.slice(0, -4);
+        repos.push({ name: repoName, fullName: `${org}/${repoName}`, url: `https://${host}/${org}/${repoName}` });
+      }
+    }
+  }
+  return repos.slice(0, 50);
+}
+
 /** 构建路由 system prompt（注入实际目录路径和项目描述） */
 function buildRoutingSystemPrompt(projects: Array<{ name: string; description: string }>): string {
   const projectsDir = config.claude.defaultWorkDir;
@@ -84,6 +115,12 @@ function buildRoutingSystemPrompt(projects: Array<{ name: string; description: s
   const selfProjectName = projects.find(p =>
     p.description.includes('飞书') && p.description.includes('Claude'),
   )?.name || 'anywhere-code';
+
+  // 扫描缓存目录中的 bare clone
+  const cachedRepos = discoverCachedRepos(cacheDir);
+  // 排除本地已有的项目（本地项目优先级更高）
+  const localNames = new Set(projects.map(p => p.name));
+  const cachedOnly = cachedRepos.filter(r => !localNames.has(r.name));
 
   const projectsSection = projects.length > 0
     ? [
@@ -96,22 +133,34 @@ function buildRoutingSystemPrompt(projects: Array<{ name: string; description: s
       ].join('\n')
     : '';
 
+  const cachedSection = cachedOnly.length > 0
+    ? [
+        '## 已缓存的远程仓库',
+        '',
+        '以下仓库已有本地缓存，匹配时使用 `clone_remote`（系统会从缓存快速创建工作区，无需重新下载）：',
+        '',
+        ...cachedOnly.map(r => `- **${r.name}** (${r.fullName}): \`${r.url}\``),
+        '',
+      ].join('\n')
+    : '';
+
   return `你是一个工作区路由助手。你的唯一任务是决定用户的请求应该在哪个代码仓库/目录下执行。
 **你应该尽量快速决策，直接输出 JSON，不要调用任何工具，除非用户提到了一个你不认识的仓库名。**
 
-${projectsSection}## 快速决策规则（优先级从高到低，匹配即停）
+${projectsSection}${cachedSection}## 快速决策规则（优先级从高到低，匹配即停）
 
 1. **消息中有明确 URL** → \`clone_remote\`，用该 URL
 2. **消息中有明确本地路径** → \`use_existing\`（验证路径存在）
-3. **消息提到已知项目名**（见上方列表）→ 直接 \`use_existing\`，workdir 填对应路径，**不需要调用任何工具**
-4. **消息涉及本系统自身的功能**（如飞书工具、卡片、消息、agent、pipeline、MCP、routing 等）→ 用户在让 agent 改自己，选 \`use_existing\`，workdir = \`${projectsDir}/${selfProjectName}\`
-5. **消息不涉及特定仓库**（通用问题、闲聊等）→ \`use_default\`
-6. **消息提到不认识的仓库名** → 此时才需要调用工具查找（见下方查找顺序）
-7. **以上都无法判断** → \`need_clarification\`
+3. **消息提到已知本地项目名**（见上方列表）→ 直接 \`use_existing\`，workdir 填对应路径，**不需要调用任何工具**
+4. **消息提到已缓存的远程仓库名**（见上方列表）→ 直接 \`clone_remote\`，repo_url 填对应 URL，**不需要调用任何工具**
+5. **消息涉及本系统自身的功能**（如飞书工具、卡片、消息、agent、pipeline、MCP、routing 等）→ 用户在让 agent 改自己，选 \`use_existing\`，workdir = \`${projectsDir}/${selfProjectName}\`
+6. **消息不涉及特定仓库**（通用问题、闲聊等）→ \`use_default\`
+7. **消息提到不认识的仓库名** → 此时才需要调用工具查找（见下方查找顺序）
+8. **以上都无法判断** → \`need_clarification\`
 
-## 查找顺序（仅当快速决策规则 6 触发时使用）
+## 查找顺序（仅当快速决策规则 7 触发时使用）
 
-当用户提到一个**不在已知项目列表中的**仓库名时，按以下顺序查找：
+当用户提到一个**不在已知项目列表和缓存列表中的**仓库名时，按以下顺序查找：
 
 1. **本地缓存** — 运行 \`find ${cacheDir} -maxdepth 3 -name "*.git" -type d\`，查找匹配的 bare clone。如果找到，从缓存路径推导 URL（如 \`${cacheDir}/github.com/org/repo.git\` → \`https://github.com/org/repo\`），返回 \`clone_remote\`。**不要凭猜测构造 URL。**
 2. **项目目录** — \`ls ${projectsDir}\`，看有没有匹配的目录。**注意：只有包含 \`.git\` 子目录的才是有效仓库**，编译产物目录（如 \`xxx-target\`、\`build\`）不是仓库，不要选它们。如果目录名只是部分匹配（如 \`talktype-target\` 不等于 \`talktype\`），优先继续查找更精确的匹配。
