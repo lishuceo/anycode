@@ -10,6 +10,9 @@ const mockTaskGet = vi.fn();
 const mockTaskList = vi.fn();
 const mockTaskPatch = vi.fn();
 const mockTaskDelete = vi.fn();
+const mockTaskAddMembers = vi.fn();
+const mockTaskRemoveMembers = vi.fn();
+const mockTasklistList = vi.fn();
 const mockRequest = vi.fn();
 
 vi.mock('../../client.js', () => ({
@@ -27,6 +30,11 @@ vi.mock('../../client.js', () => ({
             get: (...args: unknown[]) => mockTaskGet(...args),
             patch: (...args: unknown[]) => mockTaskPatch(...args),
             delete: (...args: unknown[]) => mockTaskDelete(...args),
+            addMembers: (...args: unknown[]) => mockTaskAddMembers(...args),
+            removeMembers: (...args: unknown[]) => mockTaskRemoveMembers(...args),
+          },
+          tasklist: {
+            list: (...args: unknown[]) => mockTasklistList(...args),
           },
         },
       },
@@ -123,7 +131,7 @@ describe('parseDueDate', () => {
 
 describe('feishu_task tool', () => {
   describe('create', () => {
-    it('should create a task with only summary', async () => {
+    it('should create a task with only summary and include applink', async () => {
       mockTaskCreate.mockResolvedValue({
         code: 0,
         data: { task: { guid: 'TASK_001', summary: '开会' } },
@@ -131,6 +139,7 @@ describe('feishu_task tool', () => {
       const result = await capturedHandler({ action: 'create', summary: '开会' });
       expect(result.content[0].text).toContain('TASK_001');
       expect(result.content[0].text).toContain('开会');
+      expect(result.content[0].text).toContain('https://applink.feishu.cn/client/todo/detail?guid=TASK_001');
       expect(mockTaskCreate).toHaveBeenCalledWith(expect.objectContaining({
         data: expect.objectContaining({ summary: '开会' }),
         params: { user_id_type: 'open_id' },
@@ -403,6 +412,166 @@ describe('feishu_task tool', () => {
       const result = await capturedHandler({ action: 'delete' });
       expect(result.isError).toBe(true);
       expect(result.content[0].text).toContain('task_guid');
+    });
+  });
+
+  describe('add_members', () => {
+    it('should add members to a task', async () => {
+      mockTaskAddMembers.mockResolvedValue({ code: 0 });
+      const result = await capturedHandler({
+        action: 'add_members',
+        task_guid: 'TASK_001',
+        members: '[{"id": "ou_123", "role": "follower"}]',
+      });
+      expect(result.content[0].text).toBe('成员已添加');
+      expect(mockTaskAddMembers).toHaveBeenCalledWith(expect.objectContaining({
+        path: { task_guid: 'TASK_001' },
+        data: { members: [{ id: 'ou_123', role: 'follower' }] },
+        params: { user_id_type: 'open_id' },
+      }), undefined);
+    });
+
+    it('should require task_guid', async () => {
+      const result = await capturedHandler({
+        action: 'add_members',
+        members: '[{"id": "ou_123", "role": "assignee"}]',
+      });
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toContain('task_guid');
+    });
+
+    it('should require members', async () => {
+      const result = await capturedHandler({
+        action: 'add_members',
+        task_guid: 'TASK_001',
+      });
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toContain('members');
+    });
+
+    it('should handle API errors', async () => {
+      mockTaskAddMembers.mockResolvedValue({ code: 1470404, msg: 'task not found' });
+      const result = await capturedHandler({
+        action: 'add_members',
+        task_guid: 'TASK_001',
+        members: '[{"id": "ou_123", "role": "assignee"}]',
+      });
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toContain('1470404');
+    });
+  });
+
+  describe('remove_members', () => {
+    it('should remove members from a task', async () => {
+      mockTaskRemoveMembers.mockResolvedValue({ code: 0 });
+      const result = await capturedHandler({
+        action: 'remove_members',
+        task_guid: 'TASK_001',
+        members: '[{"id": "ou_123", "role": "follower"}]',
+      });
+      expect(result.content[0].text).toBe('成员已移除');
+      expect(mockTaskRemoveMembers).toHaveBeenCalledWith(expect.objectContaining({
+        path: { task_guid: 'TASK_001' },
+        data: { members: [{ id: 'ou_123', role: 'follower' }] },
+        params: { user_id_type: 'open_id' },
+      }), undefined);
+    });
+
+    it('should require task_guid', async () => {
+      const result = await capturedHandler({
+        action: 'remove_members',
+        members: '[{"id": "ou_123", "role": "assignee"}]',
+      });
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toContain('task_guid');
+    });
+
+    it('should require members', async () => {
+      const result = await capturedHandler({
+        action: 'remove_members',
+        task_guid: 'TASK_001',
+      });
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toContain('members');
+    });
+  });
+
+  describe('list_tasklists', () => {
+    it('should list tasklists', async () => {
+      mockTasklistList.mockResolvedValue({
+        code: 0,
+        data: {
+          items: [
+            { guid: 'TL_001', name: 'UrhoX', creator: { id: 'ou_111' }, url: 'https://...' },
+            { guid: 'TL_002', name: 'Bug', creator: { id: 'ou_222' }, url: 'https://...' },
+          ],
+          has_more: false,
+        },
+      });
+      const result = await capturedHandler({ action: 'list_tasklists' });
+      const parsed = JSON.parse(result.content[0].text);
+      expect(parsed.items).toHaveLength(2);
+      expect(parsed.items[0].guid).toBe('TL_001');
+      expect(parsed.items[0].name).toBe('UrhoX');
+      expect(parsed.items[1].name).toBe('Bug');
+      expect(mockTasklistList).toHaveBeenCalledWith(expect.objectContaining({
+        params: expect.objectContaining({ page_size: 20, user_id_type: 'open_id' }),
+      }), undefined);
+    });
+
+    it('should pass page_size and page_token', async () => {
+      mockTasklistList.mockResolvedValue({
+        code: 0,
+        data: { items: [], has_more: false },
+      });
+      await capturedHandler({ action: 'list_tasklists', page_size: 5, page_token: 'abc' });
+      expect(mockTasklistList).toHaveBeenCalledWith(expect.objectContaining({
+        params: expect.objectContaining({ page_size: 5, page_token: 'abc' }),
+      }), undefined);
+    });
+
+    it('should handle API errors', async () => {
+      mockTasklistList.mockResolvedValue({ code: 99999, msg: 'forbidden' });
+      const result = await capturedHandler({ action: 'list_tasklists' });
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toContain('99999');
+    });
+  });
+
+  describe('create with tasklists', () => {
+    it('should create a task with tasklists', async () => {
+      mockTaskCreate.mockResolvedValue({
+        code: 0,
+        data: { task: { guid: 'TASK_010', summary: '新功能' } },
+      });
+      const result = await capturedHandler({
+        action: 'create',
+        summary: '新功能',
+        tasklists: '[{"tasklist_guid": "TL_001"}]',
+      });
+      expect(result.isError).toBeUndefined();
+      const callData = mockTaskCreate.mock.calls[0][0].data;
+      expect(callData.tasklists).toEqual([{ tasklist_guid: 'TL_001' }]);
+    });
+
+    it('should reject invalid tasklists JSON', async () => {
+      const result = await capturedHandler({
+        action: 'create',
+        summary: '任务',
+        tasklists: 'not-json',
+      });
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toContain('不是有效的 JSON');
+    });
+
+    it('should reject tasklists without tasklist_guid', async () => {
+      const result = await capturedHandler({
+        action: 'create',
+        summary: '任务',
+        tasklists: '[{"name": "UrhoX"}]',
+      });
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toContain('tasklist_guid');
     });
   });
 
