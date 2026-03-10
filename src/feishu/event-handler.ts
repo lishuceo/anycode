@@ -291,6 +291,9 @@ function isThreadCreatorAgent(threadId: string, agentId: string): boolean {
 // ============================================================
 // 队列驱动：同一 thread 内串行执行，不同 thread 间可并行
 // queueKey = threadId 存在时用 `chatId:threadId`，否则用 `chatId`
+//
+// thread 模式下无 threadId 的消息（p2p/群聊首条）：用 messageId 区分，
+// 因为每条消息会创建独立话题，不需要串行等待。
 // ============================================================
 
 /**
@@ -298,6 +301,7 @@ function isThreadCreatorAgent(threadId: string, agentId: string): boolean {
  * 同 thread 同 agent 串行，不同 agent 可并行
  *
  * direct 模式（无 thread）加入 userId，不同用户可并行
+ * thread 模式（无 thread）加入 messageId，每条消息可并行
  */
 function makeQueueKey(chatId: string, threadId?: string, agentId: string = 'dev', userId?: string): string {
   if (threadId) {
@@ -649,7 +653,12 @@ async function handleMessageEvent(data: MessageEventData, accountId: string = 'd
   // direct 模式加 userId，不同用户可并行
   // enqueue 返回的 Promise 的错误处理在 processQueue/executeClaudeTask 中完成
   const isDirectMode = agentConfig?.replyMode === 'direct';
-  const queueKey = makeQueueKey(chatId, effectiveThreadId, agentId, isDirectMode ? userId : undefined);
+  // 无话题消息并行执行：thread 模式下每条无 threadId 的消息会创建独立话题，
+  // 用 messageId 区分队列键，避免同一 chat 内的独立消息被串行化
+  const perMessageParallel = !effectiveThreadId && !isDirectMode;
+  const queueKey = perMessageParallel
+    ? makeQueueKey(chatId, undefined, agentId, messageId)
+    : makeQueueKey(chatId, effectiveThreadId, agentId, isDirectMode ? userId : undefined);
   taskQueue.enqueue(queueKey, chatId, userId, effectiveText, messageId, rootId, effectiveThreadId, images, createTime).catch(() => {});
   processQueue(queueKey, agentId);
 }
@@ -2251,7 +2260,7 @@ function handleBotDeletedEvent(data: Record<string, unknown>, accountId: string)
 }
 
 /** @internal 测试用导出 */
-export const _testing = { handleBotAddedEvent, handleBotDeletedEvent };
+export const _testing = { handleBotAddedEvent, handleBotDeletedEvent, makeQueueKey };
 
 function formatDuration(ms: number): string {
   if (ms < 1000) return `${ms}ms`;
