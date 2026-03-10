@@ -117,8 +117,60 @@ vi.mock('../../config.js', () => ({
     security: { allowedUserIds: [] },
     claude: { defaultWorkDir: '/tmp/work' },
     workspace: { baseDir: '/tmp/workspaces', branchPrefix: 'feat/test' },
+    db: { pipelineDbPath: ':memory:' },
+    agent: { bindings: [], groupConfigs: {} },
+    chat: { historyMaxCount: 10, historyMaxChars: 8000 },
+    memory: { enabled: false },
   },
+  isMultiBotMode: vi.fn(() => false),
 }));
+
+// event-handler.ts 的依赖链需要以下 mock（供 makeQueueKey 导入使用）
+vi.mock('../../pipeline/store.js', () => ({
+  pipelineStore: { get: vi.fn(), findPendingByChat: vi.fn(), tryStart: vi.fn() },
+}));
+vi.mock('../../pipeline/runner.js', () => ({
+  createPendingPipeline: vi.fn(), startPipeline: vi.fn(),
+  abortPipeline: vi.fn(), cancelPipeline: vi.fn(), retryPipeline: vi.fn(),
+}));
+vi.mock('../../agent/router.js', () => ({
+  resolveAgent: vi.fn(() => 'dev'), shouldRespond: vi.fn(() => true),
+}));
+vi.mock('../../agent/registry.js', () => ({
+  agentRegistry: { get: vi.fn(), getOrThrow: vi.fn(), allIds: vi.fn(() => []) },
+}));
+vi.mock('../multi-account.js', () => ({
+  accountManager: { getAllBotOpenIds: vi.fn(() => new Set()), getBotOpenId: vi.fn() },
+}));
+vi.mock('../bot-registry.js', () => ({
+  chatBotRegistry: { getBots: vi.fn(() => []), addBot: vi.fn(), removeBot: vi.fn(), clearChat: vi.fn() },
+}));
+vi.mock('../approval.js', () => ({
+  checkAndRequestApproval: vi.fn(() => true),
+  handleApprovalTextCommand: vi.fn(() => false),
+  handleApprovalCardAction: vi.fn(),
+  setOnApproved: vi.fn(),
+}));
+vi.mock('../thread-context.js', () => ({
+  resolveThreadContext: vi.fn(),
+}));
+vi.mock('../../agent/config-loader.js', () => ({
+  readPersonaFile: vi.fn(), loadKnowledgeContent: vi.fn(),
+}));
+vi.mock('../../agent/tools/discussion.js', () => ({
+  createDiscussionMcpServer: vi.fn(),
+}));
+vi.mock('../oauth.js', () => ({
+  generateAuthUrl: vi.fn(), hasCallbackUrl: vi.fn(), handleManualCode: vi.fn(),
+}));
+vi.mock('../../memory/injector.js', () => ({ injectMemories: vi.fn(() => '') }));
+vi.mock('../../memory/extractor.js', () => ({ extractMemories: vi.fn() }));
+vi.mock('../../memory/commands.js', () => ({
+  handleMemoryCommand: vi.fn(), handleMemoryCardAction: vi.fn(),
+}));
+vi.mock('../../workspace/identity.js', () => ({ getRepoIdentity: vi.fn((p: string) => p) }));
+vi.mock('../../utils/quick-ack.js', () => ({ generateQuickAck: vi.fn() }));
+vi.mock('../../utils/thread-relevance.js', () => ({ checkThreadRelevance: vi.fn() }));
 
 vi.mock('../../workspace/manager.js', () => ({
   setupWorkspace: vi.fn(),
@@ -1055,16 +1107,20 @@ describe('parseMessage empty @mention handling', () => {
 // ============================================================
 // makeQueueKey + 并行执行策略测试
 //
-// 验证队列键构建逻辑：
-// - thread 模式无 threadId：用 messageId/userId 区分（per-message 并行）
+// 使用生产代码导出的 makeQueueKey，测试 handleMessageEvent 中
+// 的 perMessageParallel 分支逻辑：
+// - thread 模式无 threadId：用 messageId 区分（per-message 并行）
 // - thread 模式有 threadId：同 thread 串行
 // - direct 模式无 threadId：用 userId 区分（per-user 并行）
 // ============================================================
 
+// 导入生产代码的 makeQueueKey
+const { makeQueueKey } = (await import('../event-handler.js'))._testing;
+
 describe('queue key construction for parallel execution', () => {
   /**
-   * 模拟 handleMessageEvent 中的 queue key 构建逻辑
-   * (从 event-handler.ts 提取)
+   * 模拟 handleMessageEvent 中 queueKey 的构建分支逻辑，
+   * 内部调用生产代码的 makeQueueKey。
    */
   function buildQueueKey(params: {
     chatId: string;
@@ -1078,17 +1134,9 @@ describe('queue key construction for parallel execution', () => {
     const isDirectMode = replyMode === 'direct';
     const perMessageParallel = !threadId && !isDirectMode;
 
-    if (perMessageParallel) {
-      // makeQueueKey(chatId, undefined, agentId, messageId)
-      return `${agentId}:${chatId}:${messageId}`;
-    }
-    if (threadId) {
-      return `${agentId}:${chatId}:${threadId}`;
-    }
-    if (isDirectMode && userId) {
-      return `${agentId}:${chatId}:${userId}`;
-    }
-    return `${agentId}:${chatId}`;
+    return perMessageParallel
+      ? makeQueueKey(chatId, undefined, agentId, messageId)
+      : makeQueueKey(chatId, threadId, agentId, isDirectMode ? userId : undefined);
   }
 
   it('p2p messages without threadId should get unique queue keys (parallel)', () => {
