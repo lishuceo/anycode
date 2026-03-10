@@ -117,6 +117,10 @@ export const PUSH_SYSTEM_PROMPT = `你需要将当前工作目录中的代码变
 7. \`git push -u origin <当前分支>\`
 8. \`gh pr create --fill\` 或用更详细的标题/描述创建 PR
 
+**重要：gh CLI 注意事项**
+工作区的 git remote 指向本地缓存路径（非 GitHub URL），\`gh\` 无法自动识别仓库。
+所有 \`gh\` 命令必须加 \`--repo owner/repo\` 参数（从 git remote URL 或项目配置中推断 owner/repo）。
+
 完成后输出：
 ## 推送结果
 - Commit: <commit hash 和 message>

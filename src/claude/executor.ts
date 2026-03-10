@@ -125,7 +125,21 @@ function buildWorkspaceSystemPrompt(workingDir?: string): string {
 - 不要 git add . 或 git add -A，只添加本次变更的文件
 - 不要提交 .env、credentials 等敏感文件
 - 如果某步骤失败且无法自动修复，停下来向用户说明情况
-- 如果用户只是提问、审查代码或做探索性修改，不需要走这个流程。不确定时问用户："需要我提交这些改动并创建 PR 吗？"`;
+- 如果用户只是提问、审查代码或做探索性修改，不需要走这个流程。不确定时问用户："需要我提交这些改动并创建 PR 吗？"
+
+## GitHub CLI (gh) 注意事项
+
+工作区的 git remote 指向本地缓存路径（非 GitHub URL），\`gh\` CLI 无法自动识别仓库。
+**始终使用 \`--repo owner/repo\` 参数**，不要 cd 到其他目录：
+
+\`\`\`bash
+# 正确 ✓
+gh pr view 123 --repo owner/repo
+gh search issues --repo owner/repo -- "keyword"
+
+# 错误 ✗ — 不要 cd 到主仓库或其他目录执行 gh
+cd /some/other/dir && gh pr view 123
+\`\`\``;
 
   const feishuToolsGuide = config.feishu.tools.enabled ? `
 
