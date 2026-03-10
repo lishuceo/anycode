@@ -320,18 +320,23 @@ export class ClaudeExecutor {
     const abortController = new AbortController();
     const idleTimeoutMs = (input.timeoutSeconds ?? config.claude.timeoutSeconds) * 1000;
     let timedOut = false;
+    // 跟踪是否有过工具活动（canUseTool 被调用过）
+    // 有工具活动说明 agent 在积极工作，API 处理大上下文思考下一步可能需要更长时间
+    let hasToolActivity = false;
 
     // 滑动窗口 idle 超时：每收到一条 SDK 消息就重置计时器
     // 只在某一步长时间无活动时才 abort，不限制总执行时长
+    // 当 agent 有过工具活动时，使用 2 倍超时（API 处理大上下文后思考下一步可能较慢）
     let idleTimer: ReturnType<typeof setTimeout> = undefined!;
     const resetIdleTimer = () => {
       clearTimeout(idleTimer);
+      const effectiveTimeout = hasToolActivity ? idleTimeoutMs * 2 : idleTimeoutMs;
       idleTimer = setTimeout(() => {
         timedOut = true;
         abortController.abort();
-        logger.warn({ sessionKey, idleTimeoutMs, elapsedMs: Date.now() - startTime },
+        logger.warn({ sessionKey, idleTimeoutMs: effectiveTimeout, hasToolActivity, elapsedMs: Date.now() - startTime },
           'Claude query idle timeout — no SDK message received, aborting');
-      }, idleTimeoutMs);
+      }, effectiveTimeout);
     };
     resetIdleTimer();
 
@@ -498,7 +503,9 @@ export class ClaudeExecutor {
         allowedTools: ['Skill'],
         canUseTool: async (toolName: string, inputObj: Record<string, unknown>) => {
           // canUseTool 在每次工具执行前触发，说明 agent 仍在活跃工作
-          // 重置 idle timer 防止长时间 MCP 工具执行（如写飞书文档）导致误超时
+          // 1. 标记工具活动 → 后续 idle timer 使用 2 倍超时（API 处理大上下文后思考较慢）
+          // 2. 重置 idle timer → 防止长时间 MCP 工具执行导致误超时
+          hasToolActivity = true;
           resetIdleTimer();
 
           // per-agent 工具禁止列表（优先级最高）
@@ -726,7 +733,7 @@ export class ClaudeExecutor {
       const errorMsg = timedOut
         ? (input.hardTimeoutSeconds && durationMs >= input.hardTimeoutSeconds * 1000
           ? `Query hard timeout after ${input.hardTimeoutSeconds}s total execution time`
-          : `Query idle timeout after ${idleTimeoutMs / 1000}s with no activity (total elapsed: ${Math.round(durationMs / 1000)}s)`)
+          : `Query idle timeout after ${(hasToolActivity ? idleTimeoutMs * 2 : idleTimeoutMs) / 1000}s with no activity (total elapsed: ${Math.round(durationMs / 1000)}s)`)
         : (err instanceof Error ? err.message : String(err));
       logger.error({ sessionKey, err: errorMsg, timedOut }, 'Claude Agent SDK query error');
 
