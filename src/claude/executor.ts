@@ -328,13 +328,15 @@ export class ClaudeExecutor {
     // 只在某一步长时间无活动时才 abort，不限制总执行时长
     // 当 agent 有过工具活动时，使用 2 倍超时（API 处理大上下文后思考下一步可能较慢）
     let idleTimer: ReturnType<typeof setTimeout> = undefined!;
-    const resetIdleTimer = () => {
+    let lastResetSource = 'init';
+    const resetIdleTimer = (source?: string) => {
       clearTimeout(idleTimer);
+      if (source) lastResetSource = source;
       const effectiveTimeout = hasToolActivity ? idleTimeoutMs * 2 : idleTimeoutMs;
       idleTimer = setTimeout(() => {
         timedOut = true;
         abortController.abort();
-        logger.warn({ sessionKey, idleTimeoutMs: effectiveTimeout, hasToolActivity, elapsedMs: Date.now() - startTime },
+        logger.warn({ sessionKey, idleTimeoutMs: effectiveTimeout, hasToolActivity, lastResetSource, elapsedMs: Date.now() - startTime },
           'Claude query idle timeout — no SDK message received, aborting');
       }, effectiveTimeout);
     };
@@ -506,7 +508,7 @@ export class ClaudeExecutor {
           // 1. 标记工具活动 → 后续 idle timer 使用 2 倍超时（API 处理大上下文后思考较慢）
           // 2. 重置 idle timer → 防止长时间 MCP 工具执行导致误超时
           hasToolActivity = true;
-          resetIdleTimer();
+          resetIdleTimer(`canUseTool:${toolName}`);
 
           // per-agent 工具禁止列表（优先级最高）
           if (input.toolDeny?.some(p => matchToolPattern(toolName, p))) {
@@ -635,7 +637,7 @@ export class ClaudeExecutor {
       // 遍历 SDK 流式消息
       for await (const message of q) {
         // 每收到消息重置 idle 计时器
-        resetIdleTimer();
+        resetIdleTimer(`msg:${message.type}${'subtype' in message ? ':' + (message as Record<string, unknown>).subtype : ''}`);
 
         // 通知进度回调
         onProgress?.(message);
@@ -720,7 +722,9 @@ export class ClaudeExecutor {
             break;
 
           default:
-            // tool_progress, stream_event 等其他消息类型
+            // tool_progress, stream_event 等其他消息类型 — 记录以便诊断 idle timeout 间隙
+            logger.debug({ sessionKey, messageType: message.type, subtype: (message as Record<string, unknown>).subtype },
+              'SDK message (non-primary)');
             break;
         }
       }
