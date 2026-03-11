@@ -498,7 +498,7 @@ export class FeishuClient {
       for (const item of items) {
         if (item.deleted) continue;
         const msgType = item.msg_type ?? '';
-        if (msgType !== 'text' && msgType !== 'post') continue;
+        if (msgType !== 'text' && msgType !== 'post' && msgType !== 'merge_forward') continue;
         const senderType = item.sender?.sender_type === 'app' ? 'app' as const : 'user' as const;
         let content = '';
         try {
@@ -527,6 +527,9 @@ export class FeishuClient {
               }
             }
             content = textParts.join(' ');
+          } else if (msgType === 'merge_forward') {
+            // 历史消息中的合并转发：标记为占位文本（避免逐条拉取子消息的 API 开销）
+            content = '[合并转发的聊天记录]';
           }
         } catch {
           continue;
