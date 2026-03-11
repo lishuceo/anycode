@@ -2024,10 +2024,6 @@ function detectImageMediaType(buf: Buffer): ImageAttachment['mediaType'] {
   return 'image/png'; // 默认 fallback
 }
 
-// formatMergeForwardSubMessage is defined in ./message-parser.ts
-// Re-export for backward compatibility (tests import from here)
-export { formatMergeForwardSubMessage } from './message-parser.js';
-
 /**
  * 解析飞书消息 (使用 SDK 类型化的事件数据)
  * 异步：图片消息需要下载图片
