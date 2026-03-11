@@ -446,12 +446,14 @@ export class ClaudeExecutor {
     // 自动失效：system prompt 变化后跳过 resume，起新 session（工具描述、persona 等会刷新）
     // 注意：storedHash 为空（旧 session 迁移前创建）也视为不匹配，强制起新 session
     let effectiveResumeId = resumeSessionId;
+    let resumeSkipped = false;
     if (resumeSessionId && input.storedSystemPromptHash !== systemPromptHash) {
       logger.info(
         { sessionKey, storedHash: input.storedSystemPromptHash, currentHash: systemPromptHash },
         'System prompt changed since last session — skipping resume, starting fresh',
       );
       effectiveResumeId = undefined;
+      resumeSkipped = true;
     }
 
     const promptAppend = historySummaries
@@ -750,6 +752,7 @@ export class ClaudeExecutor {
         durationMs,
         needsRestart: workspaceChanged,
         newWorkingDir,
+        resumeSkipped,
       };
     }
 
@@ -803,6 +806,7 @@ export class ClaudeExecutor {
           numTurns: resultMessage.num_turns,
           needsRestart: workspaceChanged,
           newWorkingDir,
+          resumeSkipped,
         };
       } else {
         // 错误结果
@@ -819,6 +823,7 @@ export class ClaudeExecutor {
           numTurns: resultMessage.num_turns,
           needsRestart: workspaceChanged,
           newWorkingDir,
+          resumeSkipped,
         };
       }
     }
@@ -832,6 +837,7 @@ export class ClaudeExecutor {
       durationMs,
       needsRestart: workspaceChanged,
       newWorkingDir,
+      resumeSkipped,
     };
   }
 
