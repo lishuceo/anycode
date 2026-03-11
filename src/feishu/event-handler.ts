@@ -2124,6 +2124,7 @@ async function parseMessage(data: MessageEventData): Promise<ParsedMessage | nul
             }),
           );
 
+
           const lines: string[] = ['[合并转发的聊天记录]'];
 
           for (const item of limited) {
