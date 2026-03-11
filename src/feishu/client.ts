@@ -496,10 +496,12 @@ export class FeishuClient {
       }
       const items = resp.data?.items ?? [];
       const messages: Array<{ messageId: string; senderId: string; senderType: 'user' | 'app'; content: string; msgType: string; createTime?: string }> = [];
+      // 诊断：记录 API 返回的原始消息分布
+      const diagSkipped: Array<{ id: string; type: string; reason: string }> = [];
       for (const item of items) {
-        if (item.deleted) continue;
+        if (item.deleted) { diagSkipped.push({ id: item.message_id ?? '?', type: item.msg_type ?? '?', reason: 'deleted' }); continue; }
         const msgType = item.msg_type ?? '';
-        if (msgType !== 'text' && msgType !== 'post' && msgType !== 'merge_forward') continue;
+        if (msgType !== 'text' && msgType !== 'post' && msgType !== 'merge_forward') { diagSkipped.push({ id: item.message_id ?? '?', type: msgType, reason: 'unsupported_type' }); continue; }
         const senderType = item.sender?.sender_type === 'app' ? 'app' as const : 'user' as const;
         let content = '';
         try {
@@ -563,10 +565,11 @@ export class FeishuClient {
               content = '[合并转发的聊天记录]';
             }
           }
-        } catch {
+        } catch (parseErr) {
+          diagSkipped.push({ id: item.message_id ?? '?', type: msgType, reason: `parse_error: ${(parseErr as Error).message?.slice(0, 80)}` });
           continue;
         }
-        if (!content.trim()) continue;
+        if (!content.trim()) { diagSkipped.push({ id: item.message_id ?? '?', type: msgType, reason: 'empty_content' }); continue; }
         messages.push({
           messageId: item.message_id ?? '',
           senderId: item.sender?.id ?? '',
@@ -576,6 +579,19 @@ export class FeishuClient {
           createTime: item.create_time ?? undefined,
         });
       }
+      // 诊断：记录消息获取和过滤的详情
+      logger.debug(
+        {
+          containerId,
+          containerType,
+          apiItemCount: items.length,
+          parsedCount: messages.length,
+          skipped: diagSkipped,
+          parsedMsgIds: messages.map(m => m.messageId),
+          parsedMsgTypes: messages.map(m => m.msgType),
+        },
+        'fetchRecentMessages diagnostic',
+      );
       // API 返回的是 ByCreateTimeDesc（最新在前），反转为时间正序
       return messages.reverse();
     } catch (err) {
