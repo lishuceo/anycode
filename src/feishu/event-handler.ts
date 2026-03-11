@@ -2026,7 +2026,7 @@ function detectImageMediaType(buf: Buffer): ImageAttachment['mediaType'] {
 /**
  * 解析合并转发子消息的 body.content 为可读文本
  */
-function formatMergeForwardSubMessage(
+export function formatMergeForwardSubMessage(
   contentJson: string,
   msgType: string,
   mentions?: Array<{ key: string; id: string; id_type: string; name: string }>,
