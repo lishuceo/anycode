@@ -1676,12 +1676,12 @@ async function executeDirectTask(
 
     let effectivePrompt = promptWithTime;
     const afterMsgId = activeConversationId ? _historyDedup.get(sessionKey) : undefined;
-    logger.debug(
+    logger.info(
       { sessionKey, afterMsgId, hasConversationId: !!activeConversationId, currentMessageId: messageId, rootId },
       'History dedup state before buildDirectTaskHistory',
     );
     const history = await buildDirectTaskHistory(chatId, eventThreadId, messageId, afterMsgId, selfBotOpenIds);
-    logger.debug(
+    logger.info(
       { sessionKey, hasHistoryText: !!history.text, historyLen: history.text?.length, newestMsgId: history.newestMsgId },
       'buildDirectTaskHistory result',
     );
@@ -1854,13 +1854,13 @@ async function buildDirectTaskHistory(
         messages = messages.slice(idx + 1);
       }
       // afterMsgId 不在列表中 → 可能消息已过期滚动，注入全部
-      logger.debug(
+      logger.info(
         { chatId, afterMsgId, foundIdx: messages.length !== beforeDedupFilter ? 'found' : 'not_found', beforeDedup: beforeDedupFilter, afterDedup: messages.length },
         'History afterMsgId dedup applied',
       );
     }
 
-    logger.debug(
+    logger.info(
       {
         chatId,
         threadId,
