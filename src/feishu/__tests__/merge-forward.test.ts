@@ -2,7 +2,7 @@
 import { describe, it, expect } from 'vitest';
 
 // formatMergeForwardSubMessage is a pure function — no external deps needed
-import { formatMergeForwardSubMessage } from '../event-handler.js';
+import { formatMergeForwardSubMessage } from '../message-parser.js';
 
 describe('formatMergeForwardSubMessage', () => {
   it('should parse text message content', () => {
