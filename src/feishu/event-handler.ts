@@ -1676,7 +1676,15 @@ async function executeDirectTask(
 
     let effectivePrompt = promptWithTime;
     const afterMsgId = activeConversationId ? _historyDedup.get(sessionKey) : undefined;
+    logger.debug(
+      { sessionKey, afterMsgId, hasConversationId: !!activeConversationId, currentMessageId: messageId, rootId },
+      'History dedup state before buildDirectTaskHistory',
+    );
     const history = await buildDirectTaskHistory(chatId, eventThreadId, messageId, afterMsgId, selfBotOpenIds);
+    logger.debug(
+      { sessionKey, hasHistoryText: !!history.text, historyLen: history.text?.length, newestMsgId: history.newestMsgId },
+      'buildDirectTaskHistory result',
+    );
     if (history.text) {
       effectivePrompt = history.text + '\n\n---\n\n' + promptWithTime;
     }
@@ -1830,6 +1838,7 @@ async function buildDirectTaskHistory(
     }
 
     // 过滤当前消息（主聊天区路径，话题路径已在上面过滤）
+    const beforeCurrentFilter = messages.length;
     if (!threadId && currentMessageId) {
       messages = messages.filter(m => m.messageId !== currentMessageId);
     }
@@ -1838,13 +1847,35 @@ async function buildDirectTaskHistory(
     const newestMsgId = messages.length > 0 ? messages[messages.length - 1].messageId : undefined;
 
     // 增量去重：只保留 afterMsgId 之后的新消息
+    const beforeDedupFilter = messages.length;
     if (afterMsgId && messages.length > 0) {
       const idx = messages.findIndex(m => m.messageId === afterMsgId);
       if (idx >= 0) {
         messages = messages.slice(idx + 1);
       }
       // afterMsgId 不在列表中 → 可能消息已过期滚动，注入全部
+      logger.debug(
+        { chatId, afterMsgId, foundIdx: messages.length !== beforeDedupFilter ? 'found' : 'not_found', beforeDedup: beforeDedupFilter, afterDedup: messages.length },
+        'History afterMsgId dedup applied',
+      );
     }
+
+    logger.debug(
+      {
+        chatId,
+        threadId,
+        currentMessageId,
+        afterMsgId,
+        newestMsgId,
+        fetchedCount: beforeCurrentFilter,
+        afterCurrentFilter: beforeDedupFilter,
+        afterDedupFilter: messages.length,
+        msgIds: messages.map(m => m.messageId),
+        msgTypes: messages.map(m => m.msgType),
+        msgContentLens: messages.map(m => m.content.length),
+      },
+      'buildDirectTaskHistory message pipeline',
+    );
 
     const text = await formatHistoryMessages(messages, chatId, selfBotOpenIds);
     return { text: text ?? undefined, newestMsgId };
