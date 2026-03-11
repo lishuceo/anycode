@@ -2024,10 +2024,6 @@ function detectImageMediaType(buf: Buffer): ImageAttachment['mediaType'] {
   return 'image/png'; // 默认 fallback
 }
 
-// formatMergeForwardSubMessage is defined in ./message-parser.ts
-// Re-export for backward compatibility (tests import from here)
-export { formatMergeForwardSubMessage } from './message-parser.js';
-
 /**
  * 解析飞书消息 (使用 SDK 类型化的事件数据)
  * 异步：图片消息需要下载图片
@@ -2207,6 +2203,10 @@ async function parseMessage(data: MessageEventData): Promise<ParsedMessage | nul
     try {
       const content = JSON.parse(message.content);
       text = content.text || '';
+      // 飞书引用回复合并转发消息时，text 会被包裹在 <p> 标签中，需要剥离 HTML 标签
+      if (text.includes('<')) {
+        text = text.replace(/<[^>]+>/g, '').trim();
+      }
     } catch {
       logger.error({ content: message.content }, 'Failed to parse message content');
       return null;
