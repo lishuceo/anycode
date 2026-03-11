@@ -2114,8 +2114,9 @@ async function parseMessage(data: MessageEventData): Promise<ParsedMessage | nul
             const msgType = item.msg_type || 'text';
             const formatted = formatMergeForwardSubMessage(item.body?.content || '', msgType, item.mentions);
             if (!formatted) continue;
-            const senderName = senderNameMap.get(item.sender?.id ?? '') ?? '未知用户';
-            lines.push(`- [${senderName}]: ${formatted}`);
+            const senderId = item.sender?.id ?? '';
+            const senderName = senderNameMap.get(senderId) ?? '未知用户';
+            lines.push(`- [${senderName}](${senderId || '?'}): ${formatted}`);
           }
 
           if (subMessages.length > MAX_SUB_MESSAGES) {

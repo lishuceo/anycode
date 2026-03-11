@@ -97,8 +97,8 @@ describe('fetchRecentMessages - merge_forward expansion', () => {
 
     expect(messages).toHaveLength(1);
     expect(messages[0].content).toContain('[合并转发的聊天记录]');
-    expect(messages[0].content).toContain('- [未知用户]: 你好');
-    expect(messages[0].content).toContain('- [未知用户]: [图片]');
+    expect(messages[0].content).toContain('- [未知用户](ou_a): 你好');
+    expect(messages[0].content).toContain('- [未知用户](ou_b): [图片]');
     expect(messages[0].msgType).toBe('merge_forward');
   });
 
@@ -232,7 +232,7 @@ describe('fetchRecentMessages - merge_forward expansion', () => {
     const messages = await client.fetchRecentMessages('chat_1');
 
     expect(messages).toHaveLength(1);
-    expect(messages[0].content).toContain('- [未知用户]: @张三 看这个');
+    expect(messages[0].content).toContain('- [未知用户](ou_a): @张三 看这个');
   });
 
   it('should include sender names in merge_forward sub-messages when getUserName resolves', async () => {
@@ -284,8 +284,8 @@ describe('fetchRecentMessages - merge_forward expansion', () => {
     const messages = await client.fetchRecentMessages('chat_1');
 
     expect(messages).toHaveLength(1);
-    expect(messages[0].content).toContain('- [张三]: 你好');
-    expect(messages[0].content).toContain('- [李四]: 你也好');
+    expect(messages[0].content).toContain('- [张三](ou_alice): 你好');
+    expect(messages[0].content).toContain('- [李四](ou_bob): 你也好');
   });
 
   it('should handle merge_forward with non-JSON body.content (real Feishu API behavior)', async () => {
@@ -328,7 +328,7 @@ describe('fetchRecentMessages - merge_forward expansion', () => {
     // Should NOT be skipped — must successfully parse the merge_forward
     expect(messages).toHaveLength(1);
     expect(messages[0].content).toContain('[合并转发的聊天记录]');
-    expect(messages[0].content).toContain('- [未知用户]: 这是转发内容');
+    expect(messages[0].content).toContain('- [未知用户](ou_a): 这是转发内容');
     expect(messages[0].msgType).toBe('merge_forward');
   });
 
@@ -374,6 +374,6 @@ describe('fetchRecentMessages - merge_forward expansion', () => {
     const messages = await client.fetchRecentMessages('chat_1');
 
     expect(messages).toHaveLength(1);
-    expect(messages[0].content).toContain('- [未知用户]: 公告 重要通知');
+    expect(messages[0].content).toContain('- [未知用户](ou_a): 公告 重要通知');
   });
 });

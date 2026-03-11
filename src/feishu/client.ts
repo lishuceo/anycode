@@ -532,8 +532,9 @@ export class FeishuClient {
                   for (const sub of subMessages) {
                     const subContent = formatMergeForwardSubMessage(sub.body?.content ?? '{}', sub.msg_type || 'text', sub.mentions);
                     if (subContent.trim()) {
-                      const senderName = senderNameMap.get(sub.sender?.id ?? '') ?? '未知用户';
-                      lines.push(`- [${senderName}]: ${subContent.trim()}`);
+                      const senderId = sub.sender?.id ?? '';
+                      const senderName = senderNameMap.get(senderId) ?? '未知用户';
+                      lines.push(`- [${senderName}](${senderId || '?'}): ${subContent.trim()}`);
                     }
                   }
                   content = lines.join('\n');
