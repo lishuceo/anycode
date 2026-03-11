@@ -233,6 +233,50 @@ describe('fetchRecentMessages - merge_forward expansion', () => {
     expect(messages[0].content).toContain('- @张三 看这个');
   });
 
+  it('should handle merge_forward with non-JSON body.content (real Feishu API behavior)', async () => {
+    // Feishu's im.message.list API returns plain text like "Merged and forwarded messages"
+    // as body.content for merge_forward, NOT JSON. This previously caused JSON.parse to throw
+    // and silently skip the message via catch { continue }.
+    mockMessageList.mockResolvedValue({
+      code: 0,
+      data: {
+        items: [{
+          message_id: 'msg_forward_real',
+          msg_type: 'merge_forward',
+          body: { content: 'Merged and forwarded messages' }, // NOT JSON!
+          sender: { id: 'ou_sender', sender_type: 'user' },
+          create_time: '1700000000000',
+          deleted: false,
+        }],
+      },
+    });
+
+    mockMessageGet.mockResolvedValue({
+      code: 0,
+      data: {
+        items: [
+          { message_id: 'msg_forward_real', msg_type: 'merge_forward', body: { content: '{}' } },
+          {
+            message_id: 'sub_real_1',
+            msg_type: 'text',
+            body: { content: JSON.stringify({ text: '这是转发内容' }) },
+            sender: { id: 'ou_a', id_type: 'open_id', sender_type: 'user' },
+            upper_message_id: 'msg_forward_real',
+            create_time: '1700000001000',
+          },
+        ],
+      },
+    });
+
+    const messages = await client.fetchRecentMessages('chat_1');
+
+    // Should NOT be skipped — must successfully parse the merge_forward
+    expect(messages).toHaveLength(1);
+    expect(messages[0].content).toContain('[合并转发的聊天记录]');
+    expect(messages[0].content).toContain('- 这是转发内容');
+    expect(messages[0].msgType).toBe('merge_forward');
+  });
+
   it('should handle post messages in merge_forward sub-messages', async () => {
     mockMessageList.mockResolvedValue({
       code: 0,
