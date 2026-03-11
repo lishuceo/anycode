@@ -1,6 +1,7 @@
 import * as lark from '@larksuiteoapi/node-sdk';
 import { config } from '../config.js';
 import { logger } from '../utils/logger.js';
+import { formatMergeForwardSubMessage } from './message-parser.js';
 
 /**
  * Serialize card to JSON, escaping ${...} patterns to prevent
@@ -541,30 +542,7 @@ export class FeishuClient {
                   if (subMessages.length > 0) {
                     const lines = ['[合并转发的聊天记录]'];
                     for (const sub of subMessages) {
-                      const subType = sub.msg_type || 'text';
-                      let subContent = '';
-                      try {
-                        const subBody = JSON.parse(sub.body?.content ?? '{}');
-                        if (subType === 'text') {
-                          subContent = (subBody.text as string) ?? '';
-                          if (subContent && Array.isArray(sub.mentions)) {
-                            for (const m of sub.mentions) {
-                              if (m.key) subContent = subContent.replaceAll(m.key, m.name ? `@${m.name}` : '');
-                            }
-                          }
-                        } else if (subType === 'post') {
-                          const pb = Array.isArray(subBody.content) ? subBody
-                            : (subBody.zh_cn || subBody.en_us || subBody.ja_jp || Object.values(subBody)[0]) as Record<string, unknown> | undefined;
-                          const parts: string[] = [];
-                          for (const para of (pb?.content as Array<Array<Record<string, unknown>>>) ?? []) {
-                            for (const el of para ?? []) {
-                              if (el.tag === 'text') parts.push((el.text as string) ?? '');
-                            }
-                          }
-                          subContent = parts.join(' ');
-                        } else if (subType === 'image') { subContent = '[图片]'; }
-                        else { subContent = `[${subType}]`; }
-                      } catch { subContent = `[${subType}]`; }
+                      const subContent = formatMergeForwardSubMessage(sub.body?.content ?? '{}', sub.msg_type || 'text', sub.mentions);
                       if (subContent.trim()) lines.push(`- ${subContent.trim()}`);
                     }
                     content = lines.join('\n');
