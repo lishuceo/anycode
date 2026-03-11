@@ -2024,14 +2024,63 @@ function detectImageMediaType(buf: Buffer): ImageAttachment['mediaType'] {
 }
 
 /**
+ * 解析合并转发子消息的 body.content 为可读文本
+ */
+export function formatMergeForwardSubMessage(
+  contentJson: string,
+  msgType: string,
+  mentions?: Array<{ key: string; id: string; id_type: string; name: string }>,
+): string {
+  try {
+    const body = JSON.parse(contentJson || '{}');
+
+    if (msgType === 'text') {
+      let t = (body.text as string) ?? '';
+      // 解析 @mention 占位符
+      if (t && Array.isArray(mentions)) {
+        for (const m of mentions) {
+          if (m.key) t = t.replaceAll(m.key, m.name ? `@${m.name}` : '');
+        }
+      }
+      return t.trim();
+    }
+
+    if (msgType === 'post') {
+      const postBody = Array.isArray(body.content)
+        ? body
+        : (body.zh_cn || body.en_us || body.ja_jp || Object.values(body)[0]) as Record<string, unknown> | undefined;
+      const title = (postBody?.title as string) ?? '';
+      const textParts: string[] = title ? [title] : [];
+      for (const paragraph of (postBody?.content as Array<Array<Record<string, unknown>>>) ?? []) {
+        for (const element of paragraph ?? []) {
+          if (element.tag === 'text') textParts.push((element.text as string) ?? '');
+        }
+      }
+      return textParts.join(' ').trim();
+    }
+
+    if (msgType === 'image') return '[图片]';
+    if (msgType === 'file') return `[文件: ${body.file_name ?? ''}]`;
+    if (msgType === 'audio') return '[语音消息]';
+    if (msgType === 'video') return '[视频]';
+    if (msgType === 'sticker') return '[表情]';
+    if (msgType === 'merge_forward') return '[嵌套的合并转发消息]';
+
+    return `[${msgType}消息]`;
+  } catch {
+    return `[${msgType}消息 - 解析失败]`;
+  }
+}
+
+/**
  * 解析飞书消息 (使用 SDK 类型化的事件数据)
  * 异步：图片消息需要下载图片
  */
 async function parseMessage(data: MessageEventData): Promise<ParsedMessage | null> {
   const { message, sender } = data;
 
-  // 只处理文本、图片和富文本（post）消息
-  if (message.message_type !== 'text' && message.message_type !== 'image' && message.message_type !== 'post') {
+  // 只处理文本、图片、富文本（post）和合并转发（merge_forward）消息
+  if (message.message_type !== 'text' && message.message_type !== 'image' && message.message_type !== 'post' && message.message_type !== 'merge_forward') {
     logger.debug({ messageType: message.message_type }, 'Ignoring unsupported message type');
     return null;
   }
@@ -2039,7 +2088,65 @@ async function parseMessage(data: MessageEventData): Promise<ParsedMessage | nul
   let text = '';
   let images: ImageAttachment[] | undefined;
 
-  if (message.message_type === 'post') {
+  if (message.message_type === 'merge_forward') {
+    // 合并转发消息：通过 API 获取子消息列表，解析后拼成可读文本
+    try {
+      const items = await feishuClient.getMessageById(message.message_id);
+      if (!items || items.length === 0) {
+        logger.warn({ messageId: message.message_id }, 'merge_forward: API returned no items');
+        text = '[合并转发消息 - 无法获取内容]';
+      } else {
+        // 过滤出子消息（有 upper_message_id 的），排除 merge_forward 容器本身
+        const subMessages = items.filter(item => item.upper_message_id && item.message_id !== message.message_id);
+        if (subMessages.length === 0) {
+          text = '[合并转发消息 - 无子消息]';
+        } else {
+          // 按 create_time 排序
+          subMessages.sort((a, b) => {
+            const timeA = parseInt(a.create_time || '0', 10);
+            const timeB = parseInt(b.create_time || '0', 10);
+            return timeA - timeB;
+          });
+
+          // 限制最多 50 条子消息
+          const MAX_SUB_MESSAGES = 50;
+          const limited = subMessages.slice(0, MAX_SUB_MESSAGES);
+
+          // 批量解析发送者名称（去重后并行请求）
+          const uniqueSenderIds = [...new Set(limited.map(item => item.sender?.id).filter(Boolean))] as string[];
+          const senderNameMap = new Map<string, string>();
+          await Promise.all(
+            uniqueSenderIds.map(async (senderId) => {
+              try {
+                const name = await feishuClient.getUserName(senderId, message.chat_id);
+                if (name) senderNameMap.set(senderId, name);
+              } catch { /* 解析失败跳过，不影响主流程 */ }
+            }),
+          );
+
+          const lines: string[] = ['[合并转发的聊天记录]'];
+
+          for (const item of limited) {
+            const msgType = item.msg_type || 'text';
+            const formatted = formatMergeForwardSubMessage(item.body?.content || '', msgType, item.mentions);
+            if (!formatted) continue;
+            const senderName = senderNameMap.get(item.sender?.id ?? '') ?? '未知用户';
+            lines.push(`- [${senderName}]: ${formatted}`);
+          }
+
+          if (subMessages.length > MAX_SUB_MESSAGES) {
+            lines.push(`- ... 还有 ${subMessages.length - MAX_SUB_MESSAGES} 条消息未显示`);
+          }
+
+          text = lines.join('\n');
+          logger.info({ messageId: message.message_id, subMessageCount: subMessages.length }, 'merge_forward: parsed sub-messages');
+        }
+      }
+    } catch (err) {
+      logger.error({ err, messageId: message.message_id }, 'Failed to parse merge_forward message');
+      text = '[合并转发消息 - 解析失败]';
+    }
+  } else if (message.message_type === 'post') {
     // 富文本消息：解析 content 中的 text、at、img 元素
     // at 元素需要区分 bot（跳过）和人类（保留 @名字给 Claude）
     const selfBotOpenId = feishuClient.botOpenId;
