@@ -17,6 +17,10 @@ export function formatMergeForwardSubMessage(
           if (m.key) t = t.replaceAll(m.key, m.name ? `@${m.name}` : '');
         }
       }
+      // 飞书引用回复时 text 可能被 <p> 等 HTML 标签包裹
+      if (t.includes('<')) {
+        t = t.replace(/<[^>]+>/g, '').trim();
+      }
       return t.trim();
     }
 
