@@ -580,7 +580,7 @@ export class FeishuClient {
         });
       }
       // 诊断：记录消息获取和过滤的详情
-      logger.debug(
+      logger.info(
         {
           containerId,
           containerType,
