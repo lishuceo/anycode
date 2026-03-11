@@ -504,70 +504,74 @@ export class FeishuClient {
         if (msgType !== 'text' && msgType !== 'post' && msgType !== 'merge_forward') { diagSkipped.push({ id: item.message_id ?? '?', type: msgType, reason: 'unsupported_type' }); continue; }
         const senderType = item.sender?.sender_type === 'app' ? 'app' as const : 'user' as const;
         let content = '';
-        try {
-          const body = JSON.parse(item.body?.content ?? '{}');
-          if (msgType === 'text') {
-            let text = (body.text as string) ?? '';
-            // 解析飞书 @mention 占位符（@_user_1 → @用户名）
-            if (text && Array.isArray(item.mentions)) {
-              for (const m of item.mentions as Array<{ key?: string; name?: string }>) {
-                if (m.key) {
-                  text = text.replaceAll(m.key, m.name ? `@${m.name}` : '');
-                }
-              }
-            }
-            // 飞书引用回复时 text 可能被 <p> 等 HTML 标签包裹
-            if (text.includes('<')) {
-              text = text.replace(/<[^>]+>/g, '').trim();
-            }
-            content = text;
-          } else if (msgType === 'post') {
-            // 飞书 post 格式可能是直接的 {title, content} 或带语言键的 {zh_cn: {title, content}}
-            const postBody = Array.isArray(body.content)
-              ? body
-              : (body.zh_cn || body.en_us || body.ja_jp || Object.values(body)[0]) as Record<string, unknown> | undefined;
-            const title = (postBody?.title as string) ?? '';
-            const textParts: string[] = title ? [title] : [];
-            for (const paragraph of (postBody?.content as Array<Array<Record<string, unknown>>>) ?? []) {
-              for (const element of paragraph ?? []) {
-                if (element.tag === 'text') textParts.push((element.text as string) ?? '');
-              }
-            }
-            content = textParts.join(' ');
-          } else if (msgType === 'merge_forward') {
-            // 合并转发：通过 API 获取子消息并展开为可读文本
-            const messageId = item.message_id;
-            if (messageId) {
-              try {
-                const subItems = await this.getMessageById(messageId);
-                if (subItems && subItems.length > 0) {
-                  const subMessages = subItems
-                    .filter(sub => sub.upper_message_id && sub.message_id !== messageId)
-                    .sort((a, b) => parseInt(a.create_time || '0', 10) - parseInt(b.create_time || '0', 10))
-                    .slice(0, 20); // 历史上下文中限制 20 条
-                  if (subMessages.length > 0) {
-                    const lines = ['[合并转发的聊天记录]'];
-                    for (const sub of subMessages) {
-                      const subContent = formatMergeForwardSubMessage(sub.body?.content ?? '{}', sub.msg_type || 'text', sub.mentions);
-                      if (subContent.trim()) lines.push(`- ${subContent.trim()}`);
-                    }
-                    content = lines.join('\n');
-                  } else {
-                    content = '[合并转发的聊天记录]';
+        // merge_forward 的 body.content 是纯文本（如 "Merged and forwarded messages"），不是 JSON
+        // 必须在 JSON.parse 之前单独处理，通过 getMessageById API 获取子消息内容
+        if (msgType === 'merge_forward') {
+          const messageId = item.message_id;
+          if (messageId) {
+            try {
+              const subItems = await this.getMessageById(messageId);
+              if (subItems && subItems.length > 0) {
+                const subMessages = subItems
+                  .filter(sub => sub.upper_message_id && sub.message_id !== messageId)
+                  .sort((a, b) => parseInt(a.create_time || '0', 10) - parseInt(b.create_time || '0', 10))
+                  .slice(0, 20); // 历史上下文中限制 20 条
+                if (subMessages.length > 0) {
+                  const lines = ['[合并转发的聊天记录]'];
+                  for (const sub of subMessages) {
+                    const subContent = formatMergeForwardSubMessage(sub.body?.content ?? '{}', sub.msg_type || 'text', sub.mentions);
+                    if (subContent.trim()) lines.push(`- ${subContent.trim()}`);
                   }
+                  content = lines.join('\n');
                 } else {
                   content = '[合并转发的聊天记录]';
                 }
-              } catch {
+              } else {
                 content = '[合并转发的聊天记录]';
               }
-            } else {
+            } catch {
               content = '[合并转发的聊天记录]';
             }
+          } else {
+            content = '[合并转发的聊天记录]';
           }
-        } catch (parseErr) {
-          diagSkipped.push({ id: item.message_id ?? '?', type: msgType, reason: `parse_error: ${(parseErr as Error).message?.slice(0, 80)}` });
-          continue;
+        } else {
+          // text 和 post 类型的 body.content 是 JSON 格式
+          try {
+            const body = JSON.parse(item.body?.content ?? '{}');
+            if (msgType === 'text') {
+              let text = (body.text as string) ?? '';
+              // 解析飞书 @mention 占位符（@_user_1 → @用户名）
+              if (text && Array.isArray(item.mentions)) {
+                for (const m of item.mentions as Array<{ key?: string; name?: string }>) {
+                  if (m.key) {
+                    text = text.replaceAll(m.key, m.name ? `@${m.name}` : '');
+                  }
+                }
+              }
+              // 飞书引用回复时 text 可能被 <p> 等 HTML 标签包裹
+              if (text.includes('<')) {
+                text = text.replace(/<[^>]+>/g, '').trim();
+              }
+              content = text;
+            } else if (msgType === 'post') {
+              // 飞书 post 格式可能是直接的 {title, content} 或带语言键的 {zh_cn: {title, content}}
+              const postBody = Array.isArray(body.content)
+                ? body
+                : (body.zh_cn || body.en_us || body.ja_jp || Object.values(body)[0]) as Record<string, unknown> | undefined;
+              const title = (postBody?.title as string) ?? '';
+              const textParts: string[] = title ? [title] : [];
+              for (const paragraph of (postBody?.content as Array<Array<Record<string, unknown>>>) ?? []) {
+                for (const element of paragraph ?? []) {
+                  if (element.tag === 'text') textParts.push((element.text as string) ?? '');
+                }
+              }
+              content = textParts.join(' ');
+            }
+          } catch (parseErr) {
+            diagSkipped.push({ id: item.message_id ?? '?', type: msgType, reason: `parse_error: ${(parseErr as Error).message?.slice(0, 80)}` });
+            continue;
+          }
         }
         if (!content.trim()) { diagSkipped.push({ id: item.message_id ?? '?', type: msgType, reason: 'empty_content' }); continue; }
         messages.push({
