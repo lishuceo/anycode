@@ -2111,12 +2111,27 @@ async function parseMessage(data: MessageEventData): Promise<ParsedMessage | nul
           // 限制最多 50 条子消息
           const MAX_SUB_MESSAGES = 50;
           const limited = subMessages.slice(0, MAX_SUB_MESSAGES);
+
+          // 批量解析发送者名称（去重后并行请求）
+          const uniqueSenderIds = [...new Set(limited.map(item => item.sender?.id).filter(Boolean))] as string[];
+          const senderNameMap = new Map<string, string>();
+          await Promise.all(
+            uniqueSenderIds.map(async (senderId) => {
+              try {
+                const name = await feishuClient.getUserName(senderId, message.chat_id);
+                if (name) senderNameMap.set(senderId, name);
+              } catch { /* 解析失败跳过，不影响主流程 */ }
+            }),
+          );
+
           const lines: string[] = ['[合并转发的聊天记录]'];
 
           for (const item of limited) {
             const msgType = item.msg_type || 'text';
             const formatted = formatMergeForwardSubMessage(item.body?.content || '', msgType, item.mentions);
-            if (formatted) lines.push(`- ${formatted}`);
+            if (!formatted) continue;
+            const senderName = senderNameMap.get(item.sender?.id ?? '') ?? '未知用户';
+            lines.push(`- [${senderName}]: ${formatted}`);
           }
 
           if (subMessages.length > MAX_SUB_MESSAGES) {
