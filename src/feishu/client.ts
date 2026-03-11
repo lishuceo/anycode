@@ -425,8 +425,45 @@ export class FeishuClient {
     }
   }
 
-  /** fetchRecentMessages 返回的消息结构 */
-  /** 飞书消息简化结构（fetchRecentMessages 返回） */
+  /**
+   * 通过消息 ID 获取消息详情（含子消息）
+   * 用于展开 merge_forward 合并转发消息
+   *
+   * @param messageId - 消息 ID
+   * @returns API 返回的 items 数组，或 null
+   */
+  async getMessageById(messageId: string): Promise<Array<{
+    message_id?: string;
+    msg_type?: string;
+    body?: { content: string };
+    sender?: { id: string; id_type: string; sender_type: string; tenant_key?: string };
+    mentions?: Array<{ key: string; id: string; id_type: string; name: string; tenant_key?: string }>;
+    upper_message_id?: string;
+    create_time?: string;
+  }> | null> {
+    try {
+      const resp = await this.client.im.message.get({
+        path: { message_id: messageId },
+      });
+      if (resp.code !== 0) {
+        logger.warn({ code: resp.code, msg: resp.msg, messageId }, 'Failed to get message by ID');
+        return null;
+      }
+      return (resp.data?.items as Array<{
+        message_id?: string;
+        msg_type?: string;
+        body?: { content: string };
+        sender?: { id: string; id_type: string; sender_type: string; tenant_key?: string };
+        mentions?: Array<{ key: string; id: string; id_type: string; name: string; tenant_key?: string }>;
+        upper_message_id?: string;
+        create_time?: string;
+      }>) ?? null;
+    } catch (err) {
+      logger.error({ err, messageId }, 'Error getting message by ID');
+      return null;
+    }
+  }
+
   /**
    * 拉取群聊或话题的最近消息（用于注入聊天上下文）
    *
