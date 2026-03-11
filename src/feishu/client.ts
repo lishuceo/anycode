@@ -517,10 +517,24 @@ export class FeishuClient {
                   .sort((a, b) => parseInt(a.create_time || '0', 10) - parseInt(b.create_time || '0', 10))
                   .slice(0, 20); // 历史上下文中限制 20 条
                 if (subMessages.length > 0) {
+                  // 批量获取发送者名称（与 event-handler 中的实时处理一致）
+                  const senderIds = [...new Set(subMessages.map(s => s.sender?.id).filter(Boolean))] as string[];
+                  const senderNameMap = new Map<string, string>();
+                  await Promise.all(
+                    senderIds.map(async (sid) => {
+                      try {
+                        const name = await this.getUserName(sid, containerType === 'chat' ? containerId : undefined);
+                        if (name) senderNameMap.set(sid, name);
+                      } catch { /* 获取失败跳过 */ }
+                    }),
+                  );
                   const lines = ['[合并转发的聊天记录]'];
                   for (const sub of subMessages) {
                     const subContent = formatMergeForwardSubMessage(sub.body?.content ?? '{}', sub.msg_type || 'text', sub.mentions);
-                    if (subContent.trim()) lines.push(`- ${subContent.trim()}`);
+                    if (subContent.trim()) {
+                      const senderName = senderNameMap.get(sub.sender?.id ?? '') ?? '未知用户';
+                      lines.push(`- [${senderName}]: ${subContent.trim()}`);
+                    }
                   }
                   content = lines.join('\n');
                 } else {

@@ -43,6 +43,8 @@ describe('fetchRecentMessages - merge_forward expansion', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     client = new FeishuClient('test-app', 'test-secret');
+    // getUserName 默认返回 undefined（fallback 到 '未知用户'）
+    vi.spyOn(client, 'getUserName').mockResolvedValue(undefined);
   });
 
   it('should expand merge_forward sub-messages using formatMergeForwardSubMessage', async () => {
@@ -95,8 +97,8 @@ describe('fetchRecentMessages - merge_forward expansion', () => {
 
     expect(messages).toHaveLength(1);
     expect(messages[0].content).toContain('[合并转发的聊天记录]');
-    expect(messages[0].content).toContain('- 你好');
-    expect(messages[0].content).toContain('- [图片]');
+    expect(messages[0].content).toContain('- [未知用户]: 你好');
+    expect(messages[0].content).toContain('- [未知用户]: [图片]');
     expect(messages[0].msgType).toBe('merge_forward');
   });
 
@@ -230,7 +232,60 @@ describe('fetchRecentMessages - merge_forward expansion', () => {
     const messages = await client.fetchRecentMessages('chat_1');
 
     expect(messages).toHaveLength(1);
-    expect(messages[0].content).toContain('- @张三 看这个');
+    expect(messages[0].content).toContain('- [未知用户]: @张三 看这个');
+  });
+
+  it('should include sender names in merge_forward sub-messages when getUserName resolves', async () => {
+    vi.spyOn(client, 'getUserName').mockImplementation(async (openId: string) => {
+      if (openId === 'ou_alice') return '张三';
+      if (openId === 'ou_bob') return '李四';
+      return undefined;
+    });
+
+    mockMessageList.mockResolvedValue({
+      code: 0,
+      data: {
+        items: [{
+          message_id: 'msg_forward_names',
+          msg_type: 'merge_forward',
+          body: { content: 'Merged and forwarded messages' },
+          sender: { id: 'ou_sender', sender_type: 'user' },
+          create_time: '1700000000000',
+          deleted: false,
+        }],
+      },
+    });
+
+    mockMessageGet.mockResolvedValue({
+      code: 0,
+      data: {
+        items: [
+          { message_id: 'msg_forward_names', msg_type: 'merge_forward', body: { content: '{}' } },
+          {
+            message_id: 'sub_n1',
+            msg_type: 'text',
+            body: { content: JSON.stringify({ text: '你好' }) },
+            sender: { id: 'ou_alice', id_type: 'open_id', sender_type: 'user' },
+            upper_message_id: 'msg_forward_names',
+            create_time: '1700000001000',
+          },
+          {
+            message_id: 'sub_n2',
+            msg_type: 'text',
+            body: { content: JSON.stringify({ text: '你也好' }) },
+            sender: { id: 'ou_bob', id_type: 'open_id', sender_type: 'user' },
+            upper_message_id: 'msg_forward_names',
+            create_time: '1700000002000',
+          },
+        ],
+      },
+    });
+
+    const messages = await client.fetchRecentMessages('chat_1');
+
+    expect(messages).toHaveLength(1);
+    expect(messages[0].content).toContain('- [张三]: 你好');
+    expect(messages[0].content).toContain('- [李四]: 你也好');
   });
 
   it('should handle merge_forward with non-JSON body.content (real Feishu API behavior)', async () => {
@@ -273,7 +328,7 @@ describe('fetchRecentMessages - merge_forward expansion', () => {
     // Should NOT be skipped — must successfully parse the merge_forward
     expect(messages).toHaveLength(1);
     expect(messages[0].content).toContain('[合并转发的聊天记录]');
-    expect(messages[0].content).toContain('- 这是转发内容');
+    expect(messages[0].content).toContain('- [未知用户]: 这是转发内容');
     expect(messages[0].msgType).toBe('merge_forward');
   });
 
@@ -319,6 +374,6 @@ describe('fetchRecentMessages - merge_forward expansion', () => {
     const messages = await client.fetchRecentMessages('chat_1');
 
     expect(messages).toHaveLength(1);
-    expect(messages[0].content).toContain('- 公告 重要通知');
+    expect(messages[0].content).toContain('- [未知用户]: 公告 重要通知');
   });
 });
