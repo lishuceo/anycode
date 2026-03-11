@@ -528,8 +528,58 @@ export class FeishuClient {
             }
             content = textParts.join(' ');
           } else if (msgType === 'merge_forward') {
-            // 历史消息中的合并转发：标记为占位文本（避免逐条拉取子消息的 API 开销）
-            content = '[合并转发的聊天记录]';
+            // 合并转发：通过 API 获取子消息并展开为可读文本
+            const messageId = item.message_id;
+            if (messageId) {
+              try {
+                const subItems = await this.getMessageById(messageId);
+                if (subItems && subItems.length > 0) {
+                  const subMessages = subItems
+                    .filter(sub => sub.upper_message_id && sub.message_id !== messageId)
+                    .sort((a, b) => parseInt(a.create_time || '0', 10) - parseInt(b.create_time || '0', 10))
+                    .slice(0, 20); // 历史上下文中限制 20 条
+                  if (subMessages.length > 0) {
+                    const lines = ['[合并转发的聊天记录]'];
+                    for (const sub of subMessages) {
+                      const subType = sub.msg_type || 'text';
+                      let subContent = '';
+                      try {
+                        const subBody = JSON.parse(sub.body?.content ?? '{}');
+                        if (subType === 'text') {
+                          subContent = (subBody.text as string) ?? '';
+                          if (subContent && Array.isArray(sub.mentions)) {
+                            for (const m of sub.mentions) {
+                              if (m.key) subContent = subContent.replaceAll(m.key, m.name ? `@${m.name}` : '');
+                            }
+                          }
+                        } else if (subType === 'post') {
+                          const pb = Array.isArray(subBody.content) ? subBody
+                            : (subBody.zh_cn || subBody.en_us || subBody.ja_jp || Object.values(subBody)[0]) as Record<string, unknown> | undefined;
+                          const parts: string[] = [];
+                          for (const para of (pb?.content as Array<Array<Record<string, unknown>>>) ?? []) {
+                            for (const el of para ?? []) {
+                              if (el.tag === 'text') parts.push((el.text as string) ?? '');
+                            }
+                          }
+                          subContent = parts.join(' ');
+                        } else if (subType === 'image') { subContent = '[图片]'; }
+                        else { subContent = `[${subType}]`; }
+                      } catch { subContent = `[${subType}]`; }
+                      if (subContent.trim()) lines.push(`- ${subContent.trim()}`);
+                    }
+                    content = lines.join('\n');
+                  } else {
+                    content = '[合并转发的聊天记录]';
+                  }
+                } else {
+                  content = '[合并转发的聊天记录]';
+                }
+              } catch {
+                content = '[合并转发的聊天记录]';
+              }
+            } else {
+              content = '[合并转发的聊天记录]';
+            }
           }
         } catch {
           continue;
