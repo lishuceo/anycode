@@ -2207,6 +2207,10 @@ async function parseMessage(data: MessageEventData): Promise<ParsedMessage | nul
     try {
       const content = JSON.parse(message.content);
       text = content.text || '';
+      // 飞书引用回复合并转发消息时，text 会被包裹在 <p> 标签中，需要剥离 HTML 标签
+      if (text.includes('<')) {
+        text = text.replace(/<[^>]+>/g, '').trim();
+      }
     } catch {
       logger.error({ content: message.content }, 'Failed to parse message content');
       return null;

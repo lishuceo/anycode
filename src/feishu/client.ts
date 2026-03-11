@@ -514,6 +514,10 @@ export class FeishuClient {
                 }
               }
             }
+            // 飞书引用回复时 text 可能被 <p> 等 HTML 标签包裹
+            if (text.includes('<')) {
+              text = text.replace(/<[^>]+>/g, '').trim();
+            }
             content = text;
           } else if (msgType === 'post') {
             // 飞书 post 格式可能是直接的 {title, content} 或带语言键的 {zh_cn: {title, content}}
