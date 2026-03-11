@@ -40,6 +40,8 @@ export interface ClaudeResult {
   needsRestart?: boolean;
   /** 重启目标工作目录 */
   newWorkingDir?: string;
+  /** resume 因 system prompt hash 不匹配被跳过 */
+  resumeSkipped?: boolean;
 }
 
 /** executor.execute() 的可选参数 */
