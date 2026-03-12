@@ -38,6 +38,23 @@ export function formatMergeForwardSubMessage(
             const href = (element.href as string) ?? '';
             textParts.push(linkText && href ? `[${linkText}](${href})` : href || linkText);
           }
+          else if (element.tag === 'at') {
+            const atName = (element.user_name as string) ?? '';
+            if (atName) textParts.push(`@${atName}`);
+          }
+          else if (element.tag === 'img') textParts.push('[图片]');
+          else if (element.tag === 'media') textParts.push('[视频]');
+          else if (element.tag === 'emotion') {
+            const emojiType = (element.emoji_type as string) ?? '';
+            textParts.push(emojiType ? `[${emojiType}]` : '[表情]');
+          }
+          else if (element.tag === 'code_block') {
+            const lang = (element.language as string) ?? '';
+            const code = (element.text as string) ?? '';
+            textParts.push(lang ? `\`\`\`${lang}\n${code}\`\`\`` : `\`\`\`\n${code}\`\`\``);
+          }
+          else if (element.tag === 'md') textParts.push((element.text as string) ?? '');
+          else if (element.tag === 'hr') textParts.push('---');
         }
       }
       return textParts.join(' ').trim();
@@ -47,8 +64,13 @@ export function formatMergeForwardSubMessage(
     if (msgType === 'file') return `[文件: ${body.file_name ?? ''}]`;
     if (msgType === 'audio') return '[语音消息]';
     if (msgType === 'video') return '[视频]';
+    if (msgType === 'media') return '[视频]';
     if (msgType === 'sticker') return '[表情]';
+    if (msgType === 'interactive') return '[卡片消息]';
+    if (msgType === 'share_chat') return '[群名片]';
+    if (msgType === 'share_user') return '[个人名片]';
     if (msgType === 'merge_forward') return '[嵌套的合并转发消息]';
+    if (msgType === 'system') return '[系统消息]';
 
     return `[${msgType}消息]`;
   } catch {
