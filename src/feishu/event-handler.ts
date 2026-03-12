@@ -2244,11 +2244,27 @@ async function parseMessage(data: MessageEventData): Promise<ParsedMessage | nul
             if (!isBot && atName) {
               textParts.push(`@${atName}`);
             }
+          } else if (element.tag === 'a') {
+            const linkText = (element.text as string) || '';
+            const href = (element.href as string) || '';
+            textParts.push(linkText && href ? `[${linkText}](${href})` : href || linkText);
           } else if (element.tag === 'img') {
             const imageKey = element.image_key as string | undefined;
             if (imageKey) imageKeys.push(imageKey);
+          } else if (element.tag === 'media') {
+            textParts.push('[视频]');
+          } else if (element.tag === 'emotion') {
+            const emojiType = (element.emoji_type as string) || '';
+            textParts.push(emojiType ? `[${emojiType}]` : '[表情]');
+          } else if (element.tag === 'code_block') {
+            const lang = (element.language as string) || '';
+            const code = (element.text as string) || '';
+            textParts.push(lang ? `\`\`\`${lang}\n${code}\`\`\`` : `\`\`\`\n${code}\`\`\``);
+          } else if (element.tag === 'md') {
+            textParts.push((element.text as string) || '');
+          } else if (element.tag === 'hr') {
+            textParts.push('---');
           }
-          // a/emotion 等标签忽略
         }
       }
 
