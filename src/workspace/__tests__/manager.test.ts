@@ -257,6 +257,15 @@ describe('setupWorkspace', () => {
     expect(mockMkdirSync).toHaveBeenCalledWith('/tmp/workspaces', { recursive: true });
   });
 
+  it('should set GIT_LFS_SKIP_SMUDGE=1 env for clone to avoid LFS failures', () => {
+    setupWorkspace({ repoUrl: 'https://github.com/user/repo.git' });
+
+    const cloneCall = mockExecFileSync.mock.calls[0];
+    const opts = cloneCall[2] as { env?: Record<string, string> };
+    expect(opts.env).toBeDefined();
+    expect(opts.env!.GIT_LFS_SKIP_SMUDGE).toBe('1');
+  });
+
   it('should wrap git clone errors', () => {
     mockExecFileSync.mockImplementationOnce(() => {
       throw new Error('fatal: repository not found');
