@@ -95,4 +95,41 @@ describe('formatMergeForwardSubMessage', () => {
   it('should handle empty content string', () => {
     expect(formatMergeForwardSubMessage('', 'text')).toBe('');
   });
+
+  it('should parse post message with link (a tag)', () => {
+    const content = JSON.stringify({
+      content: [[{ tag: 'a', text: 'Google', href: 'https://google.com' }]],
+    });
+    expect(formatMergeForwardSubMessage(content, 'post')).toBe('[Google](https://google.com)');
+  });
+
+  it('should parse post message with mixed text and links', () => {
+    const content = JSON.stringify({
+      title: '分享',
+      content: [
+        [
+          { tag: 'text', text: '看看这个链接 ' },
+          { tag: 'a', text: '点击查看', href: 'https://example.com/article' },
+          { tag: 'text', text: ' 很有意思' },
+        ],
+      ],
+    });
+    expect(formatMergeForwardSubMessage(content, 'post')).toBe(
+      '分享 看看这个链接  [点击查看](https://example.com/article)  很有意思',
+    );
+  });
+
+  it('should parse post with link-only content (no text elements)', () => {
+    const content = JSON.stringify({
+      content: [[{ tag: 'a', text: '', href: 'https://example.com/page' }]],
+    });
+    expect(formatMergeForwardSubMessage(content, 'post')).toBe('https://example.com/page');
+  });
+
+  it('should parse post with link that has text but no href', () => {
+    const content = JSON.stringify({
+      content: [[{ tag: 'a', text: 'some text', href: '' }]],
+    });
+    expect(formatMergeForwardSubMessage(content, 'post')).toBe('some text');
+  });
 });
