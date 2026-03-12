@@ -504,7 +504,7 @@ export function buildInterruptedCard(
 export function buildToolProgressCard(
   toolCalls: ToolCallInfo[],
   turnCount: number,
-  maxDisplayed: number = 40,
+  maxDisplayed: number = 16,
   completed: boolean = false,
 ): Record<string, unknown> {
   const truncated = toolCalls.length > maxDisplayed;
