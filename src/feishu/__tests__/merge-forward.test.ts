@@ -85,7 +85,7 @@ describe('formatMergeForwardSubMessage', () => {
   });
 
   it('should return generic placeholder for unknown message types', () => {
-    expect(formatMergeForwardSubMessage('{}', 'share_chat')).toBe('[share_chat消息]');
+    expect(formatMergeForwardSubMessage('{}', 'share_calendar_event')).toBe('[share_calendar_event消息]');
   });
 
   it('should handle malformed JSON gracefully', () => {
@@ -131,5 +131,128 @@ describe('formatMergeForwardSubMessage', () => {
       content: [[{ tag: 'a', text: 'some text', href: '' }]],
     });
     expect(formatMergeForwardSubMessage(content, 'post')).toBe('some text');
+  });
+
+  // --- Post element tags: at, img, media, emotion, code_block, md, hr ---
+
+  it('should parse post with @mention (at tag)', () => {
+    const content = JSON.stringify({
+      content: [[
+        { tag: 'text', text: '请看 ' },
+        { tag: 'at', user_id: 'ou_123', user_name: '张三' },
+        { tag: 'text', text: ' 的方案' },
+      ]],
+    });
+    expect(formatMergeForwardSubMessage(content, 'post')).toBe('请看  @张三  的方案');
+  });
+
+  it('should parse post with inline image (img tag)', () => {
+    const content = JSON.stringify({
+      content: [[
+        { tag: 'text', text: '截图如下 ' },
+        { tag: 'img', image_key: 'img_xxx' },
+      ]],
+    });
+    expect(formatMergeForwardSubMessage(content, 'post')).toBe('截图如下  [图片]');
+  });
+
+  it('should parse post with media (video) tag', () => {
+    const content = JSON.stringify({
+      content: [[{ tag: 'media', file_key: 'file_xxx', image_key: 'img_xxx' }]],
+    });
+    expect(formatMergeForwardSubMessage(content, 'post')).toBe('[视频]');
+  });
+
+  it('should parse post with emotion tag', () => {
+    const content = JSON.stringify({
+      content: [[
+        { tag: 'text', text: '好的 ' },
+        { tag: 'emotion', emoji_type: 'THUMBSUP' },
+      ]],
+    });
+    expect(formatMergeForwardSubMessage(content, 'post')).toBe('好的  [THUMBSUP]');
+  });
+
+  it('should parse post with emotion tag without emoji_type', () => {
+    const content = JSON.stringify({
+      content: [[{ tag: 'emotion' }]],
+    });
+    expect(formatMergeForwardSubMessage(content, 'post')).toBe('[表情]');
+  });
+
+  it('should parse post with code_block tag', () => {
+    const content = JSON.stringify({
+      content: [[{ tag: 'code_block', language: 'typescript', text: 'const x = 1;' }]],
+    });
+    expect(formatMergeForwardSubMessage(content, 'post')).toBe('```typescript\nconst x = 1;```');
+  });
+
+  it('should parse post with code_block tag without language', () => {
+    const content = JSON.stringify({
+      content: [[{ tag: 'code_block', text: 'echo hello' }]],
+    });
+    expect(formatMergeForwardSubMessage(content, 'post')).toBe('```\necho hello```');
+  });
+
+  it('should parse post with md tag', () => {
+    const content = JSON.stringify({
+      content: [[{ tag: 'md', text: '**bold** and _italic_' }]],
+    });
+    expect(formatMergeForwardSubMessage(content, 'post')).toBe('**bold** and _italic_');
+  });
+
+  it('should parse post with hr tag', () => {
+    const content = JSON.stringify({
+      content: [
+        [{ tag: 'text', text: '上面的内容' }],
+        [{ tag: 'hr' }],
+        [{ tag: 'text', text: '下面的内容' }],
+      ],
+    });
+    expect(formatMergeForwardSubMessage(content, 'post')).toBe('上面的内容 --- 下面的内容');
+  });
+
+  it('should parse post with all element types mixed', () => {
+    const content = JSON.stringify({
+      title: '技术分享',
+      content: [
+        [
+          { tag: 'text', text: '请 ' },
+          { tag: 'at', user_id: 'ou_123', user_name: '李四' },
+          { tag: 'text', text: ' 看看这个 ' },
+          { tag: 'a', text: '链接', href: 'https://example.com' },
+        ],
+        [{ tag: 'img', image_key: 'img_xxx' }],
+        [{ tag: 'emotion', emoji_type: 'SMILE' }],
+      ],
+    });
+    const result = formatMergeForwardSubMessage(content, 'post');
+    expect(result).toContain('技术分享');
+    expect(result).toContain('@李四');
+    expect(result).toContain('[链接](https://example.com)');
+    expect(result).toContain('[图片]');
+    expect(result).toContain('[SMILE]');
+  });
+
+  // --- Message type placeholders ---
+
+  it('should return placeholder for media message type', () => {
+    expect(formatMergeForwardSubMessage('{}', 'media')).toBe('[视频]');
+  });
+
+  it('should return placeholder for interactive (card) message type', () => {
+    expect(formatMergeForwardSubMessage('{}', 'interactive')).toBe('[卡片消息]');
+  });
+
+  it('should return placeholder for share_chat message type', () => {
+    expect(formatMergeForwardSubMessage('{}', 'share_chat')).toBe('[群名片]');
+  });
+
+  it('should return placeholder for share_user message type', () => {
+    expect(formatMergeForwardSubMessage('{}', 'share_user')).toBe('[个人名片]');
+  });
+
+  it('should return placeholder for system message type', () => {
+    expect(formatMergeForwardSubMessage('{}', 'system')).toBe('[系统消息]');
   });
 });
