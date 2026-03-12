@@ -1744,14 +1744,17 @@ async function executeDirectTask(
       }
     }
 
-    // discussion MCP server：允许 agent 动态创建话题
-    const discussionMcp = createDiscussionMcpServer({
-      chatId, userId, messageId, agentId,
-      onThreadCreated: (info) => {
-        threadReplyMsgId = info.threadReplyMsgId;
-        threadId = info.threadId;
-      },
-    });
+    // discussion MCP server：允许 agent 动态创建话题（仅在非话题场景下注入）
+    // 如果消息已经在一个话题中（eventThreadId 存在），不需要再创建新话题
+    const discussionMcp = eventThreadId
+      ? null
+      : createDiscussionMcpServer({
+          chatId, userId, messageId, agentId,
+          onThreadCreated: (info) => {
+            threadReplyMsgId = info.threadReplyMsgId;
+            threadId = info.threadId;
+          },
+        });
 
     const personaPrompt = readPersonaFile(agentId);
 
@@ -1782,7 +1785,7 @@ async function executeDirectTask(
       // 不需要 workspace-manager 工具（Chat Agent 不切换工作区）
       disableWorkspaceTool: true,
       // 注入 discussion-tools MCP server
-      additionalMcpServers: { 'discussion-tools': discussionMcp },
+      ...(discussionMcp ? { additionalMcpServers: { 'discussion-tools': discussionMcp } } : {}),
     });
 
     // resume 被跳过时清除 _historyDedup，让下次 query 重新注入完整历史
