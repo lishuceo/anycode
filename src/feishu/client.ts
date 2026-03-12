@@ -641,6 +641,57 @@ export class FeishuClient {
     }
   }
 
+  /**
+   * 给消息添加表情回复（reaction）
+   * 用于在话题内 @bot 时立即反馈（替代 quick-ack）
+   *
+   * @param messageId - 要添加表情的消息 ID
+   * @param emojiType - 表情类型（如 "OnIt", "THUMBSUP" 等飞书 emoji_type）
+   * @returns reaction_id（用于后续删除），失败返回 undefined
+   */
+  async addReaction(messageId: string, emojiType: string): Promise<string | undefined> {
+    try {
+      const resp = await this.client.im.messageReaction.create({
+        path: { message_id: messageId },
+        data: { reaction_type: { emoji_type: emojiType } },
+      });
+
+      if (resp.code !== 0) {
+        logger.warn({ code: resp.code, msg: resp.msg, messageId, emojiType }, 'Failed to add reaction');
+        return undefined;
+      }
+
+      return resp.data?.reaction_id;
+    } catch (err) {
+      logger.warn({ err, messageId, emojiType }, 'Error adding reaction');
+      return undefined;
+    }
+  }
+
+  /**
+   * 删除消息的表情回复（reaction）
+   *
+   * @param messageId - 消息 ID
+   * @param reactionId - 要删除的 reaction_id（由 addReaction 返回）
+   */
+  async removeReaction(messageId: string, reactionId: string): Promise<boolean> {
+    try {
+      const resp = await this.client.im.messageReaction.delete({
+        path: { message_id: messageId, reaction_id: reactionId },
+      });
+
+      if (resp.code !== 0) {
+        logger.warn({ code: resp.code, msg: resp.msg, messageId, reactionId }, 'Failed to remove reaction');
+        return false;
+      }
+
+      return true;
+    } catch (err) {
+      logger.warn({ err, messageId, reactionId }, 'Error removing reaction');
+      return false;
+    }
+  }
+
   /** 获取原始 client 以便直接使用 */
   get raw(): lark.Client {
     return this.client;
