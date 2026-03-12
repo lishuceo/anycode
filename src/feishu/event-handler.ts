@@ -1614,6 +1614,13 @@ async function executeDirectTask(
   let threadReplyMsgId: string | undefined = eventThreadId ? rootId : undefined;
   let threadId: string | undefined = eventThreadId;
 
+  // 话题内消息：跳过 quick-ack，改为先添加表情回复作为即时反馈
+  // 正式回复发出后再移除表情（在 finally 中清理）
+  let pendingReactionId: string | undefined;
+  if (eventThreadId) {
+    pendingReactionId = await feishuClient.addReaction(messageId, 'OnIt').catch(() => undefined);
+  }
+
   try {
     // 快速确认：用小模型判断消息类型并生成短回复
     // 纯问候类消息直接回复后跳过 Claude，其他类型照常走完整查询
@@ -1823,6 +1830,10 @@ async function executeDirectTask(
       await feishuClient.replyText(messageId, errorReply);
     }
   } finally {
+    // 移除话题内的待处理表情回复（无论成功/失败都要清理）
+    if (pendingReactionId) {
+      feishuClient.removeReaction(messageId, pendingReactionId).catch(() => {});
+    }
     try {
       sessionManager.setStatus(chatId, userId, 'idle', agentId);
     } catch (err) {
