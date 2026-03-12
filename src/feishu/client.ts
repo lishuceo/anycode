@@ -564,6 +564,11 @@ export class FeishuClient {
               for (const paragraph of (postBody?.content as Array<Array<Record<string, unknown>>>) ?? []) {
                 for (const element of paragraph ?? []) {
                   if (element.tag === 'text') textParts.push((element.text as string) ?? '');
+                  else if (element.tag === 'a') {
+                    const linkText = (element.text as string) ?? '';
+                    const href = (element.href as string) ?? '';
+                    textParts.push(linkText && href ? `[${linkText}](${href})` : href || linkText);
+                  }
                 }
               }
               content = textParts.join(' ');

@@ -2230,11 +2230,15 @@ async function parseMessage(data: MessageEventData): Promise<ParsedMessage | nul
             if (!isBot && atName) {
               textParts.push(`@${atName}`);
             }
+          } else if (element.tag === 'a') {
+            const linkText = (element.text as string) || '';
+            const href = (element.href as string) || '';
+            textParts.push(linkText && href ? `[${linkText}](${href})` : href || linkText);
           } else if (element.tag === 'img') {
             const imageKey = element.image_key as string | undefined;
             if (imageKey) imageKeys.push(imageKey);
           }
-          // a/emotion 等标签忽略
+          // emotion 等标签忽略
         }
       }
 
