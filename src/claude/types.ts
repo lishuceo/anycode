@@ -34,14 +34,12 @@ export interface ClaudeResult {
   costUsd?: number;
   /** 总轮数 */
   numTurns?: number;
-  /** System prompt 结构性哈希（不含 historySummaries），用于自动失效旧 session */
+  /** System prompt 结构性哈希（不含 historySummaries），用于诊断日志追踪 prompt 变化 */
   systemPromptHash?: string;
   /** 是否需要重启 (workspace 变更后) */
   needsRestart?: boolean;
   /** 重启目标工作目录 */
   newWorkingDir?: string;
-  /** resume 因 system prompt hash 不匹配被跳过 */
-  resumeSkipped?: boolean;
 }
 
 /** executor.execute() 的可选参数 */
