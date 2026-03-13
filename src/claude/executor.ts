@@ -438,23 +438,19 @@ export class ClaudeExecutor {
       ? withKnowledge + input.memoryContext
       : withKnowledge;
     // System prompt 结构性哈希：仅包含 knowledge + base prompt（不含记忆和 historySummaries）
-    // 代码部署后 prompt 变化时自动使旧 session 失效，避免 resume 旧 session 丢失新工具描述
-    // 排除运行时动态值（process.pid 等）——仅反映代码/配置变更
+    // 用于诊断日志，追踪 prompt 变化。不再用于自动失效 session —
+    // Agent SDK resume 时会使用新传入的 systemPrompt，旧 session 自然获得最新工具描述。
     const hashInput = withKnowledge.replace(/\*\*当前 PID\*\*: `\d+`/, '**当前 PID**: `0`');
     const systemPromptHash = createHash('sha256').update(hashInput).digest('hex').slice(0, 16);
 
-    // 自动失效：system prompt 变化后跳过 resume，起新 session（工具描述、persona 等会刷新）
-    // 注意：storedHash 为空（旧 session 迁移前创建）也视为不匹配，强制起新 session
-    let effectiveResumeId = resumeSessionId;
-    let resumeSkipped = false;
-    if (resumeSessionId && input.storedSystemPromptHash !== systemPromptHash) {
+    if (resumeSessionId && input.storedSystemPromptHash && input.storedSystemPromptHash !== systemPromptHash) {
       logger.info(
         { sessionKey, storedHash: input.storedSystemPromptHash, currentHash: systemPromptHash },
-        'System prompt changed since last session — skipping resume, starting fresh',
+        'System prompt changed since last session — continuing with updated prompt (no longer invalidates session)',
       );
-      effectiveResumeId = undefined;
-      resumeSkipped = true;
     }
+
+    const effectiveResumeId = resumeSessionId;
 
     const promptAppend = historySummaries
       ? withMemory + `\n\n## 历史会话摘要\n以下是该用户之前的会话记录，帮助你了解项目上下文：\n${historySummaries}`
@@ -752,7 +748,6 @@ export class ClaudeExecutor {
         durationMs,
         needsRestart: workspaceChanged,
         newWorkingDir,
-        resumeSkipped,
       };
     }
 
@@ -806,7 +801,6 @@ export class ClaudeExecutor {
           numTurns: resultMessage.num_turns,
           needsRestart: workspaceChanged,
           newWorkingDir,
-          resumeSkipped,
         };
       } else {
         // 错误结果
@@ -823,7 +817,6 @@ export class ClaudeExecutor {
           numTurns: resultMessage.num_turns,
           needsRestart: workspaceChanged,
           newWorkingDir,
-          resumeSkipped,
         };
       }
     }
@@ -837,7 +830,6 @@ export class ClaudeExecutor {
       durationMs,
       needsRestart: workspaceChanged,
       newWorkingDir,
-      resumeSkipped,
     };
   }
 
