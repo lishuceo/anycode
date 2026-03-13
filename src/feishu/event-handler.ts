@@ -36,6 +36,7 @@ import { handleMemoryCommand, handleMemoryCardAction } from '../memory/commands.
 import { getRepoIdentity } from '../workspace/identity.js';
 import { generateQuickAck } from '../utils/quick-ack.js';
 import { checkThreadRelevance } from '../utils/thread-relevance.js';
+import { compressImage } from '../utils/image-compress.js';
 
 // 注册审批通过后的消息重新入队回调（避免 approval.ts → event-handler.ts 循环依赖）
 setOnApproved((chatId, userId, text, messageId, rootId, threadId) => {
@@ -2274,7 +2275,11 @@ async function parseMessage(data: MessageEventData): Promise<ParsedMessage | nul
               continue;
             }
             const mediaType = detectImageMediaType(buf);
-            images.push({ data: buf.toString('base64'), mediaType });
+            const compressed = await compressImage(buf, mediaType);
+            if (compressed.data.length < buf.length) {
+              logger.info({ imageKey, originalSize: buf.length, compressedSize: compressed.data.length, ratio: `${(compressed.data.length / buf.length * 100).toFixed(0)}%` }, 'Image compressed');
+            }
+            images.push({ data: compressed.data.toString('base64'), mediaType: compressed.mediaType });
           } catch (err) {
             logger.error({ err, messageId: message.message_id, imageKey }, 'Failed to download post image');
           }
@@ -2305,7 +2310,11 @@ async function parseMessage(data: MessageEventData): Promise<ParsedMessage | nul
       }
 
       const mediaType = detectImageMediaType(buf);
-      images = [{ data: buf.toString('base64'), mediaType }];
+      const compressed = await compressImage(buf, mediaType);
+      if (compressed.data.length < buf.length) {
+        logger.info({ messageId: message.message_id, originalSize: buf.length, compressedSize: compressed.data.length, ratio: `${(compressed.data.length / buf.length * 100).toFixed(0)}%` }, 'Image compressed');
+      }
+      images = [{ data: compressed.data.toString('base64'), mediaType: compressed.mediaType }];
     } catch (err) {
       logger.error({ err, messageId: message.message_id }, 'Failed to process image message');
       await feishuClient.replyText(message.message_id, '⚠️ 图片下载失败，请稍后重试');
