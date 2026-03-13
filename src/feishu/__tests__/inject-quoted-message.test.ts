@@ -7,11 +7,13 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const mockGetMessageById = vi.fn();
 const mockGetUserName = vi.fn();
+const mockDownloadMessageImage = vi.fn();
 
 vi.mock('../client.js', () => ({
   feishuClient: {
     getMessageById: (...args: unknown[]) => mockGetMessageById(...args),
     getUserName: (...args: unknown[]) => mockGetUserName(...args),
+    downloadMessageImage: (...args: unknown[]) => mockDownloadMessageImage(...args),
   },
 }));
 
@@ -31,6 +33,13 @@ vi.mock('../../utils/logger.js', () => ({
   },
 }));
 
+vi.mock('../../utils/image-compress.js', () => ({
+  compressImage: vi.fn(async (buf: Buffer, mediaType: string) => ({
+    data: buf,
+    mediaType,
+  })),
+}));
+
 // ============================================================
 // Tests
 // ============================================================
@@ -41,7 +50,8 @@ describe('injectQuotedMessage', () => {
     rootId: string | undefined,
     messageId: string,
     chatId: string,
-  ) => Promise<string>;
+    existingImages?: unknown[],
+  ) => Promise<{ prompt: string; images?: unknown[] }>;
 
   beforeEach(async () => {
     vi.clearAllMocks();
@@ -51,13 +61,13 @@ describe('injectQuotedMessage', () => {
 
   it('returns prompt unchanged when rootId is undefined', async () => {
     const result = await injectQuotedMessage('hello', undefined, 'msg1', 'chat1');
-    expect(result).toBe('hello');
+    expect(result.prompt).toBe('hello');
     expect(mockGetMessageById).not.toHaveBeenCalled();
   });
 
   it('returns prompt unchanged when rootId equals messageId', async () => {
     const result = await injectQuotedMessage('hello', 'msg1', 'msg1', 'chat1');
-    expect(result).toBe('hello');
+    expect(result.prompt).toBe('hello');
     expect(mockGetMessageById).not.toHaveBeenCalled();
   });
 
@@ -71,9 +81,10 @@ describe('injectQuotedMessage', () => {
     ]);
 
     const result = await injectQuotedMessage('user question', 'root1', 'msg1', 'chat1');
-    expect(result).toContain('<quoted-message>');
-    expect(result).toContain('quoted text content');
-    expect(result).toContain('user question');
+    expect(result.prompt).toContain('<quoted-message>');
+    expect(result.prompt).toContain('quoted text content');
+    expect(result.prompt).toContain('user question');
+    expect(result.images).toBeUndefined();
   });
 
   it('injects post message content', async () => {
@@ -90,8 +101,8 @@ describe('injectQuotedMessage', () => {
     ]);
 
     const result = await injectQuotedMessage('my prompt', 'root2', 'msg1', 'chat1');
-    expect(result).toContain('<quoted-message>');
-    expect(result).toContain('my prompt');
+    expect(result.prompt).toContain('<quoted-message>');
+    expect(result.prompt).toContain('my prompt');
   });
 
   it('expands merge_forward sub-messages', async () => {
@@ -126,34 +137,75 @@ describe('injectQuotedMessage', () => {
     });
 
     const result = await injectQuotedMessage('prompt', 'mf1', 'msg1', 'chat1');
-    expect(result).toContain('合并转发的聊天记录');
-    expect(result).toContain('Alice');
-    expect(result).toContain('Bob');
-    expect(result).toContain('sub message 1');
-    expect(result).toContain('sub message 2');
+    expect(result.prompt).toContain('合并转发的聊天记录');
+    expect(result.prompt).toContain('Alice');
+    expect(result.prompt).toContain('Bob');
+    expect(result.prompt).toContain('sub message 1');
+    expect(result.prompt).toContain('sub message 2');
   });
 
   it('returns prompt unchanged when API returns empty', async () => {
     mockGetMessageById.mockResolvedValue([]);
     const result = await injectQuotedMessage('prompt', 'root1', 'msg1', 'chat1');
-    expect(result).toBe('prompt');
+    expect(result.prompt).toBe('prompt');
   });
 
   it('returns prompt unchanged when API throws', async () => {
     mockGetMessageById.mockRejectedValue(new Error('API error'));
     const result = await injectQuotedMessage('prompt', 'root1', 'msg1', 'chat1');
-    expect(result).toBe('prompt');
+    expect(result.prompt).toBe('prompt');
   });
 
-  it('returns prompt unchanged for unsupported message types', async () => {
+  it('downloads and injects quoted image', async () => {
     mockGetMessageById.mockResolvedValue([
       {
-        message_id: 'root1',
+        message_id: 'img1',
         msg_type: 'image',
-        body: { content: '{}' },
+        body: { content: '{"image_key":"img_key_123"}' },
       },
     ]);
-    const result = await injectQuotedMessage('prompt', 'root1', 'msg1', 'chat1');
-    expect(result).toBe('prompt');
+    // Return a small PNG-like buffer
+    const fakePng = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00]);
+    mockDownloadMessageImage.mockResolvedValue(fakePng);
+
+    const result = await injectQuotedMessage('prompt', 'img1', 'msg1', 'chat1');
+    expect(result.prompt).toContain('<quoted-message>');
+    expect(result.prompt).toContain('引用了一张图片');
+    expect(result.images).toHaveLength(1);
+    expect(result.images![0].mediaType).toBe('image/png');
+    expect(mockDownloadMessageImage).toHaveBeenCalledWith('img1', 'img_key_123');
+  });
+
+  it('handles image download failure gracefully', async () => {
+    mockGetMessageById.mockResolvedValue([
+      {
+        message_id: 'img2',
+        msg_type: 'image',
+        body: { content: '{"image_key":"img_key_456"}' },
+      },
+    ]);
+    mockDownloadMessageImage.mockRejectedValue(new Error('download failed'));
+
+    const result = await injectQuotedMessage('prompt', 'img2', 'msg1', 'chat1');
+    expect(result.prompt).toContain('下载失败');
+    expect(result.images).toBeUndefined();
+  });
+
+  it('merges quoted image with existing images', async () => {
+    mockGetMessageById.mockResolvedValue([
+      {
+        message_id: 'img3',
+        msg_type: 'image',
+        body: { content: '{"image_key":"img_key_789"}' },
+      },
+    ]);
+    const fakePng = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00]);
+    mockDownloadMessageImage.mockResolvedValue(fakePng);
+
+    const existing = [{ data: 'existing_base64', mediaType: 'image/jpeg' as const }];
+    const result = await injectQuotedMessage('prompt', 'img3', 'msg1', 'chat1', existing);
+    expect(result.images).toHaveLength(2);
+    expect(result.images![0].data).toBe('existing_base64');
+    expect(result.images![1].mediaType).toBe('image/png');
   });
 });

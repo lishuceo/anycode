@@ -1120,26 +1120,50 @@ const _historyDedup = new Map<string, string>();
  * 获取被引用消息的内容并注入到 prompt 前缀。
  * 当用户回复某条消息并 @bot 时，确保 agent 能看到被引用消息的内容，
  * 即使它不在历史窗口内（如 merge_forward 或较早的消息）。
+ * 支持 text/post/merge_forward/image 类型。
  */
 async function injectQuotedMessage(
   effectivePrompt: string,
   rootId: string | undefined,
   messageId: string,
   chatId: string,
-): Promise<string> {
-  if (!rootId || rootId === messageId) return effectivePrompt;
+  existingImages?: ImageAttachment[],
+): Promise<{ prompt: string; images?: ImageAttachment[] }> {
+  if (!rootId || rootId === messageId) return { prompt: effectivePrompt, images: existingImages };
 
   try {
     const rootItems = await feishuClient.getMessageById(rootId);
-    if (!rootItems || rootItems.length === 0) return effectivePrompt;
+    if (!rootItems || rootItems.length === 0) return { prompt: effectivePrompt, images: existingImages };
 
     const rootMsg = rootItems.find(m => m.message_id === rootId);
-    if (!rootMsg) return effectivePrompt;
+    if (!rootMsg) return { prompt: effectivePrompt, images: existingImages };
 
     const rootMsgType = rootMsg.msg_type || 'text';
     let rootContent = '';
+    let quotedImage: ImageAttachment | undefined;
 
-    if (rootMsgType === 'merge_forward') {
+    if (rootMsgType === 'image') {
+      // 图片消息：下载图片并追加到 images
+      try {
+        const content = JSON.parse(rootMsg.body?.content ?? '{}');
+        const imageKey = content.image_key as string | undefined;
+        if (imageKey) {
+          const buf = await feishuClient.downloadMessageImage(rootId, imageKey);
+          if (buf.length <= MAX_IMAGE_SIZE_BYTES) {
+            const mediaType = detectImageMediaType(buf);
+            const compressed = await compressImage(buf, mediaType);
+            quotedImage = { data: compressed.data.toString('base64'), mediaType: compressed.mediaType };
+            rootContent = '[用户引用了一张图片]';
+            logger.info({ rootId, imageSize: buf.length, compressedSize: compressed.data.length }, 'Downloaded quoted image');
+          } else {
+            rootContent = '[用户引用了一张图片，但图片过大无法加载]';
+          }
+        }
+      } catch (err) {
+        logger.warn({ err, rootId }, 'Failed to download quoted image');
+        rootContent = '[用户引用了一张图片，但下载失败]';
+      }
+    } else if (rootMsgType === 'merge_forward') {
       const subMessages = rootItems
         .filter(sub => sub.upper_message_id && sub.message_id !== rootId)
         .sort((a, b) => parseInt(a.create_time || '0', 10) - parseInt(b.create_time || '0', 10))
@@ -1171,14 +1195,18 @@ async function injectQuotedMessage(
     }
 
     if (rootContent.trim()) {
-      logger.info({ rootId, rootMsgType, rootContentLen: rootContent.length }, 'Injected rootId quoted message content into prompt');
-      return `<quoted-message>\n${rootContent}\n</quoted-message>\n\n${effectivePrompt}`;
+      logger.info({ rootId, rootMsgType, rootContentLen: rootContent.length, hasImage: !!quotedImage }, 'Injected rootId quoted message content into prompt');
+      const newPrompt = `<quoted-message>\n${rootContent}\n</quoted-message>\n\n${effectivePrompt}`;
+      const mergedImages = quotedImage
+        ? [...(existingImages || []), quotedImage]
+        : existingImages;
+      return { prompt: newPrompt, images: mergedImages };
     }
   } catch (err) {
     logger.warn({ err, rootId }, 'Failed to fetch rootId message for injection');
   }
 
-  return effectivePrompt;
+  return { prompt: effectivePrompt, images: existingImages };
 }
 
 /**
@@ -1306,7 +1334,9 @@ async function executeClaudeTask(
 
   // rootId 引用消息注入（仅主面板引用回复，话题内 rootId 是锚定消息不需要注入）
   if (!threadId) {
-    effectivePrompt = await injectQuotedMessage(effectivePrompt, rootId, messageId, chatId);
+    const quoted = await injectQuotedMessage(effectivePrompt, rootId, messageId, chatId, images);
+    effectivePrompt = quoted.prompt;
+    images = quoted.images;
   }
 
   // 构造逐条 turn 回调
@@ -1771,7 +1801,9 @@ async function executeDirectTask(
 
     // rootId 引用消息注入（仅主面板引用回复，话题内 rootId 是锚定消息不需要注入）
     if (!eventThreadId) {
-      effectivePrompt = await injectQuotedMessage(effectivePrompt, rootId, messageId, chatId);
+      const quoted = await injectQuotedMessage(effectivePrompt, rootId, messageId, chatId, images);
+      effectivePrompt = quoted.prompt;
+      images = quoted.images;
     }
 
     // discussion MCP server：允许 agent 动态创建话题（仅在非话题场景下注入）
