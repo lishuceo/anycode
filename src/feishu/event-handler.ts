@@ -1172,7 +1172,7 @@ async function injectQuotedMessage(
 
     if (rootContent.trim()) {
       logger.info({ rootId, rootMsgType, rootContentLen: rootContent.length }, 'Injected rootId quoted message content into prompt');
-      return `用户回复了以下消息：\n${rootContent}\n\n---\n\n${effectivePrompt}`;
+      return `<quoted-message>\n${rootContent}\n</quoted-message>\n\n${effectivePrompt}`;
     }
   } catch (err) {
     logger.warn({ err, rootId }, 'Failed to fetch rootId message for injection');

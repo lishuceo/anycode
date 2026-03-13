@@ -71,7 +71,7 @@ describe('injectQuotedMessage', () => {
     ]);
 
     const result = await injectQuotedMessage('user question', 'root1', 'msg1', 'chat1');
-    expect(result).toContain('用户回复了以下消息');
+    expect(result).toContain('<quoted-message>');
     expect(result).toContain('quoted text content');
     expect(result).toContain('user question');
   });
@@ -90,7 +90,7 @@ describe('injectQuotedMessage', () => {
     ]);
 
     const result = await injectQuotedMessage('my prompt', 'root2', 'msg1', 'chat1');
-    expect(result).toContain('用户回复了以下消息');
+    expect(result).toContain('<quoted-message>');
     expect(result).toContain('my prompt');
   });
 
