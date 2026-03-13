@@ -96,12 +96,20 @@ async function compressAsJpeg(
     return { data: result, mediaType: 'image/jpeg' };
   }
 
-  // Still too large → more aggressive
-  const smaller = await sharp(buf)
+  // Still too large → more aggressive (preserve GIF first-frame extraction)
+  const aggressiveInput = mediaType === 'image/gif' ? sharp(buf, { pages: 1 }) : sharp(buf);
+  const smaller = await aggressiveInput
     .rotate()
     .resize({ width: FALLBACK_DIMENSION, height: FALLBACK_DIMENSION, fit: 'inside' })
     .jpeg({ quality: JPEG_QUALITY_AGGRESSIVE, mozjpeg: true })
     .toBuffer();
+
+  if (smaller.length > TARGET_RAW_BYTES) {
+    logger.warn(
+      { size: smaller.length, target: TARGET_RAW_BYTES },
+      'Image still exceeds target after aggressive compression',
+    );
+  }
 
   return { data: smaller, mediaType: 'image/jpeg' };
 }

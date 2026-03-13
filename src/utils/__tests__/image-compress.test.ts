@@ -22,13 +22,6 @@ async function createNoisyJpeg(width: number, height: number, quality = 95): Pro
     .toBuffer();
 }
 
-/** Create a noisy PNG buffer */
-async function createNoisyPng(width: number, height: number): Promise<Buffer> {
-  const raw = randomBytes(width * height * 3);
-  return sharp(raw, { raw: { width, height, channels: 3 } })
-    .png()
-    .toBuffer();
-}
 
 describe('compressImage', () => {
   it('should pass through small images unchanged', async () => {
