@@ -1117,6 +1117,71 @@ async function formatHistoryMessages(
 const _historyDedup = new Map<string, string>();
 
 /**
+ * 获取被引用消息的内容并注入到 prompt 前缀。
+ * 当用户回复某条消息并 @bot 时，确保 agent 能看到被引用消息的内容，
+ * 即使它不在历史窗口内（如 merge_forward 或较早的消息）。
+ */
+async function injectQuotedMessage(
+  effectivePrompt: string,
+  rootId: string | undefined,
+  messageId: string,
+  chatId: string,
+): Promise<string> {
+  if (!rootId || rootId === messageId) return effectivePrompt;
+
+  try {
+    const rootItems = await feishuClient.getMessageById(rootId);
+    if (!rootItems || rootItems.length === 0) return effectivePrompt;
+
+    const rootMsg = rootItems.find(m => m.message_id === rootId);
+    if (!rootMsg) return effectivePrompt;
+
+    const rootMsgType = rootMsg.msg_type || 'text';
+    let rootContent = '';
+
+    if (rootMsgType === 'merge_forward') {
+      const subMessages = rootItems
+        .filter(sub => sub.upper_message_id && sub.message_id !== rootId)
+        .sort((a, b) => parseInt(a.create_time || '0', 10) - parseInt(b.create_time || '0', 10))
+        .slice(0, 20);
+      if (subMessages.length > 0) {
+        const senderIds = [...new Set(subMessages.map(s => s.sender?.id).filter(Boolean))] as string[];
+        const senderNameMap = new Map<string, string>();
+        await Promise.all(senderIds.map(async (sid) => {
+          try {
+            const name = await feishuClient.getUserName(sid, chatId);
+            if (name) senderNameMap.set(sid, name);
+          } catch { /* skip */ }
+        }));
+        const lines = ['[合并转发的聊天记录]'];
+        for (const sub of subMessages) {
+          const subContent = formatMergeForwardSubMessage(sub.body?.content ?? '{}', sub.msg_type || 'text', sub.mentions);
+          if (subContent.trim()) {
+            const senderId = sub.sender?.id ?? '';
+            const senderName = senderNameMap.get(senderId) ?? '未知用户';
+            lines.push(`- [${senderName}](${senderId || '?'}): ${subContent.trim()}`);
+          }
+        }
+        rootContent = lines.join('\n');
+      } else {
+        rootContent = '[合并转发的聊天记录]';
+      }
+    } else if (rootMsgType === 'text' || rootMsgType === 'post') {
+      rootContent = formatMergeForwardSubMessage(rootMsg.body?.content ?? '{}', rootMsgType, rootMsg.mentions);
+    }
+
+    if (rootContent.trim()) {
+      logger.info({ rootId, rootMsgType, rootContentLen: rootContent.length }, 'Injected rootId quoted message content into prompt');
+      return `用户回复了以下消息：\n${rootContent}\n\n---\n\n${effectivePrompt}`;
+    }
+  } catch (err) {
+    logger.warn({ err, rootId }, 'Failed to fetch rootId message for injection');
+  }
+
+  return effectivePrompt;
+}
+
+/**
  * 执行 Claude Agent SDK 任务
  * 支持 workspace 变更后自动 restart：第一次 query 触发 setup_workspace 后，
  * 自动以新 cwd 发起第二次 query，确保 CLAUDE.md 正确加载。
@@ -1238,6 +1303,9 @@ async function executeClaudeTask(
       _historyDedup.set(sessionKey, history.newestMsgId);
     }
   }
+
+  // rootId 引用消息注入
+  effectivePrompt = await injectQuotedMessage(effectivePrompt, rootId, messageId, chatId);
 
   // 构造逐条 turn 回调
   // 策略：缓冲最后一个 turn，收到新 turn 时将前一个 turn 的 tool calls 刷入累积器，
@@ -1699,57 +1767,8 @@ async function executeDirectTask(
       _historyDedup.set(sessionKey, history.newestMsgId);
     }
 
-    // rootId 引用消息注入：当用户回复某条消息并 @bot 时，显式获取被引用消息的内容注入到 prompt
-    // 这确保即使被引用消息不在历史窗口内（如 merge_forward），agent 也能看到其内容
-    if (rootId && rootId !== messageId) {
-      try {
-        const rootItems = await feishuClient.getMessageById(rootId);
-        if (rootItems && rootItems.length > 0) {
-          const rootMsg = rootItems.find(m => m.message_id === rootId);
-          if (rootMsg) {
-            const rootMsgType = rootMsg.msg_type || 'text';
-            let rootContent = '';
-            if (rootMsgType === 'merge_forward') {
-              // 合并转发：展开子消息
-              const subMessages = rootItems
-                .filter(sub => sub.upper_message_id && sub.message_id !== rootId)
-                .sort((a, b) => parseInt(a.create_time || '0', 10) - parseInt(b.create_time || '0', 10))
-                .slice(0, 20);
-              if (subMessages.length > 0) {
-                const senderIds = [...new Set(subMessages.map(s => s.sender?.id).filter(Boolean))] as string[];
-                const senderNameMap = new Map<string, string>();
-                await Promise.all(senderIds.map(async (sid) => {
-                  try {
-                    const name = await feishuClient.getUserName(sid, chatId);
-                    if (name) senderNameMap.set(sid, name);
-                  } catch { /* skip */ }
-                }));
-                const lines = ['[合并转发的聊天记录]'];
-                for (const sub of subMessages) {
-                  const subContent = formatMergeForwardSubMessage(sub.body?.content ?? '{}', sub.msg_type || 'text', sub.mentions);
-                  if (subContent.trim()) {
-                    const senderId = sub.sender?.id ?? '';
-                    const senderName = senderNameMap.get(senderId) ?? '未知用户';
-                    lines.push(`- [${senderName}](${senderId || '?'}): ${subContent.trim()}`);
-                  }
-                }
-                rootContent = lines.join('\n');
-              } else {
-                rootContent = '[合并转发的聊天记录]';
-              }
-            } else if (rootMsgType === 'text' || rootMsgType === 'post') {
-              rootContent = formatMergeForwardSubMessage(rootMsg.body?.content ?? '{}', rootMsgType, rootMsg.mentions);
-            }
-            if (rootContent.trim()) {
-              effectivePrompt = `用户回复了以下消息：\n${rootContent}\n\n---\n\n${effectivePrompt}`;
-              logger.info({ rootId, rootMsgType, rootContentLen: rootContent.length }, 'Injected rootId message content into prompt');
-            }
-          }
-        }
-      } catch (err) {
-        logger.warn({ err, rootId }, 'Failed to fetch rootId message for injection');
-      }
-    }
+    // rootId 引用消息注入
+    effectivePrompt = await injectQuotedMessage(effectivePrompt, rootId, messageId, chatId);
 
     // discussion MCP server：允许 agent 动态创建话题（仅在非话题场景下注入）
     // 如果消息已经在一个话题中（eventThreadId 存在），不需要再创建新话题
