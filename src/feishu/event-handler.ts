@@ -1304,8 +1304,10 @@ async function executeClaudeTask(
     }
   }
 
-  // rootId 引用消息注入
-  effectivePrompt = await injectQuotedMessage(effectivePrompt, rootId, messageId, chatId);
+  // rootId 引用消息注入（仅主面板引用回复，话题内 rootId 是锚定消息不需要注入）
+  if (!threadId) {
+    effectivePrompt = await injectQuotedMessage(effectivePrompt, rootId, messageId, chatId);
+  }
 
   // 构造逐条 turn 回调
   // 策略：缓冲最后一个 turn，收到新 turn 时将前一个 turn 的 tool calls 刷入累积器，
@@ -1767,8 +1769,10 @@ async function executeDirectTask(
       _historyDedup.set(sessionKey, history.newestMsgId);
     }
 
-    // rootId 引用消息注入
-    effectivePrompt = await injectQuotedMessage(effectivePrompt, rootId, messageId, chatId);
+    // rootId 引用消息注入（仅主面板引用回复，话题内 rootId 是锚定消息不需要注入）
+    if (!eventThreadId) {
+      effectivePrompt = await injectQuotedMessage(effectivePrompt, rootId, messageId, chatId);
+    }
 
     // discussion MCP server：允许 agent 动态创建话题（仅在非话题场景下注入）
     // 如果消息已经在一个话题中（eventThreadId 存在），不需要再创建新话题
