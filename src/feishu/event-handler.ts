@@ -2465,7 +2465,7 @@ function handleBotDeletedEvent(data: Record<string, unknown>, accountId: string)
 }
 
 /** @internal 测试用导出 */
-export const _testing = { handleBotAddedEvent, handleBotDeletedEvent, makeQueueKey };
+export const _testing = { handleBotAddedEvent, handleBotDeletedEvent, makeQueueKey, injectQuotedMessage };
 
 function formatDuration(ms: number): string {
   if (ms < 1000) return `${ms}ms`;
