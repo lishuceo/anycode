@@ -1311,7 +1311,6 @@ async function executeClaudeTask(
 
   try {
     // Resume 策略：activeConversationId/activeConversationCwd 已在上方提前计算
-    // 额外检查 systemPromptHash：代码部署后 prompt 变化时自动使旧 session 失效
     const activePromptHash = threadId ? threadSession?.systemPromptHash : session.systemPromptHash;
     const canResume = activeConversationId
       && (!activeConversationCwd || activeConversationCwd === workingDir);
@@ -1794,13 +1793,6 @@ async function executeDirectTask(
       // 注入 discussion-tools MCP server
       ...(discussionMcp ? { additionalMcpServers: { 'discussion-tools': discussionMcp } } : {}),
     });
-
-    // resume 被跳过时清除 _historyDedup，让下次 query 重新注入完整历史
-    // 否则新 session 只能看到 afterMsgId 之后的消息，丢失之前的上下文
-    if (result.resumeSkipped) {
-      _historyDedup.delete(sessionKey);
-      logger.info({ sessionKey }, 'Cleared _historyDedup due to resume skip (system prompt hash mismatch)');
-    }
 
     // 保存 conversationId（下次消息可 resume）
     if (result.sessionId) {
