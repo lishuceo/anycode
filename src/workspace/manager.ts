@@ -155,6 +155,7 @@ export function setupWorkspace(options: SetupWorkspaceOptions): SetupWorkspaceRe
     execFileSync('git', cloneArgs, {
       timeout: 120_000,
       stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, GIT_LFS_SKIP_SMUDGE: '1' },
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
