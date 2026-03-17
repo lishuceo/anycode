@@ -28,6 +28,7 @@ import { accountManager } from './multi-account.js';
 import { chatBotRegistry } from './bot-registry.js';
 import type { AgentId } from '../agent/types.js';
 import { readPersonaFile, loadKnowledgeContent } from '../agent/config-loader.js';
+import { resolveMentions } from './mention-resolver.js';
 import { createDiscussionMcpServer } from '../agent/tools/discussion.js';
 import { generateAuthUrl, hasCallbackUrl, handleManualCode } from './oauth.js';
 import { injectMemories } from '../memory/injector.js';
@@ -2038,8 +2039,15 @@ async function sendDirectReply(
   }
 
   if (output.length <= 2000) {
-    // 短文本：纯文字回复
-    if (threadReplyMsgId) {
+    // 短文本：尝试解析 @mention，有则用 post 格式发送
+    const postContent = await resolveMentions(output, chatId);
+    if (postContent) {
+      if (threadReplyMsgId) {
+        await feishuClient.replyPostInThread(threadReplyMsgId, postContent);
+      } else {
+        await feishuClient.replyPost(messageId, postContent);
+      }
+    } else if (threadReplyMsgId) {
       await feishuClient.replyTextInThread(threadReplyMsgId, output);
     } else {
       await feishuClient.replyText(messageId, output);
