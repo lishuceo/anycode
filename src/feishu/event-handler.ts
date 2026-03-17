@@ -1117,6 +1117,99 @@ async function formatHistoryMessages(
 const _historyDedup = new Map<string, string>();
 
 /**
+ * 获取被引用消息的内容并注入到 prompt 前缀。
+ * 当用户回复某条消息并 @bot 时，确保 agent 能看到被引用消息的内容，
+ * 即使它不在历史窗口内（如 merge_forward 或较早的消息）。
+ * 支持 text/post/merge_forward/image 类型。
+ */
+async function injectQuotedMessage(
+  effectivePrompt: string,
+  rootId: string | undefined,
+  messageId: string,
+  chatId: string,
+  existingImages?: ImageAttachment[],
+): Promise<{ prompt: string; images?: ImageAttachment[] }> {
+  if (!rootId || rootId === messageId) return { prompt: effectivePrompt, images: existingImages };
+
+  try {
+    const rootItems = await feishuClient.getMessageById(rootId);
+    if (!rootItems || rootItems.length === 0) return { prompt: effectivePrompt, images: existingImages };
+
+    const rootMsg = rootItems.find(m => m.message_id === rootId);
+    if (!rootMsg) return { prompt: effectivePrompt, images: existingImages };
+
+    const rootMsgType = rootMsg.msg_type || 'text';
+    let rootContent = '';
+    let quotedImage: ImageAttachment | undefined;
+
+    if (rootMsgType === 'image') {
+      // 图片消息：下载图片并追加到 images
+      try {
+        const content = JSON.parse(rootMsg.body?.content ?? '{}');
+        const imageKey = content.image_key as string | undefined;
+        if (imageKey) {
+          const buf = await feishuClient.downloadMessageImage(rootId, imageKey);
+          if (buf.length <= MAX_IMAGE_SIZE_BYTES) {
+            const mediaType = detectImageMediaType(buf);
+            const compressed = await compressImage(buf, mediaType);
+            quotedImage = { data: compressed.data.toString('base64'), mediaType: compressed.mediaType };
+            rootContent = '[用户引用了一张图片]';
+            logger.info({ rootId, imageSize: buf.length, compressedSize: compressed.data.length }, 'Downloaded quoted image');
+          } else {
+            rootContent = '[用户引用了一张图片，但图片过大无法加载]';
+          }
+        }
+      } catch (err) {
+        logger.warn({ err, rootId }, 'Failed to download quoted image');
+        rootContent = '[用户引用了一张图片，但下载失败]';
+      }
+    } else if (rootMsgType === 'merge_forward') {
+      const subMessages = rootItems
+        .filter(sub => sub.upper_message_id && sub.message_id !== rootId)
+        .sort((a, b) => parseInt(a.create_time || '0', 10) - parseInt(b.create_time || '0', 10))
+        .slice(0, 20);
+      if (subMessages.length > 0) {
+        const senderIds = [...new Set(subMessages.map(s => s.sender?.id).filter(Boolean))] as string[];
+        const senderNameMap = new Map<string, string>();
+        await Promise.all(senderIds.map(async (sid) => {
+          try {
+            const name = await feishuClient.getUserName(sid, chatId);
+            if (name) senderNameMap.set(sid, name);
+          } catch { /* skip */ }
+        }));
+        const lines = ['[合并转发的聊天记录]'];
+        for (const sub of subMessages) {
+          const subContent = formatMergeForwardSubMessage(sub.body?.content ?? '{}', sub.msg_type || 'text', sub.mentions);
+          if (subContent.trim()) {
+            const senderId = sub.sender?.id ?? '';
+            const senderName = senderNameMap.get(senderId) ?? '未知用户';
+            lines.push(`- [${senderName}](${senderId || '?'}): ${subContent.trim()}`);
+          }
+        }
+        rootContent = lines.join('\n');
+      } else {
+        rootContent = '[合并转发的聊天记录]';
+      }
+    } else if (rootMsgType === 'text' || rootMsgType === 'post') {
+      rootContent = formatMergeForwardSubMessage(rootMsg.body?.content ?? '{}', rootMsgType, rootMsg.mentions);
+    }
+
+    if (rootContent.trim()) {
+      logger.info({ rootId, rootMsgType, rootContentLen: rootContent.length, hasImage: !!quotedImage }, 'Injected rootId quoted message content into prompt');
+      const newPrompt = `<quoted-message>\n${rootContent}\n</quoted-message>\n\n${effectivePrompt}`;
+      const mergedImages = quotedImage
+        ? [...(existingImages || []), quotedImage]
+        : existingImages;
+      return { prompt: newPrompt, images: mergedImages };
+    }
+  } catch (err) {
+    logger.warn({ err, rootId }, 'Failed to fetch rootId message for injection');
+  }
+
+  return { prompt: effectivePrompt, images: existingImages };
+}
+
+/**
  * 执行 Claude Agent SDK 任务
  * 支持 workspace 变更后自动 restart：第一次 query 触发 setup_workspace 后，
  * 自动以新 cwd 发起第二次 query，确保 CLAUDE.md 正确加载。
@@ -1237,6 +1330,13 @@ async function executeClaudeTask(
     if (history.newestMsgId) {
       _historyDedup.set(sessionKey, history.newestMsgId);
     }
+  }
+
+  // rootId 引用消息注入（仅主面板引用回复，话题内 rootId 是锚定消息不需要注入）
+  if (!threadId) {
+    const quoted = await injectQuotedMessage(effectivePrompt, rootId, messageId, chatId, images);
+    effectivePrompt = quoted.prompt;
+    images = quoted.images;
   }
 
   // 构造逐条 turn 回调
@@ -1699,56 +1799,11 @@ async function executeDirectTask(
       _historyDedup.set(sessionKey, history.newestMsgId);
     }
 
-    // rootId 引用消息注入：当用户回复某条消息并 @bot 时，显式获取被引用消息的内容注入到 prompt
-    // 这确保即使被引用消息不在历史窗口内（如 merge_forward），agent 也能看到其内容
-    if (rootId && rootId !== messageId) {
-      try {
-        const rootItems = await feishuClient.getMessageById(rootId);
-        if (rootItems && rootItems.length > 0) {
-          const rootMsg = rootItems.find(m => m.message_id === rootId);
-          if (rootMsg) {
-            const rootMsgType = rootMsg.msg_type || 'text';
-            let rootContent = '';
-            if (rootMsgType === 'merge_forward') {
-              // 合并转发：展开子消息
-              const subMessages = rootItems
-                .filter(sub => sub.upper_message_id && sub.message_id !== rootId)
-                .sort((a, b) => parseInt(a.create_time || '0', 10) - parseInt(b.create_time || '0', 10))
-                .slice(0, 20);
-              if (subMessages.length > 0) {
-                const senderIds = [...new Set(subMessages.map(s => s.sender?.id).filter(Boolean))] as string[];
-                const senderNameMap = new Map<string, string>();
-                await Promise.all(senderIds.map(async (sid) => {
-                  try {
-                    const name = await feishuClient.getUserName(sid, chatId);
-                    if (name) senderNameMap.set(sid, name);
-                  } catch { /* skip */ }
-                }));
-                const lines = ['[合并转发的聊天记录]'];
-                for (const sub of subMessages) {
-                  const subContent = formatMergeForwardSubMessage(sub.body?.content ?? '{}', sub.msg_type || 'text', sub.mentions);
-                  if (subContent.trim()) {
-                    const senderId = sub.sender?.id ?? '';
-                    const senderName = senderNameMap.get(senderId) ?? '未知用户';
-                    lines.push(`- [${senderName}](${senderId || '?'}): ${subContent.trim()}`);
-                  }
-                }
-                rootContent = lines.join('\n');
-              } else {
-                rootContent = '[合并转发的聊天记录]';
-              }
-            } else if (rootMsgType === 'text' || rootMsgType === 'post') {
-              rootContent = formatMergeForwardSubMessage(rootMsg.body?.content ?? '{}', rootMsgType, rootMsg.mentions);
-            }
-            if (rootContent.trim()) {
-              effectivePrompt = `用户回复了以下消息：\n${rootContent}\n\n---\n\n${effectivePrompt}`;
-              logger.info({ rootId, rootMsgType, rootContentLen: rootContent.length }, 'Injected rootId message content into prompt');
-            }
-          }
-        }
-      } catch (err) {
-        logger.warn({ err, rootId }, 'Failed to fetch rootId message for injection');
-      }
+    // rootId 引用消息注入（仅主面板引用回复，话题内 rootId 是锚定消息不需要注入）
+    if (!eventThreadId) {
+      const quoted = await injectQuotedMessage(effectivePrompt, rootId, messageId, chatId, images);
+      effectivePrompt = quoted.prompt;
+      images = quoted.images;
     }
 
     // discussion MCP server：允许 agent 动态创建话题（仅在非话题场景下注入）
@@ -2446,7 +2501,7 @@ function handleBotDeletedEvent(data: Record<string, unknown>, accountId: string)
 }
 
 /** @internal 测试用导出 */
-export const _testing = { handleBotAddedEvent, handleBotDeletedEvent, makeQueueKey };
+export const _testing = { handleBotAddedEvent, handleBotDeletedEvent, makeQueueKey, injectQuotedMessage };
 
 function formatDuration(ms: number): string {
   if (ms < 1000) return `${ms}ms`;
