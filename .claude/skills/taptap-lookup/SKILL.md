@@ -51,8 +51,6 @@ curl -s 'https://publisher-pd.spark.xd.com/api/map/get-game-url?app_id=<app_id>'
 | TapTap 链接 | https://www.taptap.cn/app/<app_id> |
 ```
 
-### 4. 后续操作提示
+### 4. 注意事项
 
-查询完成后，根据场景提供建议：
-- 想查看项目代码 → 提示使用 `/restore-project <app_id>` 还原项目
-- 想访问游戏 → 提供 game_url 链接
+- 仅输出查询结果表格，不要主动提示后续操作（如还原项目等）
