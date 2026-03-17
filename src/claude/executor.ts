@@ -8,6 +8,8 @@ import { createWorkspaceMcpServer } from '../workspace/tool.js';
 import { createFeishuToolsMcpServer } from '../feishu/tools/index.js';
 import { createMemorySearchMcpServer } from '../memory/tools/memory-search.js';
 import { getMemoryStore, getHybridSearch, isMemoryEnabled } from '../memory/init.js';
+import { createCronMcpServer } from '../cron/tool.js';
+import { getCronScheduler } from '../cron/init.js';
 import { isAutoWorkspacePath, isServiceOwnRepo } from '../workspace/isolation.js';
 import type { ClaudeResult, ExecuteOptions, ProgressCallback, TurnInfo, ToolCallInfo, ImageAttachment, MultimodalContentBlock } from './types.js';
 
@@ -129,6 +131,10 @@ export interface ExecuteInput extends ExecuteOptions {
   disableThinking?: boolean;
   /** Agent ID（用于记忆系统隔离，来自 agentRegistry） */
   agentId?: string;
+  /** 当前会话的 threadId（用于 cron MCP 绑定话题） */
+  threadId?: string;
+  /** 当前话题的根消息 ID（用于 cron MCP 绑定话题） */
+  threadRootMessageId?: string;
 }
 
 /** 构建工作区管理系统提示词（注入实际目录路径） */
@@ -417,6 +423,23 @@ export class ClaudeExecutor {
           agentId: input.agentId ?? 'default',
           userId: memUserId,
           workspaceDir: workingDir,
+        });
+      }
+    }
+
+    // Cron scheduler MCP tool
+    if (config.cron.enabled) {
+      const cronScheduler = getCronScheduler();
+      if (cronScheduler) {
+        const cronKeyParts = sessionKey.split(':');
+        const cronChatId = cronKeyParts.length >= 4 ? cronKeyParts[2] : cronKeyParts[0] || '';
+        const cronUserId = cronKeyParts.length >= 4 ? cronKeyParts[3] : cronKeyParts[1] || '';
+        mcpServers['cron-scheduler'] = createCronMcpServer({
+          scheduler: cronScheduler,
+          chatId: cronChatId,
+          userId: cronUserId,
+          threadId: input.threadId,
+          threadRootMessageId: input.threadRootMessageId,
         });
       }
     }
