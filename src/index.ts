@@ -16,6 +16,8 @@ import { loadAgentConfig, startConfigWatcher, stopConfigWatcher, reloadAgentConf
 import { chatBotRegistry } from './feishu/bot-registry.js';
 import { initializeMemory, closeMemory, runMemoryMaintenance } from './memory/init.js';
 import { warmup as warmupQuickAck } from './utils/quick-ack.js';
+import { initializeCron, closeCron, cleanCronRuns } from './cron/init.js';
+import { executeClaudeTask } from './feishu/event-handler.js';
 
 const INTERRUPTED_SESSIONS_FILE = '/tmp/feishu-claude-interrupted.json';
 
@@ -62,6 +64,30 @@ async function main(): Promise<void> {
   // 初始化记忆系统（async: 加载 sqlite-vec，创建 DB）
   if (config.memory.enabled) {
     await initializeMemory();
+  }
+
+  // 初始化定时任务调度器
+  if (config.cron.enabled) {
+    await initializeCron({
+      executeTask: async (params) => {
+        await executeClaudeTask(
+          params.prompt,
+          params.chatId,
+          params.userId,
+          params.messageId,
+          params.rootId,
+          params.threadId,
+          undefined, // images
+          params.agentId as import('./agent/types.js').AgentId,
+        );
+      },
+      sendMessage: async (chatId, text, rootId) => {
+        if (rootId) {
+          return feishuClient.replyTextInThread(rootId, text);
+        }
+        return feishuClient.sendText(chatId, text);
+      },
+    });
   }
 
   // 预热 quick-ack client（避免首次调用冷启动）
@@ -132,6 +158,9 @@ async function main(): Promise<void> {
     if (config.memory.enabled) {
       runMemoryMaintenance();
     }
+    if (config.cron.enabled) {
+      cleanCronRuns();
+    }
   }, 30 * 60 * 1000);
 
   // 优雅退出
@@ -177,6 +206,7 @@ async function main(): Promise<void> {
     pipelineStore.close();
     sessionManager.close();
     closeMemory();
+    closeCron();
     process.exit(0);
   }
 

@@ -1218,7 +1218,7 @@ async function injectQuotedMessage(
  * Resume 策略：优先使用 thread_sessions 表（threadId → conversationId 映射），
  * 每个 thread 独立管理自己的 conversationId，互不干扰。
  */
-async function executeClaudeTask(
+export async function executeClaudeTask(
   rawPrompt: string,
   chatId: string,
   userId: string,
@@ -1467,6 +1467,8 @@ async function executeClaudeTask(
       knowledgeContent,
       disableWorkspaceTool: !isFirstMessage,
       agentId,
+      threadId,
+      threadRootMessageId: threadReplyMsgId,
       ...(customSystemPrompt ? { systemPromptOverride: customSystemPrompt } : {}),
     });
 
