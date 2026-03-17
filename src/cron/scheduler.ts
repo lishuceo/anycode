@@ -124,7 +124,10 @@ export class CronScheduler {
 
   // ── Job execution ──
 
-  private async executeJob(job: CronJob): Promise<void> {
+  private async executeJob(jobSnapshot: CronJob): Promise<void> {
+    // Re-read from store to avoid stale state when processing multiple due jobs sequentially
+    const job = this.deps.store.get(jobSnapshot.id) ?? jobSnapshot;
+
     const startMs = Date.now();
     const runId = this.deps.store.insertRun({
       jobId: job.id,

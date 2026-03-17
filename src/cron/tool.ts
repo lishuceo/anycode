@@ -192,10 +192,12 @@ function buildSchedule(args: {
       return args.schedule
         ? { kind: 'cron', expr: args.schedule, tz: args.timezone || 'Asia/Shanghai' }
         : null;
-    case 'every':
-      return args.every_ms
-        ? { kind: 'every', everyMs: args.every_ms }
-        : null;
+    case 'every': {
+      if (!args.every_ms) return null;
+      const MIN_INTERVAL_MS = 30_000; // 30s floor to prevent abuse
+      const everyMs = Math.max(args.every_ms, MIN_INTERVAL_MS);
+      return { kind: 'every', everyMs };
+    }
     case 'at':
       return args.at
         ? { kind: 'at', atTime: args.at }

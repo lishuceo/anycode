@@ -335,6 +335,15 @@ export class CronStore {
   // ── Job CRUD ──
 
   add(input: CronJobCreate): CronJob {
+    // Validate cron expression eagerly — fail fast rather than creating an unschedulable job
+    if (input.schedule.kind === 'cron' && input.schedule.expr) {
+      try {
+        new Cron(input.schedule.expr, { timezone: input.schedule.tz || 'Asia/Shanghai' });
+      } catch (err) {
+        throw new Error(`Invalid cron expression "${input.schedule.expr}": ${(err as Error).message}`);
+      }
+    }
+
     const now = new Date().toISOString();
     const id = nanoid();
     const enabled = input.enabled !== false;
