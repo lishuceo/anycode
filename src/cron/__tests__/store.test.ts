@@ -281,7 +281,7 @@ describe('CronStore', () => {
 
     // cleanOldRuns uses created_at < cutoff (strict), so use -1 days
     // to push the cutoff into the future and catch the just-created record
-    const deleted = store.cleanOldRuns(-1);
+    store.cleanOldRuns(-1);
     expect(store.getRecentRuns(job.id).length).toBe(0);
   });
 
