@@ -790,7 +790,7 @@ export class ClaudeExecutor {
       // 会包含整个 session 的历史累计值，导致简单问题显示天价费用。
       // 改用顶层 usage 字段（仅包含本次 query 的 token 用量）自行计算费用。
       const queryCostUsd = (resultMessage.usage && resultMessage.modelUsage)
-        ? calculateCostFromUsage(resultMessage.usage, resultMessage.modelUsage)
+        ? calculateCostFromUsage(resultMessage.usage as Parameters<typeof calculateCostFromUsage>[0], resultMessage.modelUsage)
         : resultMessage.total_cost_usd;
 
       logger.info({
