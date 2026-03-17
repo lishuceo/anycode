@@ -36,6 +36,7 @@
     "@anthropic-ai/claude-agent-sdk": "^0.2.45",
     "@larksuiteoapi/node-sdk": "^1.40.0",
     "better-sqlite3": "^12.6.2",
+    "croner": "^10.0.1",
     "dotenv": "^16.4.0",
     "eslint": "^10.0.2",
     "express": "^4.21.0",
