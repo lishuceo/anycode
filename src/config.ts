@@ -195,6 +195,20 @@ export const config = {
     maxInjectTokens: parseInt(process.env.MEMORY_MAX_INJECT_TOKENS || '4000', 10),
   },
 
+  // 定时任务配置
+  cron: {
+    /** 定时任务调度器开关 */
+    enabled: process.env.CRON_ENABLED === 'true',
+    /** 定时任务数据库路径 */
+    dbPath: process.env.CRON_DB_PATH || './data/cron.db',
+    /** 默认时区 */
+    timezone: process.env.CRON_TIMEZONE || 'Asia/Shanghai',
+    /** 默认单次执行超时秒数 */
+    defaultTimeoutSeconds: parseInt(process.env.CRON_DEFAULT_TIMEOUT || '300', 10),
+    /** 默认单次执行预算 USD */
+    defaultBudgetUsd: parseFloat(process.env.CRON_DEFAULT_BUDGET || '5'),
+  },
+
   // 服务配置
   server: {
     port: parseInt(process.env.PORT || '3000', 10),
