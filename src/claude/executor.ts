@@ -8,6 +8,8 @@ import { createWorkspaceMcpServer } from '../workspace/tool.js';
 import { createFeishuToolsMcpServer } from '../feishu/tools/index.js';
 import { createMemorySearchMcpServer } from '../memory/tools/memory-search.js';
 import { getMemoryStore, getHybridSearch, isMemoryEnabled } from '../memory/init.js';
+import { createCronMcpServer } from '../cron/tool.js';
+import { getCronScheduler } from '../cron/init.js';
 import { isAutoWorkspacePath, isServiceOwnRepo } from '../workspace/isolation.js';
 import type { ClaudeResult, ExecuteOptions, ProgressCallback, TurnInfo, ToolCallInfo, ImageAttachment, MultimodalContentBlock } from './types.js';
 
@@ -129,6 +131,10 @@ export interface ExecuteInput extends ExecuteOptions {
   disableThinking?: boolean;
   /** Agent ID（用于记忆系统隔离，来自 agentRegistry） */
   agentId?: string;
+  /** 当前会话的 threadId（用于 cron MCP 绑定话题） */
+  threadId?: string;
+  /** 当前话题的根消息 ID（用于 cron MCP 绑定话题） */
+  threadRootMessageId?: string;
 }
 
 /** 构建工作区管理系统提示词（注入实际目录路径） */
@@ -421,6 +427,24 @@ export class ClaudeExecutor {
       }
     }
 
+    // Cron scheduler MCP tool
+    if (config.cron.enabled) {
+      const cronScheduler = getCronScheduler();
+      if (cronScheduler) {
+        const cronKeyParts = sessionKey.split(':');
+        const cronChatId = cronKeyParts.length >= 4 ? cronKeyParts[2] : cronKeyParts[0] || '';
+        const cronUserId = cronKeyParts.length >= 4 ? cronKeyParts[3] : cronKeyParts[1] || '';
+        mcpServers['cron-scheduler'] = createCronMcpServer({
+          scheduler: cronScheduler,
+          chatId: cronChatId,
+          userId: cronUserId,
+          agentId: input.agentId,
+          threadId: input.threadId,
+          threadRootMessageId: input.threadRootMessageId,
+        });
+      }
+    }
+
     // 合并调用方传入的额外 MCP servers（如 discussion-tools）
     if (input.additionalMcpServers) {
       Object.assign(mcpServers, input.additionalMcpServers);
@@ -563,6 +587,11 @@ export class ClaudeExecutor {
             // memory-tools: 记忆搜索工具，read-only 操作，readonly 下允许
             if (toolName.startsWith('mcp__memory-tools__')) {
               logger.info({ toolName, readOnly }, 'canUseTool allowed — memory search tool in read-only mode');
+              return { behavior: 'allow' as const, updatedInput: inputObj };
+            }
+            // cron-scheduler: 定时任务管理，操作的是任务数据库而非代码仓库，readonly 下允许
+            if (toolName.startsWith('mcp__cron-scheduler__')) {
+              logger.info({ toolName, readOnly }, 'canUseTool allowed — cron tool in read-only mode');
               return { behavior: 'allow' as const, updatedInput: inputObj };
             }
             // 所有其他 MCP 工具（含 workspace-manager、未来新增）：deny
@@ -767,7 +796,7 @@ export class ClaudeExecutor {
       // 会包含整个 session 的历史累计值，导致简单问题显示天价费用。
       // 改用顶层 usage 字段（仅包含本次 query 的 token 用量）自行计算费用。
       const queryCostUsd = (resultMessage.usage && resultMessage.modelUsage)
-        ? calculateCostFromUsage(resultMessage.usage, resultMessage.modelUsage)
+        ? calculateCostFromUsage(resultMessage.usage as Parameters<typeof calculateCostFromUsage>[0], resultMessage.modelUsage)
         : resultMessage.total_cost_usd;
 
       logger.info({

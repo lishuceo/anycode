@@ -150,9 +150,9 @@ export const config = {
   // 聊天上下文配置
   chat: {
     /** 注入初始上下文时最多拉取的历史消息条数 */
-    historyMaxCount: parseInt(process.env.CHAT_HISTORY_MAX_COUNT || '10', 10),
+    historyMaxCount: parseInt(process.env.CHAT_HISTORY_MAX_COUNT || '20', 10),
     /** 历史上下文总字符上限（超出时从最旧的消息开始丢弃） */
-    historyMaxChars: parseInt(process.env.CHAT_HISTORY_MAX_CHARS || '8000', 10),
+    historyMaxChars: parseInt(process.env.CHAT_HISTORY_MAX_CHARS || '30000', 10),
   },
 
   // DashScope (阿里云百炼) 通用配置
@@ -193,6 +193,20 @@ export const config = {
     vectorWeight: parseFloat(process.env.MEMORY_VECTOR_WEIGHT || '0.7'),
     /** 注入记忆的最大 token 数 */
     maxInjectTokens: parseInt(process.env.MEMORY_MAX_INJECT_TOKENS || '4000', 10),
+  },
+
+  // 定时任务配置
+  cron: {
+    /** 定时任务调度器开关 */
+    enabled: process.env.CRON_ENABLED === 'true',
+    /** 定时任务数据库路径 */
+    dbPath: process.env.CRON_DB_PATH || './data/cron.db',
+    /** 默认时区 */
+    timezone: process.env.CRON_TIMEZONE || 'Asia/Shanghai',
+    /** 默认单次执行超时秒数 */
+    defaultTimeoutSeconds: parseInt(process.env.CRON_DEFAULT_TIMEOUT || '300', 10),
+    /** 默认单次执行预算 USD */
+    defaultBudgetUsd: parseFloat(process.env.CRON_DEFAULT_BUDGET || '5'),
   },
 
   // 服务配置

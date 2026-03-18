@@ -16,6 +16,7 @@ vi.mock('../../config.js', () => ({
     repoCache: { dir: '/repos/cache' },
     workspace: { baseDir: '/tmp/workspaces' },
     feishu: { tools: { enabled: false, doc: true, wiki: true, drive: true, bitable: true } },
+    cron: { enabled: false },
   },
 }));
 
@@ -56,6 +57,14 @@ const mockQuery = vi.fn(() => mockQueryInstance);
 
 vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
   query: (...args: unknown[]) => mockQuery(...args),
+}));
+
+// Mock cron modules (imported by executor.ts)
+vi.mock('../../cron/tool.js', () => ({
+  createCronMcpServer: vi.fn(() => ({ type: 'mock-cron-mcp' })),
+}));
+vi.mock('../../cron/init.js', () => ({
+  getCronScheduler: vi.fn(() => null),
 }));
 
 import { ClaudeExecutor } from '../executor.js';
