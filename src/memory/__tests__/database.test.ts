@@ -33,8 +33,6 @@ function makeRow(overrides: Partial<MemoryRow> = {}): MemoryRow {
     valid_at: now,
     invalid_at: null,
     superseded_by: null,
-    supersedes: null,
-    supersede_reason: null,
     ttl: null,
     source_chat_id: null,
     source_message_id: null,
@@ -352,6 +350,78 @@ describe('MemoryDatabase', () => {
       expect(memory.metadata).toEqual({ key: 'val' });
       expect(memory.agentId).toBe('agent1');
       expect(memory.type).toBe('fact');
+    });
+  });
+
+  describe('data migrations', () => {
+    it('should normalize workspace_dir on first creation', async () => {
+      // Insert rows with old-style workspace_dir before migration
+      db.insertMemory(makeRow({ id: 'mig_1', workspace_dir: '/root/dev' }));
+      db.insertMemory(makeRow({ id: 'mig_2', workspace_dir: '/root/dev/' }));
+      db.insertMemory(makeRow({ id: 'mig_3', workspace_dir: '/root/dev/anywhere-code' }));
+      db.insertMemory(makeRow({ id: 'mig_4', workspace_dir: 'github.com/lishuceo/anywhere-code.git' }));
+
+      // Reset user_version to force migration to run
+      db.db.pragma('user_version = 0');
+      db.close();
+
+      // Re-open — migrations should run
+      const db2 = await MemoryDatabase.create(join(tempDir, 'test.db'));
+
+      expect(db2.getMemory('mig_1')!.workspace_dir).toBe('github.com/lishuceo/anywhere-code.git');
+      expect(db2.getMemory('mig_2')!.workspace_dir).toBe('github.com/lishuceo/anywhere-code.git');
+      expect(db2.getMemory('mig_3')!.workspace_dir).toBe('github.com/lishuceo/anywhere-code.git');
+      expect(db2.getMemory('mig_4')!.workspace_dir).toBe('github.com/lishuceo/anywhere-code.git'); // unchanged
+
+      db2.close();
+    });
+
+    it('should normalize .workspaces paths', async () => {
+      db.insertMemory(makeRow({ id: 'mig_ws_1', workspace_dir: '/root/dev/.workspaces/anywhere-code-feat-abc123' }));
+
+      db.db.pragma('user_version = 0');
+      db.close();
+
+      const db2 = await MemoryDatabase.create(join(tempDir, 'test.db'));
+      expect(db2.getMemory('mig_ws_1')!.workspace_dir).toBe('github.com/lishuceo/anywhere-code.git');
+      db2.close();
+    });
+
+    it('should invalidate transient memories', async () => {
+      db.insertMemory(makeRow({ id: 'mig_tr_1', content: 'PR #161 已合并，部署后生效' }));
+      db.insertMemory(makeRow({ id: 'mig_tr_2', content: '已提交并推送到 GitHub' }));
+      db.insertMemory(makeRow({ id: 'mig_tr_3', content: '项目使用 TypeScript 5.7', type: 'fact' }));
+      db.insertMemory(makeRow({ id: 'mig_tr_4', content: '修复方案：添加参数', type: 'decision' }));
+
+      db.db.pragma('user_version = 0');
+      db.close();
+
+      const db2 = await MemoryDatabase.create(join(tempDir, 'test.db'));
+
+      expect(db2.getMemory('mig_tr_1')!.invalid_at).not.toBeNull();
+      expect(db2.getMemory('mig_tr_2')!.invalid_at).not.toBeNull();
+      expect(db2.getMemory('mig_tr_3')!.invalid_at).toBeNull(); // valid fact, should stay
+      expect(db2.getMemory('mig_tr_4')!.invalid_at).not.toBeNull(); // decision with 修复方案
+
+      db2.close();
+    });
+
+    it('should not re-run migrations on subsequent opens', async () => {
+      db.close();
+
+      // First open runs migration (version 0 → 1)
+      const db2 = await MemoryDatabase.create(join(tempDir, 'test.db'));
+      const v1 = db2.db.pragma('user_version', { simple: true }) as number;
+      expect(v1).toBeGreaterThanOrEqual(1);
+
+      db2.insertMemory(makeRow({ id: 'mig_post_1', workspace_dir: '/root/dev' }));
+      db2.close();
+
+      // Second open should NOT re-run migration (already at version 1)
+      const db3 = await MemoryDatabase.create(join(tempDir, 'test.db'));
+      // This row was inserted AFTER migration, so it should NOT be normalized
+      expect(db3.getMemory('mig_post_1')!.workspace_dir).toBe('/root/dev');
+      db3.close();
     });
   });
 });

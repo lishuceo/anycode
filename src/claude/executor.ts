@@ -11,7 +11,7 @@ import { getMemoryStore, getHybridSearch, isMemoryEnabled } from '../memory/init
 import { createCronMcpServer } from '../cron/tool.js';
 import { getCronScheduler } from '../cron/init.js';
 import { isAutoWorkspacePath, isServiceOwnRepo } from '../workspace/isolation.js';
-import type { ClaudeResult, ExecuteOptions, ProgressCallback, TurnInfo, ToolCallInfo, ImageAttachment, MultimodalContentBlock } from './types.js';
+import type { ClaudeResult, ExecuteOptions, ProgressCallback, TurnInfo, ToolCallInfo, ImageAttachment, DocumentAttachment, MultimodalContentBlock } from './types.js';
 
 // ============================================================
 // Claude Agent SDK 执行器
@@ -115,6 +115,8 @@ export interface ExecuteInput extends ExecuteOptions {
   hardTimeoutSeconds?: number;
   /** 图片附件（多模态输入） */
   images?: ImageAttachment[];
+  /** 文档附件（PDF 等，多模态输入） */
+  documents?: DocumentAttachment[];
   /** 额外的 MCP servers（会合并到内部自动创建的 servers） */
   additionalMcpServers?: Record<string, ReturnType<typeof createWorkspaceMcpServer>>;
   /** 工具允许列表（在 readOnly/toolPolicy 基础上额外放行，支持 glob 前缀如 'mcp__*'） */
@@ -269,24 +271,40 @@ URL Token 提取规则:
 }
 
 /**
- * 构建多模态 prompt（包含图片和文本的 AsyncIterable<SDKUserMessage>）
+ * 构建多模态 prompt（包含图片/文档和文本的 AsyncIterable<SDKUserMessage>）
  * Agent SDK 的 query() 支持 `prompt: string | AsyncIterable<SDKUserMessage>`
  */
 async function* buildMultimodalPrompt(
   text: string,
   images: ImageAttachment[],
+  documents?: DocumentAttachment[],
 ): AsyncIterable<import('@anthropic-ai/claude-agent-sdk').SDKUserMessage> {
-  // 构造 content blocks: 图片在前，文本在后
-  const contentBlocks: MultimodalContentBlock[] = images.map(
-    (img): MultimodalContentBlock => ({
+  // 构造 content blocks: 文档在前，图片次之，文本在后
+  const contentBlocks: MultimodalContentBlock[] = [];
+
+  if (documents?.length) {
+    for (const doc of documents) {
+      contentBlocks.push({
+        type: 'document',
+        source: {
+          type: 'base64',
+          media_type: doc.mediaType,
+          data: doc.data,
+        },
+      });
+    }
+  }
+
+  for (const img of images) {
+    contentBlocks.push({
       type: 'image',
       source: {
         type: 'base64',
         media_type: img.mediaType,
         data: img.data,
       },
-    }),
-  );
+    });
+  }
 
   contentBlocks.push({ type: 'text', text });
 
@@ -319,7 +337,7 @@ export class ClaudeExecutor {
       onProgress, onWorkspaceChanged, onStreamUpdate, onTurn, onActivityChange, historySummaries,
       systemPromptOverride, disableWorkspaceTool, maxTurns, maxBudgetUsd,
       model: modelOverride, settingSources: settingSourcesOverride,
-      readOnly, images,
+      readOnly, images, documents,
     } = input;
 
     const startTime = Date.now();
@@ -372,7 +390,7 @@ export class ClaudeExecutor {
     }
 
     logger.info(
-      { sessionKey, workingDir, promptLength: prompt.length, resume: !!resumeSessionId, imageCount: images?.length ?? 0 },
+      { sessionKey, workingDir, promptLength: prompt.length, resume: !!resumeSessionId, imageCount: images?.length ?? 0, documentCount: documents?.length ?? 0 },
       'Executing Claude Agent SDK query',
     );
 
@@ -495,9 +513,10 @@ export class ClaudeExecutor {
     const effectivePrompt = readOnlyPrefix + prompt;
 
     // 构建 SDK query
-    // 有图片时使用 AsyncIterable<SDKUserMessage> 多模态格式
-    const promptInput = images?.length
-      ? buildMultimodalPrompt(effectivePrompt, images)
+    // 有图片或文档时使用 AsyncIterable<SDKUserMessage> 多模态格式
+    const hasMultimodal = (images?.length ?? 0) > 0 || (documents?.length ?? 0) > 0;
+    const promptInput = hasMultimodal
+      ? buildMultimodalPrompt(effectivePrompt, images ?? [], documents)
       : effectivePrompt;
 
     const q = query({

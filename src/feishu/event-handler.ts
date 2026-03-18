@@ -4,8 +4,8 @@ import { isUserAllowed, containsDangerousCommand, isOwner } from '../utils/secur
 import { sessionManager } from '../session/manager.js';
 import { taskQueue } from '../session/queue.js';
 import { claudeExecutor } from '../claude/executor.js';
-import { DEFAULT_IMAGE_PROMPT } from '../claude/types.js';
-import type { TurnInfo, ToolCallInfo, ImageAttachment } from '../claude/types.js';
+import { DEFAULT_IMAGE_PROMPT, DEFAULT_DOCUMENT_PROMPT } from '../claude/types.js';
+import type { TurnInfo, ToolCallInfo, ImageAttachment, DocumentAttachment } from '../claude/types.js';
 import { buildResultCard, buildStatusCard, buildCancelledCard, buildPipelineCard, buildPipelineConfirmCard, buildProgressCard, buildToolProgressCard, buildTextContentCard, buildSimpleResultCard } from './message-builder.js';
 import { TOTAL_PHASES } from '../pipeline/types.js';
 import { feishuClient, runWithAccountId } from './client.js';
@@ -326,8 +326,8 @@ function processQueue(queueKey: string, agentId: AgentId = 'dev'): void {
   const useDirectMode = agentCfg?.replyMode === 'direct';
 
   const executeFn = useDirectMode
-    ? executeDirectTask(task.message, task.chatId, task.userId, task.messageId, task.images, agentId, task.threadId, task.rootId, task.createTime)
-    : executeClaudeTask(task.message, task.chatId, task.userId, task.messageId, task.rootId, task.threadId, task.images, agentId, task.createTime);
+    ? executeDirectTask(task.message, task.chatId, task.userId, task.messageId, task.images, task.documents, agentId, task.threadId, task.rootId, task.createTime)
+    : executeClaudeTask(task.message, task.chatId, task.userId, task.messageId, task.rootId, task.threadId, task.images, task.documents, agentId, task.createTime);
 
   // 注册 task promise：graceful shutdown 时等待结果卡片发送完成
   claudeExecutor.registerTask(executeFn);
@@ -456,6 +456,8 @@ interface ParsedMessage {
   threadId?: string;
   /** 图片附件列表 (用户发送图片消息时) */
   images?: ImageAttachment[];
+  /** 文档附件列表 (用户发送 PDF 等文件时) */
+  documents?: DocumentAttachment[];
   /** 发送者类型: 'user' = 人类用户, 'app' = 应用/机器人 */
   senderType?: string;
   /** 消息创建时间（毫秒级时间戳字符串，来自飞书 message.create_time） */
@@ -492,7 +494,7 @@ async function handleMessageEvent(data: MessageEventData, accountId: string = 'd
   const parsed = await parseMessage(data);
   if (!parsed) return;
 
-  const { text, messageId, userId, chatId, chatType, mentionedBot, rootId, threadId, images, mentions, senderType, createTime } = parsed;
+  const { text, messageId, userId, chatId, chatType, mentionedBot, rootId, threadId, images, documents, mentions, senderType, createTime } = parsed;
 
   // -- 被动收集：消息发送者为 bot 时记录到 registry --
   if (senderType === 'app' && userId && chatId) {
@@ -649,8 +651,8 @@ async function handleMessageEvent(data: MessageEventData, accountId: string = 'd
     return;
   }
 
-  // 图片消息无文字时使用默认 prompt
-  const effectiveText = text || (images?.length ? DEFAULT_IMAGE_PROMPT : '');
+  // 图片/文档消息无文字时使用默认 prompt
+  const effectiveText = text || (images?.length ? DEFAULT_IMAGE_PROMPT : documents?.length ? DEFAULT_DOCUMENT_PROMPT : '');
 
   // 通过 taskQueue 串行化：queue key 包含 agentId，不同 agent 可并行
   // direct 模式加 userId，不同用户可并行
@@ -662,7 +664,7 @@ async function handleMessageEvent(data: MessageEventData, accountId: string = 'd
   const queueKey = perMessageParallel
     ? makeQueueKey(chatId, undefined, agentId, messageId)
     : makeQueueKey(chatId, effectiveThreadId, agentId, isDirectMode ? userId : undefined);
-  taskQueue.enqueue(queueKey, chatId, userId, effectiveText, messageId, rootId, effectiveThreadId, images, createTime).catch(() => {});
+  taskQueue.enqueue(queueKey, chatId, userId, effectiveText, messageId, rootId, effectiveThreadId, images, documents, createTime).catch(() => {});
   processQueue(queueKey, agentId);
 }
 
@@ -1226,6 +1228,7 @@ export async function executeClaudeTask(
   rootId?: string,
   eventThreadId?: string,
   images?: ImageAttachment[],
+  documents?: DocumentAttachment[],
   agentId: AgentId = 'dev',
   createTime?: string,
 ): Promise<void> {
@@ -1464,6 +1467,7 @@ export async function executeClaudeTask(
       historySummaries,
       memoryContext,
       images,
+      documents,
       knowledgeContent,
       disableWorkspaceTool: !isFirstMessage,
       agentId,
@@ -1697,6 +1701,7 @@ export async function executeDirectTask(
   userId: string,
   messageId: string,
   images?: ImageAttachment[],
+  documents?: DocumentAttachment[],
   agentId: AgentId = 'pm',
   eventThreadId?: string,
   rootId?: string,
@@ -1848,6 +1853,7 @@ export async function executeDirectTask(
       resumeSessionId,
       storedSystemPromptHash: activePromptHash,
       images,
+      documents,
       agentId,
       // 不需要 workspace-manager 工具（Chat Agent 不切换工作区）
       disableWorkspaceTool: true,
@@ -2195,14 +2201,16 @@ function detectImageMediaType(buf: Buffer): ImageAttachment['mediaType'] {
 async function parseMessage(data: MessageEventData): Promise<ParsedMessage | null> {
   const { message, sender } = data;
 
-  // 只处理文本、图片、富文本（post）和合并转发（merge_forward）消息
-  if (message.message_type !== 'text' && message.message_type !== 'image' && message.message_type !== 'post' && message.message_type !== 'merge_forward') {
+  // 只处理文本、图片、文件、富文本（post）和合并转发（merge_forward）消息
+  const supportedTypes = new Set(['text', 'image', 'file', 'post', 'merge_forward']);
+  if (!supportedTypes.has(message.message_type)) {
     logger.debug({ messageType: message.message_type }, 'Ignoring unsupported message type');
     return null;
   }
 
   let text = '';
   let images: ImageAttachment[] | undefined;
+  let documents: DocumentAttachment[] | undefined;
 
   if (message.message_type === 'merge_forward') {
     // 合并转发消息：通过 API 获取子消息列表，解析后拼成可读文本
@@ -2387,6 +2395,39 @@ async function parseMessage(data: MessageEventData): Promise<ParsedMessage | nul
       await feishuClient.replyText(message.message_id, '⚠️ 图片下载失败，请稍后重试');
       return null;
     }
+  } else if (message.message_type === 'file') {
+    // 文件消息：目前仅支持 PDF
+    const MAX_FILE_SIZE_BYTES = 30 * 1024 * 1024; // 30MB
+    try {
+      const content = JSON.parse(message.content);
+      const fileKey = content.file_key as string | undefined;
+      const fileName = (content.file_name as string) || '未知文件';
+
+      if (!fileKey) {
+        logger.error({ content: message.content }, 'File message missing file_key');
+        return null;
+      }
+
+      // 仅支持 PDF 文件
+      if (!fileName.toLowerCase().endsWith('.pdf')) {
+        text = `[用户发送了文件: ${fileName}，但目前仅支持 PDF 文件]`;
+      } else {
+        const buf = await feishuClient.downloadMessageFile(message.message_id, fileKey);
+
+        if (buf.length > MAX_FILE_SIZE_BYTES) {
+          logger.warn({ messageId: message.message_id, sizeBytes: buf.length, fileName }, 'File too large, skipping');
+          await feishuClient.replyText(message.message_id, `⚠️ 文件太大（${(buf.length / 1024 / 1024).toFixed(1)}MB），请压缩到 30MB 以内后重试`);
+          return null;
+        }
+
+        documents = [{ data: buf.toString('base64'), mediaType: 'application/pdf', fileName }];
+        logger.info({ messageId: message.message_id, fileName, sizeBytes: buf.length }, 'PDF file downloaded');
+      }
+    } catch (err) {
+      logger.error({ err, messageId: message.message_id }, 'Failed to process file message');
+      await feishuClient.replyText(message.message_id, '⚠️ 文件下载失败，请稍后重试');
+      return null;
+    }
   } else {
     // 文本消息：解析 text 字段
     try {
@@ -2431,9 +2472,9 @@ async function parseMessage(data: MessageEventData): Promise<ParsedMessage | nul
     }
   }
 
-  // 纯文本消息需要有文字内容；图片消息允许 text 为空
+  // 纯文本消息需要有文字内容；图片/文档消息允许 text 为空
   // 例外：@bot 的空消息不丢弃（上下文会自动加载，bot 可以基于历史消息回复）
-  if (!text.trim() && !images?.length && !mentionedBot) return null;
+  if (!text.trim() && !images?.length && !documents?.length && !mentionedBot) return null;
 
   return {
     text: text.trim(),
@@ -2446,6 +2487,7 @@ async function parseMessage(data: MessageEventData): Promise<ParsedMessage | nul
     rootId: message.root_id || undefined,
     threadId: message.thread_id || undefined,
     images,
+    documents,
     senderType: sender.sender_type,
     createTime: message.create_time || undefined,
   };
