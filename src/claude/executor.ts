@@ -588,6 +588,11 @@ export class ClaudeExecutor {
               logger.info({ toolName, readOnly }, 'canUseTool allowed — memory search tool in read-only mode');
               return { behavior: 'allow' as const, updatedInput: inputObj };
             }
+            // cron-scheduler: 定时任务管理，操作的是任务数据库而非代码仓库，readonly 下允许
+            if (toolName.startsWith('mcp__cron-scheduler__')) {
+              logger.info({ toolName, readOnly }, 'canUseTool allowed — cron tool in read-only mode');
+              return { behavior: 'allow' as const, updatedInput: inputObj };
+            }
             // 所有其他 MCP 工具（含 workspace-manager、未来新增）：deny
             logger.info({ toolName, readOnly }, 'canUseTool denied — read-only mode (MCP tool)');
             return { behavior: 'deny' as const, message: '当前用户处于只读模式，无法使用此工具。' };

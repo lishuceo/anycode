@@ -391,6 +391,16 @@ export class CronStore {
 
     const now = new Date().toISOString();
     const schedule = patch.schedule ?? existing.schedule;
+
+    // Validate cron expression (same as add())
+    if (schedule.kind === 'cron' && schedule.expr) {
+      try {
+        new Cron(schedule.expr, { timezone: schedule.tz || 'Asia/Shanghai' });
+      } catch (err) {
+        throw new Error(`Invalid cron expression "${schedule.expr}": ${(err as Error).message}`);
+      }
+    }
+
     const enabled = patch.enabled ?? existing.enabled;
     const nextRunAtMs = enabled ? computeNextRunAtMs(schedule) : undefined;
 
