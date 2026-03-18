@@ -92,6 +92,8 @@ export interface QueueTask {
   threadId?: string;
   /** 图片附件列表 (用户发送图片消息时) */
   images?: import('../claude/types.js').ImageAttachment[];
+  /** 文档附件列表 (用户发送 PDF 等文件时) */
+  documents?: import('../claude/types.js').DocumentAttachment[];
   /** 消息创建时间（毫秒级时间戳字符串，来自飞书 message.create_time） */
   createTime?: string;
   resolve: (result: string) => void;
