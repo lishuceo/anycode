@@ -13,10 +13,11 @@ export function createCronMcpServer(params: {
   scheduler: CronScheduler;
   chatId: string;
   userId: string;
+  agentId?: string;
   threadId?: string;
   threadRootMessageId?: string;
 }) {
-  const { scheduler, chatId, userId, threadId, threadRootMessageId } = params;
+  const { scheduler, chatId, userId, agentId, threadId, threadRootMessageId } = params;
 
   return createSdkMcpServer({
     name: 'cron-scheduler',
@@ -92,6 +93,7 @@ export function createCronMcpServer(params: {
                   name: args.name,
                   chatId,
                   userId,
+                  agentId,
                   prompt: args.prompt,
                   schedule,
                   enabled: args.enabled,

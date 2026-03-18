@@ -438,6 +438,7 @@ export class ClaudeExecutor {
           scheduler: cronScheduler,
           chatId: cronChatId,
           userId: cronUserId,
+          agentId: input.agentId,
           threadId: input.threadId,
           threadRootMessageId: input.threadRootMessageId,
         });
