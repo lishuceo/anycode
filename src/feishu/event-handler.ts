@@ -2242,7 +2242,7 @@ async function parseMessage(data: MessageEventData): Promise<ParsedMessage | nul
           // 收集合并转发中的 PDF 文件子消息，稍后批量下载
           const MAX_MERGE_PDF = 5;
           const pdfSubMessages: Array<{ messageId: string; fileKey: string; fileName: string }> = [];
-          let totalPdfCount = 0;
+          const skippedPdfNames: string[] = [];
 
           for (const item of limited) {
             const msgType = item.msg_type || 'text';
@@ -2254,9 +2254,10 @@ async function parseMessage(data: MessageEventData): Promise<ParsedMessage | nul
                 const fileName = (fileBody.file_name as string) || '';
                 const fileKey = fileBody.file_key as string;
                 if (fileKey && fileName.toLowerCase().endsWith('.pdf')) {
-                  totalPdfCount++;
                   if (pdfSubMessages.length < MAX_MERGE_PDF) {
                     pdfSubMessages.push({ messageId: item.message_id, fileKey, fileName });
+                  } else {
+                    skippedPdfNames.push(fileName);
                   }
                 }
               } catch { /* ignore parse errors */ }
@@ -2293,9 +2294,13 @@ async function parseMessage(data: MessageEventData): Promise<ParsedMessage | nul
               documents = downloadedDocs;
             }
 
-            // 提示超限的 PDF 未读取
-            if (totalPdfCount > MAX_MERGE_PDF) {
-              lines.push(`- ⚠️ 合并转发中共有 ${totalPdfCount} 个 PDF，已读取前 ${MAX_MERGE_PDF} 个，还有 ${totalPdfCount - MAX_MERGE_PDF} 个未读取`);
+            // 提示超限的 PDF 未读取，列出文件名并告知补救方式
+            if (skippedPdfNames.length > 0) {
+              lines.push(`- ⚠️ 合并转发中共有 ${pdfSubMessages.length + skippedPdfNames.length} 个 PDF，已读取前 ${pdfSubMessages.length} 个，以下 ${skippedPdfNames.length} 个未读取：`);
+              for (const name of skippedPdfNames) {
+                lines.push(`  - ${name}`);
+              }
+              lines.push('- 💡 如需读取未读的 PDF，请将它们单条转发或直接上传给我');
             }
           }
 
