@@ -82,6 +82,7 @@ async function main(): Promise<void> {
             params.userId,
             params.messageId,
             undefined, // images
+            undefined, // documents
             params.agentId as AgentId,
             params.threadId,
             params.rootId,
@@ -97,6 +98,7 @@ async function main(): Promise<void> {
             params.rootId,
             params.threadId,
             undefined, // images
+            undefined, // documents
             params.agentId as AgentId,
           );
         }

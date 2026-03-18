@@ -484,6 +484,29 @@ export class FeishuClient {
   }
 
   /**
+   * 下载消息中的文件资源
+   * 使用 im.messageResource.get API（与图片下载相同接口，type 为 'file'）
+   */
+  async downloadMessageFile(messageId: string, fileKey: string): Promise<Buffer> {
+    try {
+      const resp = await this.client.im.messageResource.get({
+        params: { type: 'file' },
+        path: { message_id: messageId, file_key: fileKey },
+      });
+
+      const stream = resp.getReadableStream();
+      const chunks: Buffer[] = [];
+      for await (const chunk of stream) {
+        chunks.push(Buffer.from(chunk));
+      }
+      return Buffer.concat(chunks);
+    } catch (err) {
+      logger.error({ err, messageId, fileKey }, 'Failed to download message file');
+      throw err;
+    }
+  }
+
+  /**
    * 通过消息 ID 获取消息详情（含子消息）
    * 用于展开 merge_forward 合并转发消息
    *
