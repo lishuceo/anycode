@@ -1691,7 +1691,7 @@ export async function executeClaudeTask(
  * - 话题内也走此路径，通过 per-thread session 管理独立对话
  * - Agent 可通过 start_discussion_thread MCP 工具动态升级为话题模式
  */
-async function executeDirectTask(
+export async function executeDirectTask(
   rawPrompt: string,
   chatId: string,
   userId: string,

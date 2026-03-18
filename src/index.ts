@@ -17,7 +17,9 @@ import { chatBotRegistry } from './feishu/bot-registry.js';
 import { initializeMemory, closeMemory, runMemoryMaintenance } from './memory/init.js';
 import { warmup as warmupQuickAck } from './utils/quick-ack.js';
 import { initializeCron, closeCron, cleanCronRuns } from './cron/init.js';
-import { executeClaudeTask } from './feishu/event-handler.js';
+import { executeClaudeTask, executeDirectTask } from './feishu/event-handler.js';
+import { agentRegistry } from './agent/registry.js';
+import type { AgentId } from './agent/types.js';
 
 const INTERRUPTED_SESSIONS_FILE = '/tmp/feishu-claude-interrupted.json';
 
@@ -70,16 +72,32 @@ async function main(): Promise<void> {
   if (config.cron.enabled) {
     await initializeCron({
       executeTask: async (params) => {
-        await executeClaudeTask(
-          params.prompt,
-          params.chatId,
-          params.userId,
-          params.messageId,
-          params.rootId,
-          params.threadId,
-          undefined, // images
-          params.agentId as import('./agent/types.js').AgentId,
-        );
+        const agentCfg = agentRegistry.get(params.agentId as AgentId);
+        const useDirectMode = agentCfg?.replyMode === 'direct';
+
+        if (useDirectMode) {
+          await executeDirectTask(
+            params.prompt,
+            params.chatId,
+            params.userId,
+            params.messageId,
+            undefined, // images
+            params.agentId as AgentId,
+            params.threadId,
+            params.rootId,
+          );
+        } else {
+          await executeClaudeTask(
+            params.prompt,
+            params.chatId,
+            params.userId,
+            params.messageId,
+            params.rootId,
+            params.threadId,
+            undefined, // images
+            params.agentId as AgentId,
+          );
+        }
       },
       sendMessage: async (chatId, text, rootId) => {
         if (rootId) {
