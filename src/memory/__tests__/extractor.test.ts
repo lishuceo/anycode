@@ -172,24 +172,6 @@ describe('parseExtractionResponse', () => {
     expect(result[0].content).toContain('有效');
   });
 
-  it('should parse supersede_hint when present', () => {
-    const raw = JSON.stringify([
-      { type: 'fact', content: '项目测试框架使用 Vitest 替代 Jest', confidence: 1.0, supersede_hint: 'Vitest 速度更快' },
-    ]);
-
-    const result = parseExtractionResponse(raw);
-    expect(result[0].supersedeHint).toBe('Vitest 速度更快');
-  });
-
-  it('should default supersedeHint to null when missing', () => {
-    const raw = JSON.stringify([
-      { type: 'fact', content: '项目运行时环境为 Node.js 20', confidence: 1.0 },
-    ]);
-
-    const result = parseExtractionResponse(raw);
-    expect(result[0].supersedeHint).toBeNull();
-  });
-
   it('should filter out transient PR status memories', () => {
     const raw = JSON.stringify([
       { type: 'fact', content: 'PR #161 已合并，部署后生效', confidence: 1.0 },

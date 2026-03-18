@@ -33,8 +33,6 @@ function makeRow(overrides: Partial<MemoryRow> = {}): MemoryRow {
     valid_at: now,
     invalid_at: null,
     superseded_by: null,
-    supersedes: null,
-    supersede_reason: null,
     ttl: null,
     source_chat_id: null,
     source_message_id: null,

@@ -121,7 +121,7 @@ describe('HybridSearch', () => {
       expect(results[0].recencyDecay).toBeGreaterThan(0.99);
     });
 
-    it('should factor in confidence', async () => {
+    it('should not factor in confidence (all memories compete equally)', async () => {
       store.create(makeInput({
         content: 'high confidence assertion',
         confidence: 1.0,
@@ -140,8 +140,10 @@ describe('HybridSearch', () => {
       });
 
       expect(results.length).toBe(2);
-      // High confidence should rank higher
-      expect(results[0].memory.confidence).toBeGreaterThan(results[1].memory.confidence);
+      // Confidence should NOT affect ranking — scores are based on search relevance only
+      // Both have similar BM25 scores, so finalScore should be close
+      const scoreDiff = Math.abs(results[0].finalScore - results[1].finalScore);
+      expect(scoreDiff).toBeLessThan(0.1);
     });
   });
 
