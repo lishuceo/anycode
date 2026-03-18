@@ -150,9 +150,9 @@ export const config = {
   // 聊天上下文配置
   chat: {
     /** 注入初始上下文时最多拉取的历史消息条数 */
-    historyMaxCount: parseInt(process.env.CHAT_HISTORY_MAX_COUNT || '10', 10),
+    historyMaxCount: parseInt(process.env.CHAT_HISTORY_MAX_COUNT || '20', 10),
     /** 历史上下文总字符上限（超出时从最旧的消息开始丢弃） */
-    historyMaxChars: parseInt(process.env.CHAT_HISTORY_MAX_CHARS || '8000', 10),
+    historyMaxChars: parseInt(process.env.CHAT_HISTORY_MAX_CHARS || '30000', 10),
   },
 
   // DashScope (阿里云百炼) 通用配置
