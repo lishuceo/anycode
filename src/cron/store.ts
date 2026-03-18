@@ -140,7 +140,17 @@ export function computeNextRunAtMs(schedule: CronSchedule, nowMs: number = Date.
     }
     case 'at': {
       if (!schedule.atTime) return undefined;
-      const atMs = new Date(schedule.atTime).getTime();
+      const atStr = schedule.atTime;
+      // 有时区后缀（Z, +08:00, -05:00 等）→ 直接解析
+      if (/[Z+\-]\d/.test(atStr)) {
+        const atMs = new Date(atStr).getTime();
+        return atMs > nowMs ? atMs : undefined;
+      }
+      // 无时区后缀 → 按 schedule.tz（默认 Asia/Shanghai）解析
+      const tz = schedule.tz || 'Asia/Shanghai';
+      const probe = new Date(atStr + 'Z'); // 先当作 UTC
+      const inTz = new Date(probe.toLocaleString('en-US', { timeZone: tz }));
+      const atMs = probe.getTime() - (inTz.getTime() - probe.getTime());
       return atMs > nowMs ? atMs : undefined;
     }
     default:
