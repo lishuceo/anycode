@@ -6,12 +6,10 @@ import { randomBytes } from 'node:crypto';
 import { logger } from '../utils/logger.js';
 import { MemoryDatabase } from './database.js';
 import type { EmbeddingProvider } from './embeddings.js';
-import type { Memory, MemoryCreateInput, MemoryType, ConfidenceLevel } from './types.js';
+import type { Memory, MemoryCreateInput, MemoryType } from './types.js';
 import { CONFIDENCE_CAPS } from './types.js';
+import type { ConfidenceLevel } from './types.js';
 import type { MemoryRow } from './database.js';
-
-/** Evidence count threshold to auto-promote L0 → L1 */
-const EVIDENCE_PROMOTION_THRESHOLD = 3;
 
 /** Max content length (characters) */
 const MAX_CONTENT_LENGTH = 100_000;
@@ -82,8 +80,6 @@ export class MemoryStore {
       valid_at: now,
       invalid_at: null,
       superseded_by: null,
-      supersedes: input.supersedes ?? null,
-      supersede_reason: input.supersedeReason ?? null,
       ttl: input.ttl ?? null,
       source_chat_id: input.sourceChatId ?? null,
       source_message_id: input.sourceMessageId ?? null,
@@ -111,16 +107,10 @@ export class MemoryStore {
 
   /**
    * Supersede an old memory with a new one.
-   * Marks the old memory as invalid and links bidirectionally.
-   * @param reason — why the old memory is being superseded (stored on the new memory)
+   * Marks the old memory as invalid and points it to the new one.
    */
-  supersede(oldId: string, newInput: MemoryCreateInput, reason?: string): Memory {
-    // Set reverse pointer + reason on the new memory
-    const newMemory = this.create({
-      ...newInput,
-      supersedes: oldId,
-      supersedeReason: reason ?? newInput.supersedeReason ?? null,
-    });
+  supersede(oldId: string, newInput: MemoryCreateInput): Memory {
+    const newMemory = this.create(newInput);
     this.db.supersedeMemory(oldId, newMemory.id);
 
     // Clean up old vector
@@ -146,25 +136,9 @@ export class MemoryStore {
     return this.db.deleteMemory(id);
   }
 
-  /**
-   * Increment evidence count for a memory.
-   * Auto-promotes L0 → L1 when evidence_count reaches the promotion threshold,
-   * since repeated independent extractions are a strong confirmation signal.
-   */
+  /** Increment evidence count for a memory (statistics only, no promotion). */
   updateEvidence(id: string): void {
     this.db.updateEvidence(id);
-
-    // Check for auto-promotion: L0 memories with enough evidence get promoted to L1
-    const row = this.db.getMemory(id);
-    if (row && row.confidence_level === 'L0' && row.evidence_count >= EVIDENCE_PROMOTION_THRESHOLD) {
-      const newConfidence = Math.min(row.confidence + 0.1, CONFIDENCE_CAPS.L1);
-      this.db.updateMemory({
-        id,
-        confidence_level: 'L1',
-        confidence: newConfidence,
-        updated_at: new Date().toISOString(),
-      });
-    }
   }
 
   /**
@@ -240,28 +214,6 @@ export class MemoryStore {
       }
     }
     return ids.length;
-  }
-
-  /**
-   * Walk the supersede chain backwards from a memory.
-   * Returns ancestors (oldest first) up to maxDepth.
-   */
-  getSupersedChain(memoryId: string, maxDepth: number = 5): Memory[] {
-    const chain: Memory[] = [];
-    let currentId: string | null = memoryId;
-
-    for (let i = 0; i < maxDepth && currentId; i++) {
-      const mem = this.get(currentId);
-      if (!mem?.supersedes) break;
-
-      const ancestor = this.get(mem.supersedes);
-      if (!ancestor) break;
-
-      chain.unshift(ancestor); // oldest first
-      currentId = ancestor.id;
-    }
-
-    return chain;
   }
 
   /** Wait for all pending async embedding operations to complete */

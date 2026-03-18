@@ -115,13 +115,10 @@ export function formatMemories(results: MemorySearchResult[], currentChatId?: st
 
       if (type === 'state' && mem.ttl) {
         annotations.push(`预计到 ${mem.ttl.split('T')[0]}`);
-      } else if (type === 'decision' && mem.supersedeReason) {
-        annotations.push(dateStr, `原因: ${mem.supersedeReason}`);
       } else if (dateStr) {
         annotations.push(dateStr);
       }
 
-      if (mem.confidence < 0.6) annotations.push('confidence: low');
       if (fromOtherChat) annotations.push('来自其他会话');
 
       const tag = annotations.length > 0 ? ` (${annotations.join(', ')})` : '';

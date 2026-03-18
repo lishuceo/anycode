@@ -139,7 +139,7 @@ export class HybridSearch {
       const searchScore = vw * vectorScore + tw * bm25Score;
       const typeBoost = TYPE_BOOST[memory.type];
       const recencyDecay = computeRecencyDecay(memory.type, daysBetween(memory.createdAt, now));
-      const finalScore = searchScore * typeBoost * recencyDecay * memory.confidence;
+      const finalScore = searchScore * typeBoost * recencyDecay;
 
       candidates.push({
         memory,
