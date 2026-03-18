@@ -2253,9 +2253,9 @@ async function parseMessage(data: MessageEventData): Promise<ParsedMessage | nul
                 const fileBody = JSON.parse(item.body?.content || '{}');
                 const fileName = (fileBody.file_name as string) || '';
                 const fileKey = fileBody.file_key as string;
-                if (fileKey && fileName.toLowerCase().endsWith('.pdf')) {
+                if (fileKey && item.message_id && fileName.toLowerCase().endsWith('.pdf')) {
                   if (pdfSubMessages.length < MAX_MERGE_PDF) {
-                    pdfSubMessages.push({ messageId: item.message_id, fileKey, fileName });
+                    pdfSubMessages.push({ messageId: item.message_id!, fileKey, fileName });
                   } else {
                     skippedPdfNames.push(fileName);
                   }
