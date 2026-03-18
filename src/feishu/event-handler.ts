@@ -2240,7 +2240,7 @@ async function parseMessage(data: MessageEventData): Promise<ParsedMessage | nul
           const lines: string[] = ['[合并转发的聊天记录]'];
 
           // 收集合并转发中的 PDF 文件子消息，稍后批量下载
-          const MAX_MERGE_PDF = 5;
+          const MAX_MERGE_PDF = 10;
           const pdfSubMessages: Array<{ messageId: string; fileKey: string; fileName: string }> = [];
           const skippedPdfNames: string[] = [];
 
