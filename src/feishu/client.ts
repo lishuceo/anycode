@@ -581,12 +581,22 @@ export class FeishuClient {
       for (const item of items) {
         if (item.deleted) { diagSkipped.push({ id: item.message_id ?? '?', type: item.msg_type ?? '?', reason: 'deleted' }); continue; }
         const msgType = item.msg_type ?? '';
-        if (msgType !== 'text' && msgType !== 'post' && msgType !== 'merge_forward') { diagSkipped.push({ id: item.message_id ?? '?', type: msgType, reason: 'unsupported_type' }); continue; }
+        if (msgType !== 'text' && msgType !== 'post' && msgType !== 'merge_forward' && msgType !== 'file' && msgType !== 'image') { diagSkipped.push({ id: item.message_id ?? '?', type: msgType, reason: 'unsupported_type' }); continue; }
         const senderType = item.sender?.sender_type === 'app' ? 'app' as const : 'user' as const;
         let content = '';
-        // merge_forward 的 body.content 是纯文本（如 "Merged and forwarded messages"），不是 JSON
-        // 必须在 JSON.parse 之前单独处理，通过 getMessageById API 获取子消息内容
-        if (msgType === 'merge_forward') {
+        // file / image 类型：仅显示文件名占位（不下载内容，避免延迟和 token 消耗）
+        // 用户如需分析文件，可引用回复该消息并 @bot
+        if (msgType === 'file') {
+          try {
+            const body = JSON.parse(item.body?.content ?? '{}');
+            const fileName = (body.file_name as string) || '未知文件';
+            content = `[文件: ${fileName}]`;
+          } catch {
+            content = '[文件]';
+          }
+        } else if (msgType === 'image') {
+          content = '[图片]';
+        } else if (msgType === 'merge_forward') {
           const messageId = item.message_id;
           if (messageId) {
             try {
