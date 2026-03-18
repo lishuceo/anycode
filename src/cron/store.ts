@@ -141,16 +141,26 @@ export function computeNextRunAtMs(schedule: CronSchedule, nowMs: number = Date.
     case 'at': {
       if (!schedule.atTime) return undefined;
       const atStr = schedule.atTime;
-      // 有时区后缀（Z, +08:00, -05:00 等）→ 直接解析
-      if (/[Z+-]\d/.test(atStr)) {
+      // 有明确时区后缀（末尾 Z, +HH:MM, -HH:MM）→ 直接解析
+      if (/(?:Z|[+-]\d{2}:?\d{2})$/.test(atStr)) {
         const atMs = new Date(atStr).getTime();
         return atMs > nowMs ? atMs : undefined;
       }
       // 无时区后缀 → 按 schedule.tz（默认 Asia/Shanghai）解析
+      // 用 Intl.DateTimeFormat 提取目标时区的 UTC 偏移（不受服务器本地 TZ 影响）
       const tz = schedule.tz || 'Asia/Shanghai';
-      const probe = new Date(atStr + 'Z'); // 先当作 UTC
-      const inTz = new Date(probe.toLocaleString('en-US', { timeZone: tz }));
-      const atMs = probe.getTime() - (inTz.getTime() - probe.getTime());
+      const probeMs = new Date(atStr + 'Z').getTime(); // 先当作 UTC
+      const fmt = new Intl.DateTimeFormat('en-US', {
+        timeZone: tz,
+        year: 'numeric', month: '2-digit', day: '2-digit',
+        hour: '2-digit', minute: '2-digit', second: '2-digit',
+        hour12: false,
+      });
+      const parts = fmt.formatToParts(new Date(probeMs));
+      const p = (type: string) => parts.find(x => x.type === type)?.value ?? '0';
+      const tzLocal = new Date(`${p('year')}-${p('month')}-${p('day')}T${p('hour')}:${p('minute')}:${p('second')}Z`);
+      const offsetMs = tzLocal.getTime() - probeMs;
+      const atMs = probeMs - offsetMs;
       return atMs > nowMs ? atMs : undefined;
     }
     default:
