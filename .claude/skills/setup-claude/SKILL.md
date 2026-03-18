@@ -1,9 +1,9 @@
 ---
-name: bootstrap
+name: setup-claude
 description: Install Claude Code skills (ship, pr-fixup, deep-review) and GitHub Actions (pr-review, claude-comment) into the current repo
 ---
 
-# Bootstrap: One-Click Claude Code Setup
+# Setup Claude: One-Click Claude Code Setup
 
 Install a complete Claude Code workflow into the current repository — skills for shipping, PR fixup, and deep review, plus GitHub Actions for automated PR review and @claude comment responses.
 
@@ -80,13 +80,13 @@ Generated with [Claude Code](https://claude.com/claude-code)
 ```markdown
 ---
 name: pr-fixup
-description: Wait for PR review action to complete, fix valid issues or resolve false positives, loop until PR is clean
+description: Wait for ALL CI checks and PR review to complete, fix CI failures and review issues, loop until PR is clean
 argument-hint: "[PR number, default: current branch's PR]"
 ---
 
-# PR Fixup: Review → Fix/Dispute → Re-review Loop
+# PR Fixup: CI + Review → Fix → Re-run Loop
 
-Wait for the PR review action to complete, analyze review comments, fix real issues or dispute false positives, and loop until the PR has no blocking issues.
+Wait for all CI checks and PR review to complete, fix CI build/test failures and review comment issues, and loop until PR is fully clean.
 
 ## Gather Context
 
@@ -100,32 +100,86 @@ Wait for the PR review action to complete, analyze review comments, fix real iss
 
 ## Main Loop
 
-Repeat the following steps until all review issues are resolved. **Maximum 5 rounds** — after that, remind the user to intervene manually.
+Repeat the following steps until all CI checks pass and review issues are resolved. **Maximum 5 rounds** — after that, remind the user to intervene manually.
 
 ---
 
-### Step 1: Wait for Review Action to Complete
+### Step 0: Check for Merge Conflicts
 
-Get the PR's latest commit SHA:
-
-```bash
-gh pr view PR_NUMBER --json headRefOid -q .headRefOid
-```
-
-Then poll for the pr-review workflow run matching that commit:
+Before each round, check if the PR has merge conflicts:
 
 ```bash
-gh run list --workflow=pr-review.yml -b BRANCH -L 5 --json status,conclusion,databaseId,headSha
+gh pr view PR_NUMBER --json mergeable,mergeStateStatus -q '{mergeable: .mergeable, state: .mergeStateStatus}'
 ```
 
-Filter results for `headSha` matching the latest commit.
+| mergeable | Action |
+|-----------|--------|
+| `MERGEABLE` | No conflicts, continue to Step 1 |
+| `CONFLICTING` | Attempt auto-rebase |
+| `UNKNOWN` | GitHub still computing, wait 10s and re-check (max 3 times) |
 
-- If **no matching run**, wait 30 seconds and retry (action may not have triggered yet)
-- If `status` is not `"completed"`, poll every 30 seconds, up to 20 minutes
-- If `conclusion` is `"failure"`, use `gh run view ID --log-failed` to check the failure reason, inform the user and stop
-- If `conclusion` is `"success"`, continue to the next step
+**Auto-rebase flow:**
 
-### Step 2: Get Unresolved Review Comments
+1. Get base branch: `gh pr view PR_NUMBER --json baseRefName -q .baseRefName`
+2. Rebase:
+```bash
+git fetch origin BASE_BRANCH
+git rebase origin/BASE_BRANCH
+```
+3. If rebase **succeeds** (no conflicts):
+   - `git push --force-with-lease`
+   - Output "Rebased to resolve conflicts, waiting for CI..."
+   - Return to Step 1
+4. If rebase **fails** (unresolvable conflicts):
+   - `git rebase --abort`
+   - Output conflicting file list, tell user to resolve manually
+   - **Stop the loop** — do not attempt to auto-merge conflicts
+
+### Step 1: Wait for All CI Checks to Complete
+
+Poll PR status checks:
+
+```bash
+gh pr checks PR_NUMBER
+```
+
+- If any check is `pending`/`in_progress`, wait 60s and retry (max 20 minutes)
+- When all checks are done, proceed to Step 2
+
+**Important: avoid bare `sleep` — keep output active during polling:**
+
+```bash
+for i in $(seq 1 20); do
+  result=$(gh pr checks PR_NUMBER 2>&1)
+  if echo "$result" | grep -q "pending"; then
+    echo "Attempt $i: still pending, waiting 60s..."
+    for j in $(seq 1 6); do sleep 10 && echo "  ...waiting ($((j*10))s)"; done
+  else
+    echo "$result"
+    break
+  fi
+done
+```
+
+### Step 2: Handle CI Failures
+
+Categorize check results:
+
+| Category | Action |
+|----------|--------|
+| **CI build/test failure** (build, test, lint, typecheck) | Get failed logs → fix code |
+| **Review failure** (review, pr-review) | Proceed to Step 3 |
+| **All passed** | Proceed to Step 3 |
+
+**For CI failures:**
+
+1. Find failed run: `gh run list -b BRANCH -L 5 --json databaseId,name,conclusion,headSha,workflowName`
+2. Get logs: `gh run view RUN_ID --log-failed 2>&1 | tail -100`
+3. Analyze and fix the code with minimal changes
+4. If it's an **environment/platform issue** (not fixable via code), inform user and stop
+5. `git add` modified files (don't commit yet — Step 5 handles that)
+
+### Step 3: Get Unresolved Review Comments
 
 Use GraphQL to get all review threads:
 
@@ -157,9 +211,9 @@ Filter criteria:
 - `isResolved == false` (unresolved)
 - First comment's `author.login` is `claude[bot]`
 
-If **no unresolved claude[bot] comments** → output "PR review passed, no blocking issues" and end the loop.
+If no CI failures (Step 2 all passed) and no unresolved `claude[bot]` comments → output "All CI checks passed, no blocking review issues" and end the loop.
 
-### Step 3: Analyze Each Comment
+### Step 4: Analyze and Handle Review Comments
 
 For each unresolved comment:
 
@@ -167,18 +221,14 @@ For each unresolved comment:
 2. **Understand the comment**: Carefully read the specific issue described in `body`
 3. **Judge with context**: Is the comment correct?
 
-Classification criteria:
-
 | Category | Condition | Examples |
 |----------|-----------|----------|
 | **Real issue** | Code actually has the defect described | Logic error, security vulnerability, resource leak, type unsafety |
 | **False positive** | Code is correct, reviewer's analysis is wrong | Missed context, misunderstood control flow, unaware of framework behavior, overly conservative |
 
 **Judgment principle**:
-- When in doubt, **lean toward fixing** rather than disputing — better to fix an unnecessary issue than miss a real bug
-- When disputing a false positive, you must have a **clear reason** pointing out specifically where the reviewer's judgment was wrong
-
-### Step 4: Handle Issues
+- When in doubt, **lean toward fixing** rather than disputing
+- When disputing, you must have a **clear reason** citing specific code
 
 **For real issues:**
 - Fix the code with minimal changes, no unrelated refactoring
@@ -186,15 +236,13 @@ Classification criteria:
 
 **For false positives:**
 
-1. Reply to the comment explaining why:
-
+1. Reply explaining why:
 ```bash
 gh api repos/OWNER/REPO/pulls/PR_NUMBER/comments/COMMENT_DATABASE_ID/replies \
-  -f body="Not an issue — <specific explanation, citing code to show why the reviewer's judgment doesn't apply here>"
+  -f body="Not an issue — <specific explanation>"
 ```
 
 2. Resolve the thread:
-
 ```bash
 gh api graphql -f query='mutation {
   resolveReviewThread(input:{threadId:"THREAD_NODE_ID"}) {
@@ -205,16 +253,16 @@ gh api graphql -f query='mutation {
 
 ### Step 5: Commit, Push, or Finish
 
-Tally results for this round.
+Tally results (CI fixes + review fixes + false positives disputed).
 
 **If there were code fixes:**
-- `git commit` — infer message style from `git log --oneline -5`, e.g. `fix: address PR review feedback` (be more specific if possible)
+- `git commit` — infer message style from `git log --oneline -5`
 - `git push`
-- Output "Round N: fixed X issues, disputed Y false positives, waiting for next review..."
-- Return to Step 1
+- Output "Round N: fixed X CI issues + Y review issues, disputed Z false positives, waiting for next round..."
+- Return to Step 0
 
-**If only false positives were resolved (no code fixes):**
-- Output "Round N: disputed Y false positives and resolved them, PR review passed"
+**If only false positives were resolved (no code fixes) and CI all passed:**
+- Output "Round N: disputed Y false positives and resolved them, all CI checks passed"
 - End the loop
 
 ---
@@ -227,17 +275,20 @@ When the loop ends, output a summary:
 ## PR Fixup Complete
 
 - **Total rounds**: N
-- **Issues fixed**: X
-- **False positives disputed**: Y
-- **PR status**: No blocking issues
+- **CI issues fixed**: X
+- **Review issues fixed**: Y
+- **False positives disputed**: Z
+- **PR status**: All checks passed, no blocking issues
 ```
 
 ## Important
 
 - Only handle `claude[bot]` comments, not human reviewer comments
-- When disputing, give **specific, well-reasoned explanations** citing code context — don't just say "this is fine"
+- When disputing, give **specific, well-reasoned explanations** citing code context
 - Infer commit message style from the project's git log
 - If the same issue recurs (fixed then re-reported), stop after round 3 and let the user intervene
+- **Do not use bare `sleep`** — long sleeps cause SDK idle timeout. Keep output active during polling
+- If CI failure is an environment/platform issue (not code-fixable), inform user instead of retrying
 ```
 
 ### File 3: `.claude/skills/deep-review/SKILL.md`

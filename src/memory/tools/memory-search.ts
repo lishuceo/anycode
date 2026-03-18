@@ -9,7 +9,6 @@
 import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 import { logger } from '../../utils/logger.js';
-import type { MemoryStore } from '../store.js';
 import type { HybridSearch } from '../search.js';
 import type { MemoryType } from '../types.js';
 
@@ -25,7 +24,7 @@ export interface MemorySearchToolContext {
  * Called per-query so the context is bound via closure.
  */
 export function createMemorySearchMcpServer(
-  store: MemoryStore,
+  _store: unknown,
   search: HybridSearch,
   context: MemorySearchToolContext,
 ) {
@@ -77,7 +76,7 @@ export function createMemorySearchMcpServer(
               };
             }
 
-            // Format results, including supersede chain when available
+            // Format results
             const lines: string[] = [`找到 ${results.length} 条相关记忆:\n`];
 
             for (const r of results) {
@@ -87,31 +86,13 @@ export function createMemorySearchMcpServer(
 
               lines.push(`---`);
               lines.push(`**${mem.content}** ${status}`);
-              lines.push(`  类型: ${mem.type} | 置信度: ${mem.confidence} | 得分: ${score}`);
+              lines.push(`  类型: ${mem.type} | 得分: ${score}`);
 
               if (mem.validAt) {
                 lines.push(`  生效: ${mem.validAt.split('T')[0]}`);
               }
               if (mem.invalidAt) {
                 lines.push(`  失效: ${mem.invalidAt.split('T')[0]}`);
-              }
-              if (mem.supersedeReason) {
-                lines.push(`  替代原因: ${mem.supersedeReason}`);
-              }
-
-              // Walk supersede chain backwards for context (only if this memory supersedes an older one)
-              if (mem.supersedes) {
-                const chain = store.getSupersedChain(mem.id);
-                if (chain.length > 0) {
-                  lines.push(`  历史链:`);
-                  for (const ancestor of chain) {
-                    const reason = ancestor.supersededBy
-                      ? getSuccessorReason(store, ancestor.supersededBy)
-                      : '';
-                    const reasonStr = reason ? ` (原因: ${reason})` : '';
-                    lines.push(`    <- ${ancestor.content}${reasonStr}`);
-                  }
-                }
               }
             }
 
@@ -148,10 +129,4 @@ export function createMemorySearchMcpServer(
       ),
     ],
   });
-}
-
-/** Helper: get the supersedeReason from the successor memory */
-function getSuccessorReason(store: MemoryStore, successorId: string): string {
-  const successor = store.get(successorId);
-  return successor?.supersedeReason ?? '';
 }

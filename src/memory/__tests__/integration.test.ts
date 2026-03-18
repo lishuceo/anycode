@@ -597,10 +597,10 @@ describe('场景9: 抽取→注入全链路', () => {
 });
 
 // ─────────────────────────────────────────────────────
-// Scenario 10: Supersede 链（双向指针 + reason）
+// Scenario 10: Supersede（简化：仅正向指针）
 // ─────────────────────────────────────────────────────
-describe('场景10: Supersede 双向链 + reason', () => {
-  it('应支持带 reason 的双向 supersede', async () => {
+describe('场景10: Supersede 正向指针', () => {
+  it('应标记旧记忆为无效并指向新记忆', async () => {
     const m1 = store.create(mem({
       type: 'decision',
       content: '数据库选用 MySQL',
@@ -610,12 +610,7 @@ describe('场景10: Supersede 双向链 + reason', () => {
       type: 'decision',
       content: '数据库迁移到 PostgreSQL',
       tags: ['database'],
-    }), '需要 JSONB 支持');
-    const m3 = store.supersede(m2.id, mem({
-      type: 'decision',
-      content: '数据库迁移到 CockroachDB',
-      tags: ['database'],
-    }), '需要多区域部署');
+    }));
 
     await store.flush();
 
@@ -624,23 +619,12 @@ describe('场景10: Supersede 双向链 + reason', () => {
     expect(old1.supersededBy).toBe(m2.id);
     expect(old1.invalidAt).not.toBeNull();
 
-    // 反向检查: 新记忆指向旧记忆 + reason
-    const cur = store.get(m3.id)!;
-    expect(cur.supersedes).toBe(m2.id);
-    expect(cur.supersedeReason).toBe('需要多区域部署');
-
-    // 链遍历: 从最新记忆往回走
-    const chain = store.getSupersedChain(m3.id);
-    expect(chain).toHaveLength(2);
-    expect(chain[0].content).toBe('数据库选用 MySQL');
-    expect(chain[1].content).toBe('数据库迁移到 PostgreSQL');
-
-    console.log('\n🔗 Supersede 链:');
-    console.log(`  ${chain[0].content} → (${m2.supersedeReason}) → ${chain[1].content} → (${cur.supersedeReason}) → ${cur.content}`);
+    // 新记忆是有效的
+    const cur = store.get(m2.id)!;
+    expect(cur.invalidAt).toBeNull();
   });
 
   it('includeInvalid 应能搜到已归档的决策', async () => {
-    // 搜索 MySQL（已被 supersede 归档）
     const archived = await search.search({
       query: 'MySQL',
       agentId: 'dev-agent',
@@ -648,11 +632,6 @@ describe('场景10: Supersede 双向链 + reason', () => {
       includeInvalid: true,
       types: ['decision'],
     });
-
-    console.log('\n🔍 搜索已归档 "MySQL" (includeInvalid=true):');
-    for (const r of archived) {
-      console.log(`  [${r.memory.type}] ${r.memory.content} (invalidAt: ${r.memory.invalidAt ?? 'null'})`);
-    }
 
     expect(archived.some(r => r.memory.content.includes('MySQL'))).toBe(true);
 

@@ -64,8 +64,6 @@ function makeResult(overrides: {
       validAt: overrides.validAt ?? now,
       invalidAt: null,
       supersededBy: null,
-      supersedes: null,
-      supersedeReason: null,
       ttl: overrides.ttl ?? null,
       sourceChatId: null,
       sourceMessageId: null,
@@ -156,13 +154,15 @@ describe('formatMemories', () => {
     expect(output).toContain('(2026-01-10)');
   });
 
-  it('should tag low-confidence memories', () => {
+  it('should not tag low-confidence memories (confidence removed from display)', () => {
     const results = [
       makeResult({ type: 'preference', content: '可能喜欢 Vue', confidence: 0.4 }),
     ];
 
     const output = formatMemories(results);
-    expect(output).toContain('confidence: low');
+    // Confidence is no longer displayed in annotations
+    expect(output).not.toContain('confidence');
+    expect(output).toContain('可能喜欢 Vue');
   });
 
   it('should tag memories from other chats', () => {

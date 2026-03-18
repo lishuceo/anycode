@@ -40,8 +40,6 @@ export interface Memory {
   validAt: string;
   invalidAt: string | null;
   supersededBy: string | null;
-  supersedes: string | null;
-  supersedeReason: string | null;
   ttl: string | null;
 
   sourceChatId: string | null;
@@ -68,11 +66,6 @@ export interface MemoryCreateInput {
   confidenceLevel?: ConfidenceLevel;
 
   ttl?: string | null;
-
-  /** Reverse pointer: ID of the memory this one supersedes */
-  supersedes?: string | null;
-  /** Reason for superseding the old memory */
-  supersedeReason?: string | null;
 
   sourceChatId?: string | null;
   sourceMessageId?: string | null;

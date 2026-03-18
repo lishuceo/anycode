@@ -82,8 +82,21 @@ export interface ImageAttachment {
   mediaType: 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp';
 }
 
+/** 文档附件 (从飞书消息下载的 PDF 等) */
+export interface DocumentAttachment {
+  /** base64 编码的文档数据 */
+  data: string;
+  /** MIME 类型 */
+  mediaType: 'application/pdf';
+  /** 原始文件名 */
+  fileName: string;
+}
+
 /** 图片消息的默认 prompt（用户发送纯图片时） */
 export const DEFAULT_IMAGE_PROMPT = '请分析这张图片';
+
+/** 文件消息的默认 prompt（用户发送纯文件时） */
+export const DEFAULT_DOCUMENT_PROMPT = '请分析这个文档';
 
 /**
  * 多模态 content block 类型（匹配 Anthropic API MessageParam.content 结构）
@@ -103,7 +116,16 @@ export interface ImageContentBlock {
   };
 }
 
-export type MultimodalContentBlock = TextContentBlock | ImageContentBlock;
+export interface DocumentContentBlock {
+  type: 'document';
+  source: {
+    type: 'base64';
+    media_type: DocumentAttachment['mediaType'];
+    data: string;
+  };
+}
+
+export type MultimodalContentBlock = TextContentBlock | ImageContentBlock | DocumentContentBlock;
 
 /** Claude 活动状态（用于管道进度卡片展示） */
 export interface ActivityStatus {

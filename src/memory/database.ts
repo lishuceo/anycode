@@ -25,8 +25,6 @@ export interface MemoryRow {
   valid_at: string;
   invalid_at: string | null;
   superseded_by: string | null;
-  supersedes: string | null;
-  supersede_reason: string | null;
   ttl: string | null;
   source_chat_id: string | null;
   source_message_id: string | null;
@@ -87,14 +85,14 @@ export class MemoryDatabase {
         id, agent_id, user_id, chat_id, workspace_dir,
         type, content, tags, metadata,
         confidence, confidence_level, evidence_count,
-        valid_at, invalid_at, superseded_by, supersedes, supersede_reason, ttl,
+        valid_at, invalid_at, superseded_by, ttl,
         source_chat_id, source_message_id,
         created_at, updated_at, last_accessed_at
       ) VALUES (
         @id, @agent_id, @user_id, @chat_id, @workspace_dir,
         @type, @content, @tags, @metadata,
         @confidence, @confidence_level, @evidence_count,
-        @valid_at, @invalid_at, @superseded_by, @supersedes, @supersede_reason, @ttl,
+        @valid_at, @invalid_at, @superseded_by, @ttl,
         @source_chat_id, @source_message_id,
         @created_at, @updated_at, @last_accessed_at
       )
@@ -249,16 +247,6 @@ export class MemoryDatabase {
       CREATE INDEX IF NOT EXISTS idx_memories_workspace ON memories(workspace_dir);
     `);
 
-    // ── Migration: add supersede chain columns (idempotent) ──
-    const columns = db.prepare("PRAGMA table_info('memories')").all() as Array<{ name: string }>;
-    const colNames = new Set(columns.map(c => c.name));
-    if (!colNames.has('supersedes')) {
-      db.exec('ALTER TABLE memories ADD COLUMN supersedes TEXT');
-    }
-    if (!colNames.has('supersede_reason')) {
-      db.exec('ALTER TABLE memories ADD COLUMN supersede_reason TEXT');
-    }
-
     // vec0 virtual table (conditional, with cosine distance)
     if (vectorEnabled) {
       db.exec(`
@@ -268,6 +256,9 @@ export class MemoryDatabase {
         );
       `);
     }
+
+    // ── One-time data migrations (idempotent, guarded by user_version) ──
+    runDataMigrations(db);
 
     logger.info({ dbPath, vectorEnabled }, 'Memory database initialized');
     return new MemoryDatabase(db, vectorEnabled);
@@ -468,8 +459,6 @@ export class MemoryDatabase {
       validAt: row.valid_at,
       invalidAt: row.invalid_at,
       supersededBy: row.superseded_by,
-      supersedes: row.supersedes ?? null,
-      supersedeReason: row.supersede_reason ?? null,
       ttl: row.ttl,
       sourceChatId: row.source_chat_id,
       sourceMessageId: row.source_message_id,
@@ -496,8 +485,6 @@ export class MemoryDatabase {
       valid_at: row.valid_at,
       invalid_at: row.invalid_at,
       superseded_by: row.superseded_by,
-      supersedes: row.supersedes,
-      supersede_reason: row.supersede_reason,
       ttl: row.ttl,
       source_chat_id: row.source_chat_id,
       source_message_id: row.source_message_id,
@@ -505,5 +492,92 @@ export class MemoryDatabase {
       updated_at: row.updated_at,
       last_accessed_at: row.last_accessed_at,
     };
+  }
+}
+
+// ============================================================
+// One-time data migrations
+// ============================================================
+
+/** Current migration version. Bump when adding new migrations. */
+const CURRENT_MIGRATION_VERSION = 1;
+
+/**
+ * Run idempotent data migrations guarded by PRAGMA user_version.
+ * Each migration block checks the version before running.
+ */
+function runDataMigrations(db: Database.Database): void {
+  // PRAGMA user_version returns the version number directly
+  const version = db.pragma('user_version', { simple: true }) as number;
+
+  if (version >= CURRENT_MIGRATION_VERSION) return;
+
+  logger.info({ from: version, to: CURRENT_MIGRATION_VERSION }, 'Running memory data migrations');
+
+  db.transaction(() => {
+    if (version < 1) {
+      migrationV1_normalizeWorkspaceDirs(db);
+      migrationV1_invalidateTransientMemories(db);
+    }
+
+    db.pragma(`user_version = ${CURRENT_MIGRATION_VERSION}`);
+  })();
+
+  logger.info('Memory data migrations completed');
+}
+
+/**
+ * Migration v1: Normalize fragmented workspace_dir values.
+ * Consolidates local paths that point to the same repo into canonical form.
+ */
+function migrationV1_normalizeWorkspaceDirs(db: Database.Database): void {
+  // Known local paths → canonical repo identity
+  const mappings: Array<[string, string]> = [
+    ['/root/dev', 'github.com/lishuceo/anywhere-code.git'],
+    ['/root/dev/', 'github.com/lishuceo/anywhere-code.git'],
+    ['/root/dev/anywhere-code', 'github.com/lishuceo/anywhere-code.git'],
+  ];
+
+  let totalUpdated = 0;
+
+  for (const [oldDir, newDir] of mappings) {
+    const result = db.prepare(
+      'UPDATE memories SET workspace_dir = ? WHERE workspace_dir = ?',
+    ).run(newDir, oldDir);
+    totalUpdated += result.changes;
+  }
+
+  // .workspaces paths: /root/dev/.workspaces/anywhere-code-* → anywhere-code repo
+  const wsResult = db.prepare(
+    'UPDATE memories SET workspace_dir = ? WHERE workspace_dir LIKE ?',
+  ).run('github.com/lishuceo/anywhere-code.git', '/root/dev/.workspaces/anywhere-code-%');
+  totalUpdated += wsResult.changes;
+
+  if (totalUpdated > 0) {
+    logger.info({ updated: totalUpdated }, 'Migration v1: normalized workspace_dir values');
+  }
+}
+
+/**
+ * Migration v1: Invalidate transient/ephemeral memories that should not have been stored.
+ * Targets PR statuses, deployment statuses, and non-decision "fix plans".
+ */
+function migrationV1_invalidateTransientMemories(db: Database.Database): void {
+  const now = new Date().toISOString();
+  const result = db.prepare(`
+    UPDATE memories SET invalid_at = ?, updated_at = ?
+    WHERE invalid_at IS NULL
+      AND (
+        content LIKE '%PR #%已合并%'
+        OR content LIKE '%已提交并推送%'
+        OR content LIKE '%已部署%'
+        OR content LIKE '%已上线%'
+        OR (type = 'decision' AND content LIKE '%修复方案%')
+        OR (type = 'decision' AND content LIKE '确认无需%')
+      )
+  `).run(now, now);
+
+  if (result.changes > 0) {
+    logger.info({ invalidated: result.changes }, 'Migration v1: invalidated transient memories');
   }
 }
