@@ -2239,8 +2239,29 @@ async function parseMessage(data: MessageEventData): Promise<ParsedMessage | nul
 
           const lines: string[] = ['[合并转发的聊天记录]'];
 
+          // 收集合并转发中的 PDF 文件子消息，稍后批量下载
+          const MAX_MERGE_PDF = 5;
+          const pdfSubMessages: Array<{ messageId: string; fileKey: string; fileName: string }> = [];
+          let totalPdfCount = 0;
+
           for (const item of limited) {
             const msgType = item.msg_type || 'text';
+
+            // 识别 PDF 文件子消息，记录待下载列表
+            if (msgType === 'file') {
+              try {
+                const fileBody = JSON.parse(item.body?.content || '{}');
+                const fileName = (fileBody.file_name as string) || '';
+                const fileKey = fileBody.file_key as string;
+                if (fileKey && fileName.toLowerCase().endsWith('.pdf')) {
+                  totalPdfCount++;
+                  if (pdfSubMessages.length < MAX_MERGE_PDF) {
+                    pdfSubMessages.push({ messageId: item.message_id, fileKey, fileName });
+                  }
+                }
+              } catch { /* ignore parse errors */ }
+            }
+
             const formatted = formatMergeForwardSubMessage(item.body?.content || '', msgType, item.mentions);
             if (!formatted) continue;
             const senderId = item.sender?.id ?? '';
@@ -2248,12 +2269,42 @@ async function parseMessage(data: MessageEventData): Promise<ParsedMessage | nul
             lines.push(`- [${senderName}](${senderId || '?'}): ${formatted}`);
           }
 
+          // 批量下载 PDF 文件
+          if (pdfSubMessages.length > 0) {
+            const MAX_PDF_SIZE = 30 * 1024 * 1024;
+            const downloadedDocs: DocumentAttachment[] = [];
+            await Promise.all(
+              pdfSubMessages.map(async ({ messageId: msgId, fileKey, fileName }) => {
+                try {
+                  const buf = await feishuClient.downloadMessageFile(msgId, fileKey);
+                  if (buf.length <= MAX_PDF_SIZE) {
+                    downloadedDocs.push({ data: buf.toString('base64'), mediaType: 'application/pdf', fileName });
+                    logger.info({ messageId: msgId, fileName, sizeBytes: buf.length }, 'merge_forward: PDF downloaded');
+                  } else {
+                    logger.warn({ messageId: msgId, fileName, sizeBytes: buf.length }, 'merge_forward: PDF too large, skipped');
+                    lines.push(`- ⚠️ PDF "${fileName}" 太大（${(buf.length / 1024 / 1024).toFixed(1)}MB），已跳过`);
+                  }
+                } catch (dlErr) {
+                  logger.error({ err: dlErr, messageId: msgId, fileName }, 'merge_forward: failed to download PDF');
+                }
+              }),
+            );
+            if (downloadedDocs.length > 0) {
+              documents = downloadedDocs;
+            }
+
+            // 提示超限的 PDF 未读取
+            if (totalPdfCount > MAX_MERGE_PDF) {
+              lines.push(`- ⚠️ 合并转发中共有 ${totalPdfCount} 个 PDF，已读取前 ${MAX_MERGE_PDF} 个，还有 ${totalPdfCount - MAX_MERGE_PDF} 个未读取`);
+            }
+          }
+
           if (subMessages.length > MAX_SUB_MESSAGES) {
             lines.push(`- ... 还有 ${subMessages.length - MAX_SUB_MESSAGES} 条消息未显示`);
           }
 
           text = lines.join('\n');
-          logger.info({ messageId: message.message_id, subMessageCount: subMessages.length }, 'merge_forward: parsed sub-messages');
+          logger.info({ messageId: message.message_id, subMessageCount: subMessages.length, pdfCount: pdfSubMessages.length }, 'merge_forward: parsed sub-messages');
         }
       }
     } catch (err) {
