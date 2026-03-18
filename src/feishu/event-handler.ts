@@ -1701,6 +1701,7 @@ export async function executeDirectTask(
   eventThreadId?: string,
   rootId?: string,
   createTime?: string,
+  options?: { skipQuickAck?: boolean },
 ): Promise<void> {
   const agentCfg = agentRegistry.getOrThrow(agentId);
   const session = sessionManager.getOrCreate(chatId, userId, agentId);
@@ -1728,7 +1729,8 @@ export async function executeDirectTask(
     // 快速确认：用小模型判断消息类型并生成短回复
     // 纯问候类消息直接回复后跳过 Claude，其他类型照常走完整查询
     // 话题内消息跳过 quick-ack：bot 可能是被 threadBypass 隐式触发的，不是被明确 @的
-    const quickAck = eventThreadId ? null : await generateQuickAck(rawPrompt);
+    // cron 定时任务跳过 quick-ack：占位消息已由 scheduler 发送，不需要额外确认
+    const quickAck = (eventThreadId || options?.skipQuickAck) ? null : await generateQuickAck(rawPrompt);
     if (quickAck) {
       let ackSent = false;
       try {
