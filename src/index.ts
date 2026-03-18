@@ -85,6 +85,8 @@ async function main(): Promise<void> {
             params.agentId as AgentId,
             params.threadId,
             params.rootId,
+            undefined, // createTime
+            { skipQuickAck: true },
           );
         } else {
           await executeClaudeTask(
