@@ -2251,26 +2251,21 @@ async function parseMessage(data: MessageEventData): Promise<ParsedMessage | nul
 
           const lines: string[] = ['[合并转发的聊天记录]'];
 
-          // 收集合并转发中的 PDF 文件子消息，稍后批量下载
-          const MAX_MERGE_PDF = 10;
-          const pdfSubMessages: Array<{ messageId: string; fileKey: string; fileName: string }> = [];
-          const skippedPdfNames: string[] = [];
+          // 收集合并转发中的 PDF 文件名
+          // 注：飞书 API 不支持下载合并转发子消息的资源文件（返回 400），
+          // 只能提示用户单条转发或直接上传
+          const pdfFileNames: string[] = [];
 
           for (const item of limited) {
             const msgType = item.msg_type || 'text';
 
-            // 识别 PDF 文件子消息，记录待下载列表
+            // 记录 PDF 文件名（无法下载，仅用于提示）
             if (msgType === 'file') {
               try {
                 const fileBody = JSON.parse(item.body?.content || '{}');
                 const fileName = (fileBody.file_name as string) || '';
-                const fileKey = fileBody.file_key as string;
-                if (fileKey && item.message_id && fileName.toLowerCase().endsWith('.pdf')) {
-                  if (pdfSubMessages.length < MAX_MERGE_PDF) {
-                    pdfSubMessages.push({ messageId: item.message_id!, fileKey, fileName });
-                  } else {
-                    skippedPdfNames.push(fileName);
-                  }
+                if (fileName.toLowerCase().endsWith('.pdf')) {
+                  pdfFileNames.push(fileName);
                 }
               } catch { /* ignore parse errors */ }
             }
@@ -2282,38 +2277,13 @@ async function parseMessage(data: MessageEventData): Promise<ParsedMessage | nul
             lines.push(`- [${senderName}](${senderId || '?'}): ${formatted}`);
           }
 
-          // 批量下载 PDF 文件
-          if (pdfSubMessages.length > 0) {
-            const MAX_PDF_SIZE = 30 * 1024 * 1024;
-            const downloadedDocs: DocumentAttachment[] = [];
-            await Promise.all(
-              pdfSubMessages.map(async ({ messageId: msgId, fileKey, fileName }) => {
-                try {
-                  const buf = await feishuClient.downloadMessageFile(msgId, fileKey);
-                  if (buf.length <= MAX_PDF_SIZE) {
-                    downloadedDocs.push({ data: buf.toString('base64'), mediaType: 'application/pdf', fileName });
-                    logger.info({ messageId: msgId, fileName, sizeBytes: buf.length }, 'merge_forward: PDF downloaded');
-                  } else {
-                    logger.warn({ messageId: msgId, fileName, sizeBytes: buf.length }, 'merge_forward: PDF too large, skipped');
-                    lines.push(`- ⚠️ PDF "${fileName}" 太大（${(buf.length / 1024 / 1024).toFixed(1)}MB），已跳过`);
-                  }
-                } catch (dlErr) {
-                  logger.error({ err: dlErr, messageId: msgId, fileName }, 'merge_forward: failed to download PDF');
-                }
-              }),
-            );
-            if (downloadedDocs.length > 0) {
-              documents = downloadedDocs;
+          // 提示用户合并转发中的 PDF 无法读取
+          if (pdfFileNames.length > 0) {
+            lines.push(`\n⚠️ 合并转发中包含 ${pdfFileNames.length} 个 PDF 文件，因飞书 API 限制无法直接读取：`);
+            for (const name of pdfFileNames) {
+              lines.push(`  - ${name}`);
             }
-
-            // 提示超限的 PDF 未读取，列出文件名并告知补救方式
-            if (skippedPdfNames.length > 0) {
-              lines.push(`- ⚠️ 合并转发中共有 ${pdfSubMessages.length + skippedPdfNames.length} 个 PDF，已读取前 ${pdfSubMessages.length} 个，以下 ${skippedPdfNames.length} 个未读取：`);
-              for (const name of skippedPdfNames) {
-                lines.push(`  - ${name}`);
-              }
-              lines.push('- 💡 如需读取未读的 PDF，请将它们单条转发或直接上传给我');
-            }
+            lines.push('💡 请将 PDF 文件逐条单独转发给我，或直接在对话框上传文件');
           }
 
           if (subMessages.length > MAX_SUB_MESSAGES) {
@@ -2321,7 +2291,7 @@ async function parseMessage(data: MessageEventData): Promise<ParsedMessage | nul
           }
 
           text = lines.join('\n');
-          logger.info({ messageId: message.message_id, subMessageCount: subMessages.length, pdfCount: pdfSubMessages.length }, 'merge_forward: parsed sub-messages');
+          logger.info({ messageId: message.message_id, subMessageCount: subMessages.length, pdfCount: pdfFileNames.length }, 'merge_forward: parsed sub-messages');
         }
       }
     } catch (err) {
@@ -2496,6 +2466,34 @@ async function parseMessage(data: MessageEventData): Promise<ParsedMessage | nul
     } catch {
       logger.error({ content: message.content }, 'Failed to parse message content');
       return null;
+    }
+  }
+
+  // 引用回复：如果当前消息引用了文件消息（parent_id），尝试下载父消息的文件
+  // 场景：群聊中用户先发文件，再引用回复该文件并 @bot
+  if (message.parent_id && !documents?.length) {
+    try {
+      const parentItems = await feishuClient.getMessageById(message.parent_id);
+      if (parentItems && parentItems.length > 0) {
+        const parent = parentItems[0];
+        if (parent.msg_type === 'file' && parent.message_id && parent.body?.content) {
+          const parentContent = JSON.parse(parent.body.content);
+          const fileKey = parentContent.file_key as string | undefined;
+          const fileName = (parentContent.file_name as string) || '未知文件';
+          if (fileKey && fileName.toLowerCase().endsWith('.pdf')) {
+            const MAX_FILE_SIZE_BYTES = 30 * 1024 * 1024;
+            const buf = await feishuClient.downloadMessageFile(parent.message_id, fileKey);
+            if (buf.length <= MAX_FILE_SIZE_BYTES) {
+              documents = [{ data: buf.toString('base64'), mediaType: 'application/pdf', fileName }];
+              logger.info({ messageId: message.message_id, parentId: message.parent_id, fileName, sizeBytes: buf.length }, 'PDF downloaded from quoted parent message');
+            } else {
+              logger.warn({ messageId: message.message_id, sizeBytes: buf.length, fileName }, 'Quoted file too large, skipping');
+            }
+          }
+        }
+      }
+    } catch (err) {
+      logger.warn({ err, messageId: message.message_id, parentId: message.parent_id }, 'Failed to fetch quoted parent message file');
     }
   }
 
