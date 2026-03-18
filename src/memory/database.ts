@@ -269,6 +269,9 @@ export class MemoryDatabase {
       `);
     }
 
+    // ── One-time data migrations (idempotent, guarded by user_version) ──
+    runDataMigrations(db);
+
     logger.info({ dbPath, vectorEnabled }, 'Memory database initialized');
     return new MemoryDatabase(db, vectorEnabled);
   }
@@ -505,5 +508,92 @@ export class MemoryDatabase {
       updated_at: row.updated_at,
       last_accessed_at: row.last_accessed_at,
     };
+  }
+}
+
+// ============================================================
+// One-time data migrations
+// ============================================================
+
+/** Current migration version. Bump when adding new migrations. */
+const CURRENT_MIGRATION_VERSION = 1;
+
+/**
+ * Run idempotent data migrations guarded by PRAGMA user_version.
+ * Each migration block checks the version before running.
+ */
+function runDataMigrations(db: Database.Database): void {
+  // PRAGMA user_version returns the version number directly
+  const version = db.pragma('user_version', { simple: true }) as number;
+
+  if (version >= CURRENT_MIGRATION_VERSION) return;
+
+  logger.info({ from: version, to: CURRENT_MIGRATION_VERSION }, 'Running memory data migrations');
+
+  db.transaction(() => {
+    if (version < 1) {
+      migrationV1_normalizeWorkspaceDirs(db);
+      migrationV1_invalidateTransientMemories(db);
+    }
+
+    db.pragma(`user_version = ${CURRENT_MIGRATION_VERSION}`);
+  })();
+
+  logger.info('Memory data migrations completed');
+}
+
+/**
+ * Migration v1: Normalize fragmented workspace_dir values.
+ * Consolidates local paths that point to the same repo into canonical form.
+ */
+function migrationV1_normalizeWorkspaceDirs(db: Database.Database): void {
+  // Known local paths → canonical repo identity
+  const mappings: Array<[string, string]> = [
+    ['/root/dev', 'github.com/lishuceo/anywhere-code.git'],
+    ['/root/dev/', 'github.com/lishuceo/anywhere-code.git'],
+    ['/root/dev/anywhere-code', 'github.com/lishuceo/anywhere-code.git'],
+  ];
+
+  let totalUpdated = 0;
+
+  for (const [oldDir, newDir] of mappings) {
+    const result = db.prepare(
+      'UPDATE memories SET workspace_dir = ? WHERE workspace_dir = ?',
+    ).run(newDir, oldDir);
+    totalUpdated += result.changes;
+  }
+
+  // .workspaces paths: /root/dev/.workspaces/anywhere-code-* → anywhere-code repo
+  const wsResult = db.prepare(
+    'UPDATE memories SET workspace_dir = ? WHERE workspace_dir LIKE ?',
+  ).run('github.com/lishuceo/anywhere-code.git', '/root/dev/.workspaces/anywhere-code-%');
+  totalUpdated += wsResult.changes;
+
+  if (totalUpdated > 0) {
+    logger.info({ updated: totalUpdated }, 'Migration v1: normalized workspace_dir values');
+  }
+}
+
+/**
+ * Migration v1: Invalidate transient/ephemeral memories that should not have been stored.
+ * Targets PR statuses, deployment statuses, and non-decision "fix plans".
+ */
+function migrationV1_invalidateTransientMemories(db: Database.Database): void {
+  const now = new Date().toISOString();
+  const result = db.prepare(`
+    UPDATE memories SET invalid_at = ?, updated_at = ?
+    WHERE invalid_at IS NULL
+      AND (
+        content LIKE '%PR #%已合并%'
+        OR content LIKE '%已提交并推送%'
+        OR content LIKE '%已部署%'
+        OR content LIKE '%已上线%'
+        OR (type = 'decision' AND content LIKE '%修复方案%')
+        OR (type = 'decision' AND content LIKE '确认无需%')
+      )
+  `).run(now, now);
+
+  if (result.changes > 0) {
+    logger.info({ invalidated: result.changes }, 'Migration v1: invalidated transient memories');
   }
 }

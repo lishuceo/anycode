@@ -10,6 +10,9 @@ import type { Memory, MemoryCreateInput, MemoryType, ConfidenceLevel } from './t
 import { CONFIDENCE_CAPS } from './types.js';
 import type { MemoryRow } from './database.js';
 
+/** Evidence count threshold to auto-promote L0 → L1 */
+const EVIDENCE_PROMOTION_THRESHOLD = 3;
+
 /** Max content length (characters) */
 const MAX_CONTENT_LENGTH = 100_000;
 /** Max number of tags per memory */
@@ -143,9 +146,25 @@ export class MemoryStore {
     return this.db.deleteMemory(id);
   }
 
-  /** Increment evidence count for a memory */
+  /**
+   * Increment evidence count for a memory.
+   * Auto-promotes L0 → L1 when evidence_count reaches the promotion threshold,
+   * since repeated independent extractions are a strong confirmation signal.
+   */
   updateEvidence(id: string): void {
     this.db.updateEvidence(id);
+
+    // Check for auto-promotion: L0 memories with enough evidence get promoted to L1
+    const row = this.db.getMemory(id);
+    if (row && row.confidence_level === 'L0' && row.evidence_count >= EVIDENCE_PROMOTION_THRESHOLD) {
+      const newConfidence = Math.min(row.confidence + 0.1, CONFIDENCE_CAPS.L1);
+      this.db.updateMemory({
+        id,
+        confidence_level: 'L1',
+        confidence: newConfidence,
+        updated_at: new Date().toISOString(),
+      });
+    }
   }
 
   /**
@@ -168,8 +187,8 @@ export class MemoryStore {
 
       const conflicts: Memory[] = [];
       for (const vr of vecResults) {
-        // cosine distance < 0.15 ≈ similarity > 0.85
-        if (vr.distance >= 0.15) continue;
+        // cosine distance < 0.22 ≈ similarity > 0.78
+        if (vr.distance >= 0.22) continue;
         const row = this.db.getMemory(vr.memory_id);
         if (!row) continue;
         if (row.type !== type) continue;
