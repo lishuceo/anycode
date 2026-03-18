@@ -117,6 +117,11 @@ export function createCronMcpServer(params: {
               case 'update': {
                 if (!args.id) return error('id 参数必填');
 
+                // Ownership check: only the job creator or same-chat users can modify
+                const updateTarget = scheduler.listJobs({ chatId }).find((j) => j.id === args.id);
+                if (!updateTarget) return error(`任务不存在: ${args.id}`);
+                if (updateTarget.userId !== userId) return error('只有任务创建者才能修改此任务');
+
                 const patch: Record<string, unknown> = {};
                 if (args.name) patch.name = args.name;
                 if (args.prompt) patch.prompt = args.prompt;
@@ -134,6 +139,9 @@ export function createCronMcpServer(params: {
 
               case 'remove': {
                 if (!args.id) return error('id 参数必填');
+                const removeTarget = scheduler.listJobs({ chatId }).find((j) => j.id === args.id);
+                if (!removeTarget) return error(`任务不存在: ${args.id}`);
+                if (removeTarget.userId !== userId) return error('只有任务创建者才能删除此任务');
                 const removed = await scheduler.removeJob(args.id);
                 return removed
                   ? text(`任务已删除: ${args.id}`)
@@ -142,6 +150,9 @@ export function createCronMcpServer(params: {
 
               case 'trigger': {
                 if (!args.id) return error('id 参数必填');
+                const triggerTarget = scheduler.listJobs({ chatId }).find((j) => j.id === args.id);
+                if (!triggerTarget) return error(`任务不存在: ${args.id}`);
+                if (triggerTarget.userId !== userId) return error('只有任务创建者才能触发此任务');
                 await scheduler.triggerJob(args.id);
                 return text(`任务已触发执行: ${args.id}`);
               }
