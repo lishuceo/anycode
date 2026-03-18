@@ -225,6 +225,45 @@ describe('MemoryStore', () => {
       const updated = store.get(mem.id);
       expect(updated!.evidenceCount).toBe(2);
     });
+
+    it('should auto-promote L0 to L1 when evidence_count reaches 3', () => {
+      const mem = store.create(makeInput({ confidenceLevel: 'L0', confidence: 0.7 }));
+      expect(mem.confidenceLevel).toBe('L0');
+
+      // evidence_count: 1 → 2
+      store.updateEvidence(mem.id);
+      expect(store.get(mem.id)!.confidenceLevel).toBe('L0');
+
+      // evidence_count: 2 → 3 — should trigger promotion
+      store.updateEvidence(mem.id);
+      const promoted = store.get(mem.id)!;
+      expect(promoted.confidenceLevel).toBe('L1');
+      expect(promoted.confidence).toBeCloseTo(0.8, 10); // 0.7 + 0.1
+      expect(promoted.evidenceCount).toBe(3);
+    });
+
+    it('should cap promoted confidence at L1 max (0.9)', () => {
+      const mem = store.create(makeInput({ confidenceLevel: 'L0', confidence: 0.7 }));
+
+      // Promote by reaching evidence_count >= 3
+      store.updateEvidence(mem.id);
+      store.updateEvidence(mem.id);
+
+      const promoted = store.get(mem.id)!;
+      expect(promoted.confidence).toBeLessThanOrEqual(0.9);
+    });
+
+    it('should not promote L1 or L2 memories', () => {
+      const mem = store.create(makeInput({ confidenceLevel: 'L1', confidence: 0.9 }));
+
+      store.updateEvidence(mem.id);
+      store.updateEvidence(mem.id);
+      store.updateEvidence(mem.id);
+
+      const updated = store.get(mem.id)!;
+      expect(updated.confidenceLevel).toBe('L1');
+      expect(updated.confidence).toBe(0.9);
+    });
   });
 
   describe('findConflicting()', () => {

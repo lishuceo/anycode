@@ -39,27 +39,27 @@ import { initializeMemory, closeMemory, getMemoryStore } from '../init.js';
 describe('parseExtractionResponse', () => {
   it('should parse valid JSON array', () => {
     const raw = JSON.stringify([
-      { type: 'fact', content: 'Node 20', confidence: 1.0, tags: ['runtime'], ttl: null, metadata: {} },
-      { type: 'preference', content: 'pnpm', confidence: 0.8, tags: [], ttl: null, metadata: {} },
+      { type: 'fact', content: '项目运行时环境为 Node.js 20', confidence: 1.0, tags: ['runtime'], ttl: null, metadata: {} },
+      { type: 'preference', content: '团队统一使用 pnpm 作为包管理器', confidence: 0.8, tags: [], ttl: null, metadata: {} },
     ]);
 
     const result = parseExtractionResponse(raw);
     expect(result).toHaveLength(2);
     expect(result[0].type).toBe('fact');
-    expect(result[0].content).toBe('Node 20');
+    expect(result[0].content).toContain('Node.js 20');
     expect(result[1].type).toBe('preference');
   });
 
   it('should parse JSON wrapped in { memories: [...] }', () => {
     const raw = JSON.stringify({
       memories: [
-        { type: 'fact', content: 'test', confidence: 0.9, tags: [], ttl: null, metadata: {} },
+        { type: 'fact', content: '这是一条测试记忆，用于验证解析功能', confidence: 0.9, tags: [], ttl: null, metadata: {} },
       ],
     });
 
     const result = parseExtractionResponse(raw);
     expect(result).toHaveLength(1);
-    expect(result[0].content).toBe('test');
+    expect(result[0].content).toContain('测试记忆');
   });
 
   it('should parse JSON from markdown code block', () => {
@@ -88,9 +88,9 @@ describe('parseExtractionResponse', () => {
 
   it('should filter out invalid memory types', () => {
     const raw = JSON.stringify([
-      { type: 'fact', content: 'valid', confidence: 1.0 },
-      { type: 'invalid_type', content: 'invalid', confidence: 1.0 },
-      { type: 'preference', content: 'also valid', confidence: 0.8 },
+      { type: 'fact', content: '这是一条有效的事实记忆内容，用于验证类型过滤', confidence: 1.0 },
+      { type: 'invalid_type', content: '这是一条无效类型的记忆内容，应被过滤掉', confidence: 1.0 },
+      { type: 'preference', content: '这是一条有效的偏好记忆内容，应保留下来', confidence: 0.8 },
     ]);
 
     const result = parseExtractionResponse(raw);
@@ -102,17 +102,17 @@ describe('parseExtractionResponse', () => {
   it('should filter out entries without content', () => {
     const raw = JSON.stringify([
       { type: 'fact', content: '', confidence: 1.0 },
-      { type: 'fact', content: 'has content', confidence: 1.0 },
+      { type: 'fact', content: '这条记忆有足够长的内容，可以通过验证', confidence: 1.0 },
     ]);
 
     const result = parseExtractionResponse(raw);
     expect(result).toHaveLength(1);
-    expect(result[0].content).toBe('has content');
+    expect(result[0].content).toContain('足够长');
   });
 
   it('should default confidence to 0.7 if missing', () => {
     const raw = JSON.stringify([
-      { type: 'fact', content: 'no confidence field' },
+      { type: 'fact', content: '这条记忆没有 confidence 字段' },
     ]);
 
     const result = parseExtractionResponse(raw);
@@ -121,37 +121,39 @@ describe('parseExtractionResponse', () => {
 
   it('should handle missing tags gracefully', () => {
     const raw = JSON.stringify([
-      { type: 'fact', content: 'no tags' },
+      { type: 'fact', content: '这条记忆没有 tags 字段标记' },
     ]);
 
     const result = parseExtractionResponse(raw);
     expect(result[0].tags).toEqual([]);
   });
 
-  it('should handle missing ttl gracefully', () => {
+  it('should handle missing ttl gracefully (state without ttl demoted to fact)', () => {
     const raw = JSON.stringify([
-      { type: 'state', content: 'some state' },
+      { type: 'state', content: '当前正在进行某个状态变更的操作' },
     ]);
 
     const result = parseExtractionResponse(raw);
+    // state without ttl is demoted to fact
+    expect(result[0].type).toBe('fact');
     expect(result[0].ttl).toBeNull();
   });
 
   it('should parse JSON wrapped in { data: [...] }', () => {
     const raw = JSON.stringify({
       data: [
-        { type: 'decision', content: 'chose React', confidence: 1.0 },
+        { type: 'decision', content: '选择 React 作为前端框架，因为生态更成熟', confidence: 1.0 },
       ],
     });
 
     const result = parseExtractionResponse(raw);
     expect(result).toHaveLength(1);
-    expect(result[0].content).toBe('chose React');
+    expect(result[0].content).toContain('React');
   });
 
   it('should handle non-string tags in array', () => {
     const raw = JSON.stringify([
-      { type: 'fact', content: 'mixed tags', tags: ['valid', 123, null, 'also valid'] },
+      { type: 'fact', content: '这条记忆有混合类型的 tags 标签', tags: ['valid', 123, null, 'also valid'] },
     ]);
 
     const result = parseExtractionResponse(raw);
@@ -161,18 +163,18 @@ describe('parseExtractionResponse', () => {
   it('should handle null/undefined entries in array', () => {
     const raw = JSON.stringify([
       null,
-      { type: 'fact', content: 'valid' },
+      { type: 'fact', content: '这是数组中唯一有效的记忆条目，其余为 null' },
       undefined,
     ]);
 
     const result = parseExtractionResponse(raw);
     expect(result).toHaveLength(1);
-    expect(result[0].content).toBe('valid');
+    expect(result[0].content).toContain('有效');
   });
 
   it('should parse supersede_hint when present', () => {
     const raw = JSON.stringify([
-      { type: 'fact', content: 'Uses Vitest', confidence: 1.0, supersede_hint: 'Vitest 速度更快' },
+      { type: 'fact', content: '项目测试框架使用 Vitest 替代 Jest', confidence: 1.0, supersede_hint: 'Vitest 速度更快' },
     ]);
 
     const result = parseExtractionResponse(raw);
@@ -181,11 +183,64 @@ describe('parseExtractionResponse', () => {
 
   it('should default supersedeHint to null when missing', () => {
     const raw = JSON.stringify([
-      { type: 'fact', content: 'Node 20', confidence: 1.0 },
+      { type: 'fact', content: '项目运行时环境为 Node.js 20', confidence: 1.0 },
     ]);
 
     const result = parseExtractionResponse(raw);
     expect(result[0].supersedeHint).toBeNull();
+  });
+
+  it('should filter out transient PR status memories', () => {
+    const raw = JSON.stringify([
+      { type: 'fact', content: 'PR #161 已合并，部署后生效', confidence: 1.0 },
+      { type: 'fact', content: '项目使用 TypeScript 5.7 和 ESM 模块系统', confidence: 1.0 },
+    ]);
+
+    const result = parseExtractionResponse(raw);
+    expect(result).toHaveLength(1);
+    expect(result[0].content).toContain('TypeScript');
+  });
+
+  it('should filter out deployment status memories', () => {
+    const raw = JSON.stringify([
+      { type: 'fact', content: '新版本已部署到生产环境', confidence: 1.0 },
+      { type: 'state', content: '服务已上线运行中', confidence: 0.8, ttl: '2026-03-25' },
+    ]);
+
+    const result = parseExtractionResponse(raw);
+    expect(result).toHaveLength(0);
+  });
+
+  it('should filter out content shorter than 15 chars', () => {
+    const raw = JSON.stringify([
+      { type: 'fact', content: '用了 pnpm', confidence: 1.0 },
+      { type: 'fact', content: '项目的包管理器是 pnpm，全团队统一使用', confidence: 1.0 },
+    ]);
+
+    const result = parseExtractionResponse(raw);
+    expect(result).toHaveLength(1);
+    expect(result[0].content).toContain('包管理器');
+  });
+
+  it('should demote state without ttl to fact', () => {
+    const raw = JSON.stringify([
+      { type: 'state', content: '系统通过环境变量 CRON_ENABLED 启用定时任务', confidence: 0.7 },
+    ]);
+
+    const result = parseExtractionResponse(raw);
+    expect(result).toHaveLength(1);
+    expect(result[0].type).toBe('fact');
+  });
+
+  it('should keep state with ttl as state', () => {
+    const raw = JSON.stringify([
+      { type: 'state', content: '当前正在进行记忆系统重构，预计本周完成', confidence: 0.7, ttl: '2026-03-25' },
+    ]);
+
+    const result = parseExtractionResponse(raw);
+    expect(result).toHaveLength(1);
+    expect(result[0].type).toBe('state');
+    expect(result[0].ttl).toBe('2026-03-25');
   });
 });
 
