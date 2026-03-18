@@ -142,7 +142,7 @@ export function computeNextRunAtMs(schedule: CronSchedule, nowMs: number = Date.
       if (!schedule.atTime) return undefined;
       const atStr = schedule.atTime;
       // 有时区后缀（Z, +08:00, -05:00 等）→ 直接解析
-      if (/[Z+\-]\d/.test(atStr)) {
+      if (/[Z+-]\d/.test(atStr)) {
         const atMs = new Date(atStr).getTime();
         return atMs > nowMs ? atMs : undefined;
       }
