@@ -560,7 +560,7 @@ export class FeishuClient {
     containerId: string,
     containerType: 'chat' | 'thread' = 'chat',
     limit: number = 10,
-  ): Promise<Array<{ messageId: string; senderId: string; senderType: 'user' | 'app'; content: string; msgType: string; createTime?: string }>> {
+  ): Promise<Array<{ messageId: string; senderId: string; senderType: 'user' | 'app'; content: string; msgType: string; createTime?: string; imageRefs?: Array<{ imageKey: string }> }>> {
     try {
       const resp = await this.client.im.message.list({
         params: {
@@ -575,7 +575,7 @@ export class FeishuClient {
         return [];
       }
       const items = resp.data?.items ?? [];
-      const messages: Array<{ messageId: string; senderId: string; senderType: 'user' | 'app'; content: string; msgType: string; createTime?: string }> = [];
+      const messages: Array<{ messageId: string; senderId: string; senderType: 'user' | 'app'; content: string; msgType: string; createTime?: string; imageRefs?: Array<{ imageKey: string }> }> = [];
       // 诊断：记录 API 返回的原始消息分布
       const diagSkipped: Array<{ id: string; type: string; reason: string }> = [];
       for (const item of items) {
@@ -584,8 +584,9 @@ export class FeishuClient {
         if (msgType !== 'text' && msgType !== 'post' && msgType !== 'merge_forward' && msgType !== 'file' && msgType !== 'image') { diagSkipped.push({ id: item.message_id ?? '?', type: msgType, reason: 'unsupported_type' }); continue; }
         const senderType = item.sender?.sender_type === 'app' ? 'app' as const : 'user' as const;
         let content = '';
-        // file / image 类型：仅显示文件名占位（不下载内容，避免延迟和 token 消耗）
-        // 用户如需分析文件，可引用回复该消息并 @bot
+        const imageRefs: Array<{ imageKey: string }> = [];
+        // file 类型：仅显示文件名占位（不下载内容）
+        // image 类型：文本占位 + 返回 imageRefs 供调用方按需下载
         if (msgType === 'file') {
           try {
             const body = JSON.parse(item.body?.content ?? '{}');
@@ -596,6 +597,13 @@ export class FeishuClient {
           }
         } else if (msgType === 'image') {
           content = '[图片]';
+          try {
+            const body = JSON.parse(item.body?.content ?? '{}');
+            const imageKey = body.image_key as string | undefined;
+            if (imageKey && item.message_id) {
+              imageRefs.push({ imageKey });
+            }
+          } catch { /* ignore parse errors */ }
         } else if (msgType === 'merge_forward') {
           const messageId = item.message_id;
           if (messageId) {
@@ -663,7 +671,11 @@ export class FeishuClient {
                     const atName = (element.user_name as string) ?? '';
                     if (atName) textParts.push(`@${atName}`);
                   }
-                  else if (element.tag === 'img') textParts.push('[图片]');
+                  else if (element.tag === 'img') {
+                    textParts.push('[图片]');
+                    const imgKey = element.image_key as string | undefined;
+                    if (imgKey) imageRefs.push({ imageKey: imgKey });
+                  }
                   else if (element.tag === 'media') textParts.push('[视频]');
                   else if (element.tag === 'emotion') {
                     const emojiType = (element.emoji_type as string) ?? '';
@@ -693,6 +705,7 @@ export class FeishuClient {
           content: content.trim(),
           msgType,
           createTime: item.create_time ?? undefined,
+          ...(imageRefs.length > 0 ? { imageRefs } : {}),
         });
       }
       // 诊断：记录消息获取和过滤的详情

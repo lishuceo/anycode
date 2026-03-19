@@ -37,7 +37,7 @@ import { handleMemoryCommand, handleMemoryCardAction } from '../memory/commands.
 import { getRepoIdentity } from '../workspace/identity.js';
 import { generateQuickAck } from '../utils/quick-ack.js';
 import { checkThreadRelevance } from '../utils/thread-relevance.js';
-import { compressImage } from '../utils/image-compress.js';
+import { compressImage, compressImageForHistory } from '../utils/image-compress.js';
 
 // 注册审批通过后的消息重新入队回调（避免 approval.ts → event-handler.ts 循环依赖）
 setOnApproved((chatId, userId, text, messageId, rootId, threadId) => {
@@ -897,6 +897,56 @@ async function handleSlashCommand(
   return false;
 }
 
+/** 历史消息中最多下载的图片数量 */
+const MAX_HISTORY_IMAGES = 5;
+
+/**
+ * 从历史消息中下载图片（最多 MAX_HISTORY_IMAGES 张，使用更激进的压缩）。
+ * 优先取最新的图片（消息列表已按时间正序排列，从末尾取）。
+ */
+async function downloadHistoryImages(
+  messages: Array<{ messageId: string; imageRefs?: Array<{ imageKey: string }> }>,
+): Promise<ImageAttachment[]> {
+  // 收集所有图片引用（最新的在后面），取最近 N 张
+  const refs: Array<{ messageId: string; imageKey: string }> = [];
+  for (const msg of messages) {
+    if (msg.imageRefs) {
+      for (const ref of msg.imageRefs) {
+        refs.push({ messageId: msg.messageId, imageKey: ref.imageKey });
+      }
+    }
+  }
+  if (refs.length === 0) return [];
+
+  const toDownload = refs.slice(-MAX_HISTORY_IMAGES);
+
+  const results = await Promise.all(toDownload.map(async (ref) => {
+    try {
+      const buf = await feishuClient.downloadMessageImage(ref.messageId, ref.imageKey);
+      if (buf.length > 15 * 1024 * 1024) {
+        logger.warn({ messageId: ref.messageId, size: buf.length }, 'History image too large, skipping');
+        return null;
+      }
+      const mediaType = detectImageMediaType(buf);
+      const compressed = await compressImageForHistory(buf, mediaType);
+      return {
+        data: compressed.data.toString('base64'),
+        mediaType: compressed.mediaType,
+      } as ImageAttachment;
+    } catch (err) {
+      logger.warn({ err, messageId: ref.messageId, imageKey: ref.imageKey }, 'Failed to download history image, skipping');
+      return null;
+    }
+  }));
+  const images = results.filter((img): img is ImageAttachment => img !== null);
+
+  if (images.length > 0) {
+    logger.info({ count: images.length, totalRefs: refs.length }, 'Downloaded history images');
+  }
+
+  return images;
+}
+
 /**
  * 构建飞书聊天历史上下文（首次 @bot 时注入，帮助 Claude 理解对话背景）
  *
@@ -935,8 +985,11 @@ async function buildChatHistoryContext(
       // afterMsgId 不在列表中 → 可能消息已过期滚动，注入全部
     }
 
-    const text = await formatHistoryMessages(filtered, chatId, selfBotOpenIds);
-    return { text: text ?? undefined, newestMsgId };
+    const [text, images] = await Promise.all([
+      formatHistoryMessages(filtered, chatId, selfBotOpenIds),
+      downloadHistoryImages(filtered),
+    ]);
+    return { text: text ?? undefined, newestMsgId, ...(images.length > 0 ? { images } : {}) };
   } catch (err) {
     logger.error({ err, chatId, threadId }, 'Failed to build chat history context');
     return {};
@@ -1333,6 +1386,10 @@ export async function executeClaudeTask(
     }
     if (history.newestMsgId) {
       _historyDedup.set(sessionKey, history.newestMsgId);
+    }
+    // 合并历史消息中的图片
+    if (history.images && history.images.length > 0) {
+      images = [...(history.images), ...(images ?? [])];
     }
   }
 
@@ -1808,6 +1865,10 @@ export async function executeDirectTask(
     if (history.newestMsgId) {
       _historyDedup.set(sessionKey, history.newestMsgId);
     }
+    // 合并历史消息中的图片
+    if (history.images && history.images.length > 0) {
+      images = [...(history.images), ...(images ?? [])];
+    }
 
     // rootId 引用消息注入（仅主面板引用回复，话题内 rootId 是锚定消息不需要注入）
     if (!eventThreadId) {
@@ -1914,6 +1975,8 @@ interface HistoryResult {
   text?: string;
   /** 本次注入的最新 messageId（用于下次去重） */
   newestMsgId?: string;
+  /** 历史消息中提取的图片（已压缩） */
+  images?: ImageAttachment[];
 }
 
 /**
@@ -1937,7 +2000,8 @@ async function buildDirectTaskHistory(
   selfBotOpenIds?: Set<string>,
 ): Promise<HistoryResult> {
   try {
-    let messages: Array<{ messageId: string; senderId: string; senderType: 'user' | 'app'; content: string; msgType: string; createTime?: string }>;
+    type HistoryMsg = { messageId: string; senderId: string; senderType: 'user' | 'app'; content: string; msgType: string; createTime?: string; imageRefs?: Array<{ imageKey: string }> };
+    let messages: HistoryMsg[];
 
     if (!threadId) {
       // 主聊天区：直接取父群最近消息
@@ -2009,8 +2073,11 @@ async function buildDirectTaskHistory(
       'buildDirectTaskHistory message pipeline',
     );
 
-    const text = await formatHistoryMessages(messages, chatId, selfBotOpenIds);
-    return { text: text ?? undefined, newestMsgId };
+    const [text, images] = await Promise.all([
+      formatHistoryMessages(messages, chatId, selfBotOpenIds),
+      downloadHistoryImages(messages),
+    ]);
+    return { text: text ?? undefined, newestMsgId, ...(images.length > 0 ? { images } : {}) };
   } catch (err) {
     logger.error({ err, chatId, threadId }, 'Failed to build direct task history');
     return {};
