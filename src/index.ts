@@ -8,7 +8,7 @@ import { cleanupTmpDirs, cleanupExpiredCaches } from './workspace/cache.js';
 import { pipelineStore } from './pipeline/store.js';
 import { recoverInterruptedPipelines } from './pipeline/runner.js';
 import { killOrphanedClaudeProcesses } from './utils/process-cleanup.js';
-import { feishuClient } from './feishu/client.js';
+import { feishuClient, runWithAccountId } from './feishu/client.js';
 import { cleanupExpiredApprovals } from './feishu/approval.js';
 import { accountManager } from './feishu/multi-account.js';
 import { validateBindings } from './agent/router.js';
@@ -72,42 +72,48 @@ async function main(): Promise<void> {
   if (config.cron.enabled) {
     await initializeCron({
       executeTask: async (params) => {
-        const agentCfg = agentRegistry.get(params.agentId as AgentId);
-        const useDirectMode = agentCfg?.replyMode === 'direct';
+        // 用 runWithAccountId 包裹，确保下游 feishuClient 调用路由到正确的 bot 账号
+        await runWithAccountId(params.accountId, async () => {
+          const agentCfg = agentRegistry.get(params.agentId as AgentId);
+          const useDirectMode = agentCfg?.replyMode === 'direct';
 
-        if (useDirectMode) {
-          await executeDirectTask(
-            params.prompt,
-            params.chatId,
-            params.userId,
-            params.messageId,
-            undefined, // images
-            undefined, // documents
-            params.agentId as AgentId,
-            params.threadId,
-            params.rootId,
-            undefined, // createTime
-            { skipQuickAck: true },
-          );
-        } else {
-          await executeClaudeTask(
-            params.prompt,
-            params.chatId,
-            params.userId,
-            params.messageId,
-            params.rootId,
-            params.threadId,
-            undefined, // images
-            undefined, // documents
-            params.agentId as AgentId,
-          );
-        }
+          if (useDirectMode) {
+            await executeDirectTask(
+              params.prompt,
+              params.chatId,
+              params.userId,
+              params.messageId,
+              undefined, // images
+              undefined, // documents
+              params.agentId as AgentId,
+              params.threadId,
+              params.rootId,
+              undefined, // createTime
+              { skipQuickAck: true },
+            );
+          } else {
+            await executeClaudeTask(
+              params.prompt,
+              params.chatId,
+              params.userId,
+              params.messageId,
+              params.rootId,
+              params.threadId,
+              undefined, // images
+              undefined, // documents
+              params.agentId as AgentId,
+            );
+          }
+        });
       },
-      sendMessage: async (chatId, text, rootId) => {
-        if (rootId) {
-          return feishuClient.replyTextInThread(rootId, text);
-        }
-        return feishuClient.sendText(chatId, text);
+      sendMessage: async (chatId, text, rootId, accountId) => {
+        // 用 runWithAccountId 包裹，确保占位消息由正确的 bot 发送
+        return runWithAccountId(accountId ?? 'default', async () => {
+          if (rootId) {
+            return feishuClient.replyTextInThread(rootId, text);
+          }
+          return feishuClient.sendText(chatId, text);
+        });
       },
     });
   }
