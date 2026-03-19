@@ -20,7 +20,7 @@
       },
       "bashAllowPatterns": ["^python .*/skills/", "^(ls|cat|head|tail|wc|find|grep|git (log|status|diff|show|branch))"],
       "persona": "./personas/pm.md",
-      "knowledge": ["team.md", "product.md"]
+      "knowledge": ["team.md", "product.md", "recruitment.md"]
     },
     {
       "id": "dev",
