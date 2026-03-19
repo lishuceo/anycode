@@ -164,11 +164,13 @@ gh api graphql -f query='{
 }'
 ```
 
+先获取 PR 作者：`gh pr view PR_NUMBER --json author -q .author.login` → `PR_AUTHOR`
+
 过滤条件：
 - `isResolved == false`（未解决）
-- 发起评论（第一条 comment）的 `author.login` 是 `claude[bot]`
+- 发起评论（第一条 comment）的 `author.login` **不是** PR 作者（排除自己的评论，处理所有 reviewer 的反馈，包括 bot 和人类 reviewer）
 
-如果没有 CI 失败（Step 2 已全部通过）且没有未解决的 `claude[bot]` 评论 → 输出 "✅ 所有 CI checks 通过，PR review 无阻塞问题" 并结束循环。
+如果没有 CI 失败（Step 2 已全部通过）且没有未解决的非作者评论 → 输出 "✅ 所有 CI checks 通过，PR review 无阻塞问题" 并结束循环。
 
 ### Step 4: 分析并处理 Review 评论
 
@@ -247,7 +249,7 @@ gh api graphql -f query='mutation {
 
 ## 注意事项
 
-- 只处理 `claude[bot]` 的评论，不处理人类 reviewer 的评论
+- 处理所有非 PR 作者的未解决评论（包括 bot 和人类 reviewer）
 - 反驳评论时给出**具体、有理据的解释**，引用代码上下文，不要笼统地说"这没问题"
 - commit message 遵循项目风格: `fix: <中文描述>`
 - 如果同一个问题反复出现（修了又被报），在第 3 轮后停下来让用户介入
