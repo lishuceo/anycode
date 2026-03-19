@@ -20,10 +20,11 @@ export type CronTaskExecutor = (params: {
   rootId?: string;
   threadId?: string;
   agentId: string;
+  accountId: string;
 }) => Promise<void>;
 
 /** 发占位消息的回调类型 */
-export type CronMessageSender = (chatId: string, text: string, rootId?: string) => Promise<string | undefined>;
+export type CronMessageSender = (chatId: string, text: string, rootId?: string, accountId?: string) => Promise<string | undefined>;
 
 export interface CronSchedulerDeps {
   store: CronStore;
@@ -136,12 +137,13 @@ export class CronScheduler {
     });
 
     try {
-      // 1. 发占位消息到飞书拿 messageId
+      // 1. 发占位消息到飞书拿 messageId（传入 accountId 确保用正确的 bot 发送）
       const placeholderText = `⏰ 定时任务「${job.name}」执行中...`;
       const messageId = await this.deps.sendMessage(
         job.chatId,
         placeholderText,
         job.threadRootMessageId,
+        job.accountId,
       );
 
       if (!messageId) {
@@ -161,6 +163,7 @@ export class CronScheduler {
         rootId: job.threadRootMessageId,
         threadId: job.threadId,
         agentId: job.agentId,
+        accountId: job.accountId,
       });
 
       // 4. 成功

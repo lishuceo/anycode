@@ -46,6 +46,7 @@ interface CronJobRow {
   model: string | null;
   max_budget_usd: number;
   agent_id: string;
+  account_id: string;
   thread_id: string | null;
   thread_root_message_id: string | null;
   context_snapshot: string | null;
@@ -90,6 +91,7 @@ function rowToJob(row: CronJobRow): CronJob {
     model: row.model ?? undefined,
     maxBudgetUsd: row.max_budget_usd,
     agentId: row.agent_id,
+    accountId: row.account_id,
     threadId: row.thread_id ?? undefined,
     threadRootMessageId: row.thread_root_message_id ?? undefined,
     contextSnapshot: row.context_snapshot ?? undefined,
@@ -230,6 +232,13 @@ export class CronStore {
       )
     `);
 
+    // Migration: add account_id column for existing databases
+    try {
+      this.db.exec(`ALTER TABLE cron_jobs ADD COLUMN account_id TEXT DEFAULT 'default'`);
+    } catch {
+      // Column already exists — ignore
+    }
+
     this.db.exec(`
       CREATE INDEX IF NOT EXISTS idx_cron_jobs_next_run
         ON cron_jobs(next_run_at_ms) WHERE enabled = 1
@@ -265,14 +274,14 @@ export class CronStore {
         id, name, chat_id, user_id, prompt, working_dir, repo_url,
         schedule_kind, schedule_expr, schedule_tz, every_ms, at_time,
         enabled, delete_after_run, next_run_at_ms,
-        timeout_seconds, model, max_budget_usd, agent_id,
+        timeout_seconds, model, max_budget_usd, agent_id, account_id,
         thread_id, thread_root_message_id, context_snapshot,
         created_at, updated_at
       ) VALUES (
         @id, @name, @chat_id, @user_id, @prompt, @working_dir, @repo_url,
         @schedule_kind, @schedule_expr, @schedule_tz, @every_ms, @at_time,
         @enabled, @delete_after_run, @next_run_at_ms,
-        @timeout_seconds, @model, @max_budget_usd, @agent_id,
+        @timeout_seconds, @model, @max_budget_usd, @agent_id, @account_id,
         @thread_id, @thread_root_message_id, @context_snapshot,
         @created_at, @updated_at
       )
@@ -390,6 +399,7 @@ export class CronStore {
       model: input.model ?? null,
       max_budget_usd: input.maxBudgetUsd ?? 5,
       agent_id: input.agentId ?? 'dev',
+      account_id: input.accountId ?? 'default',
       thread_id: input.threadId ?? null,
       thread_root_message_id: input.threadRootMessageId ?? null,
       context_snapshot: input.contextSnapshot ?? null,
