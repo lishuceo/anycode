@@ -919,25 +919,26 @@ async function downloadHistoryImages(
   if (refs.length === 0) return [];
 
   const toDownload = refs.slice(-MAX_HISTORY_IMAGES);
-  const images: ImageAttachment[] = [];
 
-  await Promise.all(toDownload.map(async (ref) => {
+  const results = await Promise.all(toDownload.map(async (ref) => {
     try {
       const buf = await feishuClient.downloadMessageImage(ref.messageId, ref.imageKey);
       if (buf.length > 15 * 1024 * 1024) {
         logger.warn({ messageId: ref.messageId, size: buf.length }, 'History image too large, skipping');
-        return;
+        return null;
       }
       const mediaType = detectImageMediaType(buf);
       const compressed = await compressImageForHistory(buf, mediaType);
-      images.push({
+      return {
         data: compressed.data.toString('base64'),
         mediaType: compressed.mediaType,
-      });
+      } as ImageAttachment;
     } catch (err) {
       logger.warn({ err, messageId: ref.messageId, imageKey: ref.imageKey }, 'Failed to download history image, skipping');
+      return null;
     }
   }));
+  const images = results.filter((img): img is ImageAttachment => img !== null);
 
   if (images.length > 0) {
     logger.info({ count: images.length, totalRefs: refs.length }, 'Downloaded history images');
