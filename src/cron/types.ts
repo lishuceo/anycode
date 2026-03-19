@@ -43,6 +43,8 @@ export interface CronJob {
   model?: string;
   maxBudgetUsd: number;
   agentId: string;
+  /** 飞书 bot 账号标识（多 bot 模式下用于路由到正确的 feishu client） */
+  accountId: string;
 
   // 话题绑定
   threadId?: string;
@@ -74,6 +76,7 @@ export interface CronJobCreate {
   model?: string;
   maxBudgetUsd?: number;
   agentId?: string;
+  accountId?: string;
 
   threadId?: string;
   threadRootMessageId?: string;

@@ -10,6 +10,7 @@ import { createMemorySearchMcpServer } from '../memory/tools/memory-search.js';
 import { getMemoryStore, getHybridSearch, isMemoryEnabled } from '../memory/init.js';
 import { createCronMcpServer } from '../cron/tool.js';
 import { getCronScheduler } from '../cron/init.js';
+import { feishuClientContext } from '../feishu/client.js';
 import { isAutoWorkspacePath, isServiceOwnRepo } from '../workspace/isolation.js';
 import type { ClaudeResult, ExecuteOptions, ProgressCallback, TurnInfo, ToolCallInfo, ImageAttachment, DocumentAttachment, MultimodalContentBlock } from './types.js';
 
@@ -457,6 +458,7 @@ export class ClaudeExecutor {
           chatId: cronChatId,
           userId: cronUserId,
           agentId: input.agentId,
+          accountId: feishuClientContext.getStore() || 'default',
           threadId: input.threadId,
           threadRootMessageId: input.threadRootMessageId,
         });
