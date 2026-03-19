@@ -9,7 +9,7 @@ vi.mock('../logger.js', () => ({
   },
 }));
 
-import { compressImage } from '../image-compress.js';
+import { compressImage, compressImageForHistory } from '../image-compress.js';
 
 /**
  * Create a noisy raw pixel buffer and encode to JPEG.
@@ -123,5 +123,48 @@ describe('compressImage', () => {
     const result = await compressImage(large, 'image/jpeg');
     expect(result.data.length).toBeLessThan(750 * 1024);
     expect(result.mediaType).toBe('image/jpeg');
+  });
+});
+
+describe('compressImageForHistory', () => {
+  it('should compress to smaller dimensions than standard compression', async () => {
+    const large = await createNoisyJpeg(3000, 2000);
+    expect(large.length).toBeGreaterThan(100 * 1024);
+
+    const result = await compressImageForHistory(large, 'image/jpeg');
+    expect(result.mediaType).toBe('image/jpeg');
+
+    const meta = await sharp(result.data).metadata();
+    expect(Math.max(meta.width!, meta.height!)).toBeLessThanOrEqual(768);
+  });
+
+  it('should produce smaller output than standard compression', async () => {
+    const large = await createNoisyJpeg(3000, 2000);
+
+    const [standard, history] = await Promise.all([
+      compressImage(large, 'image/jpeg'),
+      compressImageForHistory(large, 'image/jpeg'),
+    ]);
+
+    expect(history.data.length).toBeLessThan(standard.data.length);
+  });
+
+  it('should handle PNG input', async () => {
+    const png = await sharp({
+      create: { width: 2000, height: 2000, channels: 4, background: { r: 200, g: 100, b: 50, alpha: 255 } },
+    }).png().toBuffer();
+
+    const result = await compressImageForHistory(png, 'image/png');
+    expect(result.mediaType).toBe('image/jpeg'); // always converts to JPEG
+    const meta = await sharp(result.data).metadata();
+    expect(Math.max(meta.width!, meta.height!)).toBeLessThanOrEqual(768);
+  });
+
+  it('should gracefully fallback on corrupted buffer', async () => {
+    const garbage = Buffer.from('not-a-real-image'.repeat(3000));
+
+    // Should not throw, falls back to standard compression (which returns original)
+    const result = await compressImageForHistory(garbage, 'image/jpeg');
+    expect(result.data).toBe(garbage);
   });
 });

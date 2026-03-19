@@ -25,6 +25,20 @@ const JPEG_QUALITY_AGGRESSIVE = 70;
 /** JPEG quality for last-resort PNG→JPEG conversion */
 const JPEG_QUALITY_FALLBACK = 85;
 
+// --- History image compression (more aggressive to reduce token cost) ---
+
+/** Max dimension for history images */
+const HISTORY_MAX_DIMENSION = 768;
+
+/** Fallback dimension for history images */
+const HISTORY_FALLBACK_DIMENSION = 512;
+
+/** JPEG quality for history images */
+const HISTORY_JPEG_QUALITY = 60;
+
+/** Target raw bytes for history images (~400KB base64) */
+const HISTORY_TARGET_RAW_BYTES = 300 * 1024;
+
 export interface CompressedImage {
   data: Buffer;
   mediaType: ImageMediaType;
@@ -148,4 +162,45 @@ async function compressAsPng(
     .toBuffer();
 
   return { data: jpegFallback, mediaType: 'image/jpeg' };
+}
+
+/**
+ * Compress an image more aggressively for history context.
+ * Targets 768px max dimension and ~300KB raw to minimize token cost.
+ * All formats are converted to JPEG.
+ */
+export async function compressImageForHistory(
+  buf: Buffer,
+  originalMediaType: ImageMediaType,
+): Promise<CompressedImage> {
+  try {
+    const input = originalMediaType === 'image/gif'
+      ? sharp(buf, { pages: 1 })
+      : sharp(buf);
+
+    const result = await input
+      .rotate()
+      .resize({ width: HISTORY_MAX_DIMENSION, height: HISTORY_MAX_DIMENSION, fit: 'inside' })
+      .jpeg({ quality: HISTORY_JPEG_QUALITY, mozjpeg: true })
+      .toBuffer();
+
+    if (result.length <= HISTORY_TARGET_RAW_BYTES) {
+      return { data: result, mediaType: 'image/jpeg' };
+    }
+
+    // Still too large → even smaller
+    const smaller = await (originalMediaType === 'image/gif' ? sharp(buf, { pages: 1 }) : sharp(buf))
+      .rotate()
+      .resize({ width: HISTORY_FALLBACK_DIMENSION, height: HISTORY_FALLBACK_DIMENSION, fit: 'inside' })
+      .jpeg({ quality: HISTORY_JPEG_QUALITY - 10, mozjpeg: true })
+      .toBuffer();
+
+    return { data: smaller, mediaType: 'image/jpeg' };
+  } catch (err) {
+    logger.warn(
+      { err, originalSize: buf.length, mediaType: originalMediaType },
+      'History image compression failed, using standard compression',
+    );
+    return compressImage(buf, originalMediaType);
+  }
 }
