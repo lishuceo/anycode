@@ -442,7 +442,7 @@ describe('feishu_calendar tool', () => {
       });
       expect(mockEventDelete).toHaveBeenCalledWith(
         expect.objectContaining({
-          params: expect.objectContaining({ need_notification: false }),
+          params: expect.objectContaining({ need_notification: 'false' }),
         }),
         expect.anything(),
       );
