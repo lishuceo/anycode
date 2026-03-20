@@ -7,6 +7,7 @@ import { feishuBitableTool } from './bitable.js';
 import { feishuChatTool } from './chat.js';
 import { feishuTaskTool } from './task.js';
 import { feishuContactTool } from './contact.js';
+import { feishuCalendarTool } from './calendar.js';
 import { getValidUserToken } from '../oauth.js';
 
 /**
@@ -30,6 +31,7 @@ export function createFeishuToolsMcpServer(chatId?: string, userId?: string) {
   // 同时传入 userId，用于创建任务时自动将发起人加为关注者
   const getUserToken = userId ? () => getValidUserToken(userId) : undefined;
   if (config.feishu.tools.task) tools.push(feishuTaskTool(getUserToken, userId));
+  if (config.feishu.tools.calendar) tools.push(feishuCalendarTool(getUserToken, userId));
 
   // 边界条件修复 (review 反馈): 所有子开关全 false 时不注入空 MCP 服务器
   if (tools.length === 0) return undefined;
