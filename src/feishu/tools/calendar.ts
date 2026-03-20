@@ -316,7 +316,8 @@ export function feishuCalendarTool(getUserToken?: () => Promise<string | undefin
 
             const resp = await client.calendar.calendarEvent.create({
               path: { calendar_id: calId },
-              data: data as { summary: string },
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              data: data as any,
             }, userTokenOpt);
             if (resp.code !== 0) throw new Error(`创建日程失败 (${resp.code}): ${resp.msg}`);
 
@@ -381,7 +382,7 @@ export function feishuCalendarTool(getUserToken?: () => Promise<string | undefin
             const calId = args.calendar_id || await getPrimaryCalendarId();
             const resp = await client.calendar.calendarEvent.delete({
               path: { calendar_id: calId, event_id: args.event_id },
-              params: { need_notification: args.need_notification ?? true },
+              params: { need_notification: (args.need_notification ?? true) ? 'true' : 'false' },
             }, userTokenOpt);
             if (resp.code !== 0) throw new Error(`删除日程失败 (${resp.code}): ${resp.msg}`);
             return {
