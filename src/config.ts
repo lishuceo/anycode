@@ -57,13 +57,15 @@ export const config = {
       contact: process.env.FEISHU_TOOLS_CONTACT !== 'false',
       /** 任务工具 */
       task: process.env.FEISHU_TOOLS_TASK !== 'false',
+      /** 日历工具 */
+      calendar: process.env.FEISHU_TOOLS_CALENDAR !== 'false',
     },
     /** OAuth 用户授权配置（用于获取 user_access_token，支持查询用户个人任务等） */
     oauth: {
       /** OAuth 回调地址（需要公网可访问） */
       redirectUri: process.env.FEISHU_OAUTH_REDIRECT_URI || '',
       /** OAuth 请求的权限范围（空格分隔）。默认包含 task + tasklist 读写权限。 */
-      scopes: process.env.FEISHU_OAUTH_SCOPES || 'task:task:read task:task:write task:tasklist:read',
+      scopes: process.env.FEISHU_OAUTH_SCOPES || 'task:task:read task:task:write task:tasklist:read calendar:calendar calendar:calendar:readonly',
     },
   },
 
