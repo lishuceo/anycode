@@ -1792,14 +1792,15 @@ export async function executeDirectTask(
     // 纯问候类消息直接回复后跳过 Claude，其他类型照常走完整查询
     // 话题内消息跳过 quick-ack：bot 可能是被 threadBypass 隐式触发的，不是被明确 @的
     // cron 定时任务跳过 quick-ack：占位消息已由 scheduler 发送，不需要额外确认
+    let quickAckMsgId: string | undefined;
     const quickAck = (eventThreadId || options?.skipQuickAck) ? null : await generateQuickAck(rawPrompt);
     if (quickAck) {
       let ackSent = false;
       try {
         if (threadReplyMsgId) {
-          await feishuClient.replyTextInThread(threadReplyMsgId, quickAck.text);
+          quickAckMsgId = await feishuClient.replyTextInThread(threadReplyMsgId, quickAck.text);
         } else {
-          await feishuClient.replyText(messageId, quickAck.text);
+          quickAckMsgId = await feishuClient.replyText(messageId, quickAck.text);
         }
         ackSent = true;
       } catch (err) {
@@ -1886,6 +1887,13 @@ export async function executeDirectTask(
           onThreadCreated: (info) => {
             threadReplyMsgId = info.threadReplyMsgId;
             threadId = info.threadId;
+            // 话题创建后撤回主群的 quick-ack 消息（正式回复会在话题中）
+            if (quickAckMsgId) {
+              feishuClient.deleteMessage(quickAckMsgId).then((ok) => {
+                if (ok) logger.info({ quickAckMsgId }, 'Recalled quick-ack after thread creation');
+              });
+              quickAckMsgId = undefined;
+            }
           },
         });
 

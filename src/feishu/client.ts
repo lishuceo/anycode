@@ -196,6 +196,27 @@ export class FeishuClient {
   }
 
   /**
+   * 撤回消息（仅限机器人自己发送的消息）
+   */
+  async deleteMessage(messageId: string): Promise<boolean> {
+    try {
+      const resp = await this.client.im.message.delete({
+        path: { message_id: messageId },
+      });
+
+      if (resp.code !== 0) {
+        logger.warn({ code: resp.code, msg: resp.msg, messageId }, 'Failed to delete message');
+        return false;
+      }
+
+      return true;
+    } catch (err) {
+      logger.warn({ err, messageId }, 'Error deleting message');
+      return false;
+    }
+  }
+
+  /**
    * 回复富文本 (post) 消息
    */
   async replyPost(
