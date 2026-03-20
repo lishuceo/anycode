@@ -2,7 +2,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // vi.hoisted runs before vi.mock factories — safe to reference in factory
-const { mockConfig, mockDocTool, mockWikiTool, mockDriveTool, mockBitableTool, mockChatTool, mockContactTool, mockTaskTool, mockCreateSdkMcpServer } = vi.hoisted(() => {
+const { mockConfig, mockDocTool, mockWikiTool, mockDriveTool, mockBitableTool, mockChatTool, mockContactTool, mockTaskTool, mockCalendarTool, mockCreateSdkMcpServer } = vi.hoisted(() => {
   const mockConfig = {
     feishu: {
       tools: {
@@ -14,6 +14,7 @@ const { mockConfig, mockDocTool, mockWikiTool, mockDriveTool, mockBitableTool, m
         chat: true,
         contact: true,
         task: true,
+        calendar: true,
       },
     },
   };
@@ -26,6 +27,7 @@ const { mockConfig, mockDocTool, mockWikiTool, mockDriveTool, mockBitableTool, m
     mockChatTool: vi.fn(() => ({ name: 'feishu_chat_members' })),
     mockContactTool: vi.fn(() => ({ name: 'feishu_contact' })),
     mockTaskTool: vi.fn(() => ({ name: 'feishu_task' })),
+    mockCalendarTool: vi.fn(() => ({ name: 'feishu_calendar' })),
     mockCreateSdkMcpServer: vi.fn((opts: unknown) => ({ ...(opts as object), type: 'mcp-server' })),
   };
 });
@@ -39,6 +41,7 @@ vi.mock('../bitable.js', () => ({ feishuBitableTool: () => mockBitableTool() }))
 vi.mock('../chat.js', () => ({ feishuChatTool: () => mockChatTool() }));
 vi.mock('../contact.js', () => ({ feishuContactTool: () => mockContactTool() }));
 vi.mock('../task.js', () => ({ feishuTaskTool: () => mockTaskTool() }));
+vi.mock('../calendar.js', () => ({ feishuCalendarTool: () => mockCalendarTool() }));
 vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
   createSdkMcpServer: (opts: unknown) => mockCreateSdkMcpServer(opts),
 }));
@@ -55,6 +58,7 @@ beforeEach(() => {
   mockConfig.feishu.tools.chat = true;
   mockConfig.feishu.tools.contact = true;
   mockConfig.feishu.tools.task = true;
+  mockConfig.feishu.tools.calendar = true;
 });
 
 describe('createFeishuToolsMcpServer', () => {
@@ -64,7 +68,7 @@ describe('createFeishuToolsMcpServer', () => {
     expect(mockCreateSdkMcpServer).toHaveBeenCalledTimes(1);
     const call = mockCreateSdkMcpServer.mock.calls[0][0];
     expect(call.name).toBe('feishu-tools');
-    expect(call.tools).toHaveLength(7);
+    expect(call.tools).toHaveLength(8);
   });
 
   it('should include only enabled tools', () => {
@@ -74,10 +78,11 @@ describe('createFeishuToolsMcpServer', () => {
     const result = createFeishuToolsMcpServer();
     expect(result).toBeDefined();
     const call = mockCreateSdkMcpServer.mock.calls[0][0];
-    expect(call.tools).toHaveLength(5);
+    expect(call.tools).toHaveLength(6);
     expect(mockDocTool).toHaveBeenCalledTimes(1);
     expect(mockDriveTool).toHaveBeenCalledTimes(1);
     expect(mockChatTool).toHaveBeenCalledTimes(1);
+    expect(mockCalendarTool).toHaveBeenCalledTimes(1);
     expect(mockWikiTool).not.toHaveBeenCalled();
     expect(mockBitableTool).not.toHaveBeenCalled();
   });
@@ -88,7 +93,7 @@ describe('createFeishuToolsMcpServer', () => {
     const result = createFeishuToolsMcpServer();
     expect(result).toBeDefined();
     const call = mockCreateSdkMcpServer.mock.calls[0][0];
-    expect(call.tools).toHaveLength(6);
+    expect(call.tools).toHaveLength(7);
     expect(mockDocTool).toHaveBeenCalledTimes(1);
     expect(mockWikiTool).toHaveBeenCalledTimes(1);
     expect(mockDriveTool).toHaveBeenCalledTimes(1);
@@ -102,7 +107,7 @@ describe('createFeishuToolsMcpServer', () => {
     const result = createFeishuToolsMcpServer(undefined);
     expect(result).toBeDefined();
     const call = mockCreateSdkMcpServer.mock.calls[0][0];
-    expect(call.tools).toHaveLength(7);
+    expect(call.tools).toHaveLength(8);
     expect(mockChatTool).toHaveBeenCalledTimes(1);
   });
 
@@ -112,7 +117,7 @@ describe('createFeishuToolsMcpServer', () => {
     const result = createFeishuToolsMcpServer();
     expect(result).toBeDefined();
     const call = mockCreateSdkMcpServer.mock.calls[0][0];
-    expect(call.tools).toHaveLength(6);
+    expect(call.tools).toHaveLength(7);
     expect(mockTaskTool).not.toHaveBeenCalled();
   });
 
@@ -122,7 +127,7 @@ describe('createFeishuToolsMcpServer', () => {
     const result = createFeishuToolsMcpServer();
     expect(result).toBeDefined();
     const call = mockCreateSdkMcpServer.mock.calls[0][0];
-    expect(call.tools).toHaveLength(6);
+    expect(call.tools).toHaveLength(7);
     expect(mockContactTool).not.toHaveBeenCalled();
   });
 
@@ -134,6 +139,7 @@ describe('createFeishuToolsMcpServer', () => {
     mockConfig.feishu.tools.chat = false;
     mockConfig.feishu.tools.contact = false;
     mockConfig.feishu.tools.task = false;
+    mockConfig.feishu.tools.calendar = false;
 
     const result = createFeishuToolsMcpServer();
     expect(result).toBeUndefined();
@@ -148,6 +154,7 @@ describe('createFeishuToolsMcpServer', () => {
     mockConfig.feishu.tools.chat = false;
     mockConfig.feishu.tools.contact = false;
     mockConfig.feishu.tools.task = false;
+    mockConfig.feishu.tools.calendar = false;
 
     const result = createFeishuToolsMcpServer();
     expect(result).toBeDefined();
