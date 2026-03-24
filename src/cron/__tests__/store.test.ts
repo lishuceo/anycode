@@ -296,12 +296,12 @@ describe('CronStore', () => {
       schedule: { kind: 'every', everyMs: 60_000 },
       threadId: 'thread-123',
       threadRootMessageId: 'msg-456',
-      contextSnapshot: 'repo: taptap/code, branch: main',
+      contextSnapshot: 'repo: taptap/maker, branch: main',
     });
 
     expect(job.threadId).toBe('thread-123');
     expect(job.threadRootMessageId).toBe('msg-456');
-    expect(job.contextSnapshot).toBe('repo: taptap/code, branch: main');
+    expect(job.contextSnapshot).toBe('repo: taptap/maker, branch: main');
   });
 });
 

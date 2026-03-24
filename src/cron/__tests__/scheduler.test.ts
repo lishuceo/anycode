@@ -148,12 +148,12 @@ describe('CronScheduler', () => {
       userId: 'user1',
       prompt: 'check PR',
       schedule: { kind: 'every', everyMs: 3600_000 },
-      contextSnapshot: 'repo: taptap/code, PR: #42',
+      contextSnapshot: 'repo: taptap/maker, PR: #42',
     });
 
     await scheduler.triggerJob(job.id);
 
-    expect(executedPrompts[0]).toContain('repo: taptap/code, PR: #42');
+    expect(executedPrompts[0]).toContain('repo: taptap/maker, PR: #42');
     expect(executedPrompts[0]).toContain('check PR');
   });
 
