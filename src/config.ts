@@ -65,7 +65,7 @@ export const config = {
       /** OAuth 回调地址（需要公网可访问） */
       redirectUri: process.env.FEISHU_OAUTH_REDIRECT_URI || '',
       /** OAuth 请求的权限范围（空格分隔）。默认包含 task + tasklist 读写权限。 */
-      scopes: process.env.FEISHU_OAUTH_SCOPES || 'task:task:read task:task:write task:tasklist:read calendar:calendar calendar:calendar:readonly search:user',
+      scopes: process.env.FEISHU_OAUTH_SCOPES || 'task:task:read task:task:write task:tasklist:read calendar:calendar calendar:calendar:readonly contact:user:search',
     },
   },
 
