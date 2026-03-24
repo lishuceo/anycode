@@ -26,10 +26,10 @@ export function createFeishuToolsMcpServer(chatId?: string, userId?: string) {
   if (config.feishu.tools.drive) tools.push(feishuDriveTool(chatId));
   if (config.feishu.tools.bitable) tools.push(feishuBitableTool());
   if (config.feishu.tools.chat) tools.push(feishuChatTool(chatId));
-  if (config.feishu.tools.contact) tools.push(feishuContactTool());
-  // 通过闭包绑定当前用户的 token 获取函数，task 工具可透明使用 user_access_token
+  // 通过闭包绑定当前用户的 token 获取函数，contact/task/calendar 工具可透明使用 user_access_token
   // 同时传入 userId，用于创建任务时自动将发起人加为关注者
   const getUserToken = userId ? () => getValidUserToken(userId) : undefined;
+  if (config.feishu.tools.contact) tools.push(feishuContactTool(getUserToken));
   if (config.feishu.tools.task) tools.push(feishuTaskTool(getUserToken, userId));
   if (config.feishu.tools.calendar) tools.push(feishuCalendarTool(getUserToken, userId));
 
