@@ -135,9 +135,9 @@ export function feishuContactTool(getUserToken?: () => Promise<string | undefine
               page_token?: string;
             };
           }>({
-            method: 'POST',
-            url: '/open-apis/search/v2/user',
-            data: {
+            method: 'GET',
+            url: '/open-apis/search/v1/user',
+            params: {
               query,
               page_size: Math.min(page_size ?? 20, 200),
             },

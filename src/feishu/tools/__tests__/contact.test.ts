@@ -277,9 +277,9 @@ describe('feishu_contact tool', () => {
 
       expect(mockRequest).toHaveBeenCalledWith(
         {
-          method: 'POST',
-          url: '/open-apis/search/v2/user',
-          data: { query: '张三', page_size: 10 },
+          method: 'GET',
+          url: '/open-apis/search/v1/user',
+          params: { query: '张三', page_size: 10 },
         },
         { userAccessToken: 'user_token_abc' },
       );
@@ -295,7 +295,7 @@ describe('feishu_contact tool', () => {
 
       expect(mockRequest).toHaveBeenCalledWith(
         expect.objectContaining({
-          data: expect.objectContaining({ page_size: 200 }),
+          params: expect.objectContaining({ page_size: 200 }),
         }),
         expect.anything(),
       );
