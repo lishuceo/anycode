@@ -31,7 +31,7 @@ TapTap / Maker team — TapTap Maker (TapTap 制造) development team.
 | Repo | Description |
 |------|-------------|
 | [lishuceo/anywhere-code](https://github.com/lishuceo/anywhere-code) | **本项目** — AI Coding Agent 平台（Agent SDK 执行引擎 + 飞书集成 + 工作区隔离 + 记忆系统 + MCP 工具集） |
-| [taptap/code](https://github.com/taptap/code) | TapTap Maker 官网 + 用户沙箱集群（非本项目） |
+| [taptap/maker](https://github.com/taptap/maker) | TapTap Maker 官网 + 用户沙箱集群（非本项目） |
 | [taptap/UrhoX](https://github.com/taptap/UrhoX) | UrhoX game engine |
 | [taptap/urhox-libs](https://github.com/taptap/urhox-libs) | UrhoX official Lua libraries |
 | [taptap/GameOrchestrator](https://github.com/taptap/GameOrchestrator) | UrhoXServer orchestrator (server instance management + session handling) |
