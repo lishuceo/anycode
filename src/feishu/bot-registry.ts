@@ -43,8 +43,8 @@ export class ChatBotRegistry {
       if (source === 'event_added' && existing.source !== 'event_added') {
         existing.source = 'event_added';
       }
-      // 有 name 时更新（补充从被动收集缺失的 name）
-      if (name && !existing.name) {
+      // 有 name 时始终更新（被动收集时 name 不可用，后续从 @mention 补充）
+      if (name) {
         existing.name = name;
       }
       return;
