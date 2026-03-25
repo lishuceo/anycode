@@ -32,13 +32,16 @@ argument-hint: "[PR number, default: current branch's PR]"
 gh pr view PR_NUMBER --json mergeable,mergeStateStatus -q '{mergeable: .mergeable, state: .mergeStateStatus}'
 ```
 
-**判断逻辑：**
+**判断逻辑（需同时检查两个字段）：**
 
-| mergeable | 处理 |
-|-----------|------|
-| `MERGEABLE` | 无冲突，继续下一步 |
-| `CONFLICTING` | 有冲突，尝试自动 rebase |
-| `UNKNOWN` | GitHub 还在计算，等待 10 秒后重查（最多 3 次） |
+| 条件 | 处理 |
+|------|------|
+| `mergeable=MERGEABLE` 且 `state=CLEAN` | 无冲突且最新，继续下一步 |
+| `mergeable=MERGEABLE` 且 `state=BEHIND` | 分支落后 base，需要 rebase 更新 |
+| `mergeable=CONFLICTING` | 有冲突，尝试自动 rebase |
+| `mergeable=UNKNOWN` | GitHub 还在计算，等待 10 秒后重查（最多 3 次） |
+
+**重要**：`BEHIND` 状态表示分支可以合并但落后于 base branch。如果仓库有 "require branches to be up to date" 规则，必须 rebase 才能合并。即使没有此规则，也建议 rebase 以确保 CI 基于最新代码运行。
 
 **自动 rebase 流程：**
 
