@@ -12,7 +12,6 @@ import { createCronMcpServer } from '../cron/tool.js';
 import { getCronScheduler } from '../cron/init.js';
 import { feishuClientContext } from '../feishu/client.js';
 import { isAutoWorkspacePath, isServiceOwnRepo } from '../workspace/isolation.js';
-import { getRepoIdentity } from '../workspace/identity.js';
 import type { ClaudeResult, ExecuteOptions, ProgressCallback, TurnInfo, ToolCallInfo, ImageAttachment, DocumentAttachment, MultimodalContentBlock } from './types.js';
 
 // ============================================================
@@ -141,21 +140,6 @@ export interface ExecuteInput extends ExecuteOptions {
   threadRootMessageId?: string;
 }
 
-/**
- * 从工作目录推导 GitHub 仓库的 owner/repo slug。
- * 用于在系统提示词中动态标识当前项目。
- */
-function detectRepoSlug(workDir: string): string | null {
-  try {
-    const identity = getRepoIdentity(workDir);
-    // identity 格式: "github.com/owner/repo.git" (远程仓库)
-    const match = identity.match(/github\.com\/(.+?)(?:\.git)?$/);
-    return match ? match[1] : null;
-  } catch {
-    return null;
-  }
-}
-
 /** 构建工作区管理系统提示词（注入实际目录路径） */
 function buildWorkspaceSystemPrompt(workingDir?: string): string {
   const projectsDir = config.claude.defaultWorkDir;
@@ -239,20 +223,7 @@ gh search issues --repo owner/repo -- "keyword"
 cd /some/other/dir && gh pr view 123
 \`\`\``;
 
-  // MCP 工具的 schema 和 description 由 Agent SDK 自动注入，无需在此重复列出
-
-  // 动态检测当前仓库，注入"当前项目"提示，避免模型被 knowledge 中的仓库列表误导
-  const isSelfRepo = !workingDir || isServiceOwnRepo(workingDir);
-  const repoSlug = workingDir ? detectRepoSlug(workingDir) : null;
-  const currentRepoGuide = !isSelfRepo && repoSlug ? `
-
-## 当前工作项目
-
-你当前正在 **${repoSlug}** 仓库的工作区中工作。
-工作目录: \`${workingDir}\`
-请基于当前工作目录中的代码来回答问题和执行任务。` : '';
-
-  const selfRepoGuide = isSelfRepo ? `
+  const selfRepoGuide = (!workingDir || isServiceOwnRepo(workingDir)) ? `
 
 ## 服务运行时信息（自改自模式）
 
@@ -273,7 +244,7 @@ cd /some/other/dir && gh pr view 123
 - 你的工作目录是服务仓库的隔离 clone，修改不会直接影响运行中的实例，需要推送代码并重启才能生效
 - 日志是 JSON 格式（Pino），可用 \`| jq .\` 格式化或 \`| grep "关键词"\` 过滤` : '';
 
-  return basePrompt + currentRepoGuide + selfRepoGuide;
+  return basePrompt + selfRepoGuide;
 }
 
 /**
