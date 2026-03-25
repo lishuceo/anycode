@@ -8,6 +8,7 @@ import { feishuChatTool } from './chat.js';
 import { feishuTaskTool } from './task.js';
 import { feishuContactTool } from './contact.js';
 import { feishuCalendarTool } from './calendar.js';
+import { feishuMainChatTool } from './main-chat.js';
 import { getValidUserToken } from '../oauth.js';
 
 /**
@@ -32,6 +33,9 @@ export function createFeishuToolsMcpServer(chatId?: string, userId?: string) {
   if (config.feishu.tools.contact) tools.push(feishuContactTool(getUserToken));
   if (config.feishu.tools.task) tools.push(feishuTaskTool(getUserToken, userId));
   if (config.feishu.tools.calendar) tools.push(feishuCalendarTool(getUserToken, userId));
+
+  // 主聊天发送工具：agent 在话题内时可自主决定将重要结果发到群主聊天
+  if (chatId) tools.push(feishuMainChatTool(chatId));
 
   // 边界条件修复 (review 反馈): 所有子开关全 false 时不注入空 MCP 服务器
   if (tools.length === 0) return undefined;
