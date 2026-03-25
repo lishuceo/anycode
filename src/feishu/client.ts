@@ -602,10 +602,10 @@ export class FeishuClient {
       const messages: Array<{ messageId: string; senderId: string; senderType: 'user' | 'app'; content: string; msgType: string; createTime?: string; imageRefs?: Array<{ imageKey: string }> }> = [];
       // 诊断：记录 API 返回的原始消息分布
       const diagSkipped: Array<{ id: string; type: string; reason: string }> = [];
+      // 被动收集 bot：历史消息中的 bot sender 注册到 registry（弥补实时事件可能未推送的情况）
+      const botDiscoveryChatId = containerType === 'chat' ? containerId : chatIdForBotDiscovery;
       for (const item of items) {
-        // 被动收集 bot：历史消息中的 bot sender 注册到 registry（弥补实时事件可能未推送的情况）
-        const botDiscoveryChatId = containerType === 'chat' ? containerId : chatIdForBotDiscovery;
-        if (item.sender?.sender_type === 'app' && item.sender?.id && botDiscoveryChatId) {
+        if (botDiscoveryChatId && item.sender?.sender_type === 'app' && item.sender?.id) {
           chatBotRegistry.addBot(botDiscoveryChatId, item.sender.id, undefined, 'message_sender');
         }
         if (item.deleted) { diagSkipped.push({ id: item.message_id ?? '?', type: item.msg_type ?? '?', reason: 'deleted' }); continue; }
