@@ -423,7 +423,7 @@ export class ClaudeExecutor {
       const keyParts = sessionKey.split(':');
       const chatId = keyParts.length >= 4 ? keyParts[2] : keyParts[0] || undefined;
       const userId = keyParts.length >= 4 ? keyParts[3] : keyParts[1] || undefined;
-      const feishuMcp = createFeishuToolsMcpServer(chatId, userId);
+      const feishuMcp = createFeishuToolsMcpServer(chatId, userId, input.threadRootMessageId);
       if (feishuMcp) {
         mcpServers['feishu-tools'] = feishuMcp;
       }

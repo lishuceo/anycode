@@ -8,8 +8,11 @@ import { logger } from '../../utils/logger.js';
  *
  * 当 agent 在话题中工作时，默认回复只在话题内可见。
  * 此工具让 agent 自主决定是否将重要结果同步发送到群主聊天。
+ *
+ * 当 threadRootMessageId 可用时，使用 replyText 回复话题根消息，
+ * 这样主聊天中的消息会保留对话题的引用（类似飞书"同时发送到群"）。
  */
-export function feishuMainChatTool(chatId?: string) {
+export function feishuMainChatTool(chatId?: string, threadRootMessageId?: string) {
   return tool(
     'feishu_send_to_chat',
     [
@@ -38,8 +41,13 @@ export function feishuMainChatTool(chatId?: string) {
       }
 
       try {
-        await feishuClient.sendText(chatId, args.text);
-        logger.info({ chatId, textLen: args.text.length }, 'feishu_send_to_chat tool invoked');
+        // 有话题根消息时用 replyText，保留话题关联（类似飞书"同时发送到群"）
+        if (threadRootMessageId) {
+          await feishuClient.replyText(threadRootMessageId, args.text);
+        } else {
+          await feishuClient.sendText(chatId, args.text);
+        }
+        logger.info({ chatId, threadRootMessageId, textLen: args.text.length }, 'feishu_send_to_chat tool invoked');
         return {
           content: [{ type: 'text' as const, text: '已发送到群主聊天' }],
         };
