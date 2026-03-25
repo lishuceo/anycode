@@ -2,7 +2,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // vi.hoisted runs before vi.mock factories — safe to reference in factory
-const { mockConfig, mockDocTool, mockWikiTool, mockDriveTool, mockBitableTool, mockChatTool, mockContactTool, mockTaskTool, mockCalendarTool, mockCreateSdkMcpServer } = vi.hoisted(() => {
+const { mockConfig, mockDocTool, mockWikiTool, mockDriveTool, mockBitableTool, mockChatTool, mockContactTool, mockTaskTool, mockCalendarTool, mockMainChatTool, mockCreateSdkMcpServer } = vi.hoisted(() => {
   const mockConfig = {
     feishu: {
       tools: {
@@ -28,6 +28,7 @@ const { mockConfig, mockDocTool, mockWikiTool, mockDriveTool, mockBitableTool, m
     mockContactTool: vi.fn(() => ({ name: 'feishu_contact' })),
     mockTaskTool: vi.fn(() => ({ name: 'feishu_task' })),
     mockCalendarTool: vi.fn(() => ({ name: 'feishu_calendar' })),
+    mockMainChatTool: vi.fn(() => ({ name: 'feishu_send_to_chat' })),
     mockCreateSdkMcpServer: vi.fn((opts: unknown) => ({ ...(opts as object), type: 'mcp-server' })),
   };
 });
@@ -42,6 +43,7 @@ vi.mock('../chat.js', () => ({ feishuChatTool: () => mockChatTool() }));
 vi.mock('../contact.js', () => ({ feishuContactTool: () => mockContactTool() }));
 vi.mock('../task.js', () => ({ feishuTaskTool: () => mockTaskTool() }));
 vi.mock('../calendar.js', () => ({ feishuCalendarTool: () => mockCalendarTool() }));
+vi.mock('../main-chat.js', () => ({ feishuMainChatTool: () => mockMainChatTool() }));
 vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
   createSdkMcpServer: (opts: unknown) => mockCreateSdkMcpServer(opts),
 }));
@@ -109,6 +111,15 @@ describe('createFeishuToolsMcpServer', () => {
     const call = mockCreateSdkMcpServer.mock.calls[0][0];
     expect(call.tools).toHaveLength(8);
     expect(mockChatTool).toHaveBeenCalledTimes(1);
+    expect(mockMainChatTool).not.toHaveBeenCalled();
+  });
+
+  it('should include main-chat tool when chatId is provided', () => {
+    const result = createFeishuToolsMcpServer('chat_123');
+    expect(result).toBeDefined();
+    const call = mockCreateSdkMcpServer.mock.calls[0][0];
+    expect(call.tools).toHaveLength(9);
+    expect(mockMainChatTool).toHaveBeenCalledTimes(1);
   });
 
   it('should not include task tool when task switch is false', () => {
