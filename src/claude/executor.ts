@@ -223,7 +223,7 @@ gh search issues --repo owner/repo -- "keyword"
 cd /some/other/dir && gh pr view 123
 \`\`\``;
 
-  const selfRepoGuide = (!workingDir || isServiceOwnRepo(workingDir)) ? `
+  const selfRepoGuide = (workingDir && isServiceOwnRepo(workingDir)) ? `
 
 ## 服务运行时信息（自改自模式）
 
