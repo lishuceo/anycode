@@ -2594,6 +2594,10 @@ async function parseMessage(data: MessageEventData): Promise<ParsedMessage | nul
         // bot mention：去掉占位符
         text = text.replace(mention.key, '').trim();
         if (isSelfBot) mentionedBot = true;
+        // 从 @mention 元素中补充 bot 名字（被动收集 sender_type=app 时 name 不可用）
+        if (chatId && openId && mention.name) {
+          chatBotRegistry.addBot(chatId, openId, mention.name, 'message_sender');
+        }
       } else {
         // 人类用户 @mention：替换为 @名字，让 Claude 看到被 @ 的人
         text = text.replace(mention.key, `@${mention.name}`);
