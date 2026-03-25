@@ -491,22 +491,27 @@ async function handleMessageEvent(data: MessageEventData, accountId: string = 'd
     return;
   }
 
+  // -- 被动收集：消息发送者为 bot 时记录到 registry --
+  // 必须在 parseMessage 之前执行：bot 发的卡片消息 (interactive) 会被 parseMessage 过滤掉，
+  // 如果放在后面，卡片消息的 bot sender 永远不会被注册。
+  {
+    const sender = data.sender;
+    const senderUserId = sender.sender_id?.open_id;
+    const senderChatId = data.message.chat_id;
+    if (sender.sender_type === 'app' && senderUserId && senderChatId) {
+      const selfBotOpenIds = accountManager.getAllBotOpenIds();
+      const selfBotOpenId = feishuClient.botOpenId;
+      if (selfBotOpenId) selfBotOpenIds.add(selfBotOpenId);
+      if (!selfBotOpenIds.has(senderUserId)) {
+        chatBotRegistry.addBot(senderChatId, senderUserId, undefined, 'message_sender');
+      }
+    }
+  }
+
   const parsed = await parseMessage(data);
   if (!parsed) return;
 
   const { text, messageId, userId, chatId, chatType, mentionedBot, rootId, threadId, images, documents, mentions, senderType, createTime } = parsed;
-
-  // -- 被动收集：消息发送者为 bot 时记录到 registry --
-  if (senderType === 'app' && userId && chatId) {
-    const selfBotOpenIds = accountManager.getAllBotOpenIds();
-    // 单 bot 模式下 getAllBotOpenIds() 为空，需补充 feishuClient.botOpenId
-    const selfBotOpenId = feishuClient.botOpenId;
-    if (selfBotOpenId) selfBotOpenIds.add(selfBotOpenId);
-    if (!selfBotOpenIds.has(userId)) {
-      // 非自身 bot → 记录为已知 bot（name 在此处不可用，后续可通过事件补充）
-      chatBotRegistry.addBot(chatId, userId, undefined, 'message_sender');
-    }
-  }
 
   logger.info({ userId, chatId, chatType, rootId, threadId, accountId, text: text.slice(0, 100), hasImages: !!images?.length }, 'Received message');
 
