@@ -1,8 +1,25 @@
 // @ts-nocheck — test file
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // convertTextWithMentions is a pure function — no external deps needed
-import { convertTextWithMentions } from '../mention-resolver.js';
+import { convertTextWithMentions, resolveMentions } from '../mention-resolver.js';
+
+// Mock dependencies for resolveMentions tests
+vi.mock('../client.js', () => ({
+  feishuClient: {
+    getChatMembers: vi.fn(),
+  },
+}));
+
+vi.mock('../bot-registry.js', () => ({
+  chatBotRegistry: {
+    getBots: vi.fn(),
+  },
+}));
+
+vi.mock('../../utils/logger.js', () => ({
+  logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() },
+}));
 
 const members = new Map([
   ['张三', 'ou_aaa'],
@@ -101,5 +118,72 @@ describe('convertTextWithMentions', () => {
 
   it('should handle text with @ but no following name match', () => {
     expect(convertTextWithMentions('email@test.com', members)).toBeNull();
+  });
+});
+
+describe('resolveMentions', () => {
+  let mockGetChatMembers: ReturnType<typeof vi.fn>;
+  let mockGetBots: ReturnType<typeof vi.fn>;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    const { feishuClient } = await import('../client.js');
+    const { chatBotRegistry } = await import('../bot-registry.js');
+    mockGetChatMembers = feishuClient.getChatMembers as ReturnType<typeof vi.fn>;
+    mockGetBots = chatBotRegistry.getBots as ReturnType<typeof vi.fn>;
+  });
+
+  it('should resolve bot mentions from chatBotRegistry', async () => {
+    mockGetChatMembers.mockResolvedValue([
+      { memberId: 'ou_user1', name: '张三', memberIdType: 'open_id' },
+    ]);
+    mockGetBots.mockReturnValue([
+      { openId: 'ou_bot1', name: '土豆儿', source: 'message_sender', discoveredAt: Date.now() },
+    ]);
+
+    const result = await resolveMentions('@土豆儿 帮我看看', 'chat_123');
+    expect(result).toEqual([
+      [
+        { tag: 'at', user_id: 'ou_bot1' },
+        { tag: 'text', text: ' 帮我看看' },
+      ],
+    ]);
+  });
+
+  it('should resolve both user and bot mentions in same text', async () => {
+    mockGetChatMembers.mockResolvedValue([
+      { memberId: 'ou_user1', name: '张三', memberIdType: 'open_id' },
+    ]);
+    mockGetBots.mockReturnValue([
+      { openId: 'ou_bot1', name: '土豆儿', source: 'message_sender', discoveredAt: Date.now() },
+    ]);
+
+    const result = await resolveMentions('@张三 @土豆儿 你们看看', 'chat_123');
+    expect(result).toEqual([
+      [
+        { tag: 'at', user_id: 'ou_user1' },
+        { tag: 'text', text: ' ' },
+        { tag: 'at', user_id: 'ou_bot1' },
+        { tag: 'text', text: ' 你们看看' },
+      ],
+    ]);
+  });
+
+  it('should not override user name with bot of same name', async () => {
+    mockGetChatMembers.mockResolvedValue([
+      { memberId: 'ou_user1', name: '小助手', memberIdType: 'open_id' },
+    ]);
+    mockGetBots.mockReturnValue([
+      { openId: 'ou_bot1', name: '小助手', source: 'message_sender', discoveredAt: Date.now() },
+    ]);
+
+    const result = await resolveMentions('@小助手 你好', 'chat_123');
+    // User takes priority — nameToOpenId.has check prevents bot from overriding
+    expect(result).toEqual([
+      [
+        { tag: 'at', user_id: 'ou_user1' },
+        { tag: 'text', text: ' 你好' },
+      ],
+    ]);
   });
 });
