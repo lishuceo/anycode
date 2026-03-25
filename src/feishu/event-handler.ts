@@ -578,11 +578,7 @@ async function handleMessageEvent(data: MessageEventData, accountId: string = 'd
     // 补充 chatBotRegistry 中通过被动收集（sender_type=app）记录的跨 app bot open_id。
     const registryBotIds = chatBotRegistry.getBots(chatId).map(b => b.openId);
     const knownBotIds = new Set([...allBotOpenIds, ...registryBotIds]);
-    // cli_ 前缀是飞书 bot/app 的 open_id 标识，无需 registry 即可判定
-    const anyBotMentioned = mentions.some(m => {
-      const oid = m.id.open_id ?? '';
-      return knownBotIds.has(oid) || oid.startsWith('cli_');
-    });
+    const anyBotMentioned = mentions.some(m => knownBotIds.has(m.id.open_id ?? ''));
     let threadBypass = false;
     if (threadId && !anyBotMentioned && isThreadCreatorAgent(threadId, agentId)) {
       const ts = sessionManager.getThreadSession(threadId, agentId);
@@ -975,7 +971,7 @@ async function buildChatHistoryContext(
   try {
     const containerId = threadId ?? chatId;
     const containerType = threadId ? 'thread' as const : 'chat' as const;
-    const messages = await feishuClient.fetchRecentMessages(containerId, containerType, config.chat.historyMaxCount);
+    const messages = await feishuClient.fetchRecentMessages(containerId, containerType, config.chat.historyMaxCount, threadId ? chatId : undefined);
 
     // 过滤掉当前消息
     let filtered = currentMessageId
@@ -2025,7 +2021,7 @@ async function buildDirectTaskHistory(
       messages = await feishuClient.fetchRecentMessages(chatId, 'chat', config.chat.historyMaxCount);
     } else {
       // 话题模式：fork 语义
-      const threadMsgs = await feishuClient.fetchRecentMessages(threadId, 'thread', 50);
+      const threadMsgs = await feishuClient.fetchRecentMessages(threadId, 'thread', 50, chatId);
       const filtered = currentMessageId
         ? threadMsgs.filter(m => m.messageId !== currentMessageId)
         : threadMsgs;
@@ -2597,8 +2593,7 @@ async function parseMessage(data: MessageEventData): Promise<ParsedMessage | nul
     for (const mention of message.mentions) {
       const openId = mention.id.open_id ?? '';
       const isSelfBot = botOpenId ? openId === botOpenId : false;
-      // cli_ 前缀是飞书 bot/app 的 open_id 标识，无需 registry 即可判定
-      const isAnyBot = isSelfBot || allBotIds.has(openId) || openId.startsWith('cli_');
+      const isAnyBot = isSelfBot || allBotIds.has(openId);
 
       if (isAnyBot) {
         // bot mention：去掉占位符
