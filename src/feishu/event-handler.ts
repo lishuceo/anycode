@@ -975,7 +975,7 @@ async function buildChatHistoryContext(
   try {
     const containerId = threadId ?? chatId;
     const containerType = threadId ? 'thread' as const : 'chat' as const;
-    const messages = await feishuClient.fetchRecentMessages(containerId, containerType, config.chat.historyMaxCount);
+    const messages = await feishuClient.fetchRecentMessages(containerId, containerType, config.chat.historyMaxCount, threadId ? chatId : undefined);
 
     // 过滤掉当前消息
     let filtered = currentMessageId
@@ -2025,7 +2025,7 @@ async function buildDirectTaskHistory(
       messages = await feishuClient.fetchRecentMessages(chatId, 'chat', config.chat.historyMaxCount);
     } else {
       // 话题模式：fork 语义
-      const threadMsgs = await feishuClient.fetchRecentMessages(threadId, 'thread', 50);
+      const threadMsgs = await feishuClient.fetchRecentMessages(threadId, 'thread', 50, chatId);
       const filtered = currentMessageId
         ? threadMsgs.filter(m => m.messageId !== currentMessageId)
         : threadMsgs;

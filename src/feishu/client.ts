@@ -2,6 +2,7 @@ import * as lark from '@larksuiteoapi/node-sdk';
 import { config } from '../config.js';
 import { logger } from '../utils/logger.js';
 import { formatMergeForwardSubMessage } from './message-parser.js';
+import { chatBotRegistry } from './bot-registry.js';
 
 /**
  * Serialize card to JSON, escaping ${...} patterns to prevent
@@ -581,6 +582,8 @@ export class FeishuClient {
     containerId: string,
     containerType: 'chat' | 'thread' = 'chat',
     limit: number = 10,
+    /** 用于 bot 被动收集：thread 容器时需传入所属 chatId */
+    chatIdForBotDiscovery?: string,
   ): Promise<Array<{ messageId: string; senderId: string; senderType: 'user' | 'app'; content: string; msgType: string; createTime?: string; imageRefs?: Array<{ imageKey: string }> }>> {
     try {
       const resp = await this.client.im.message.list({
@@ -600,6 +603,11 @@ export class FeishuClient {
       // 诊断：记录 API 返回的原始消息分布
       const diagSkipped: Array<{ id: string; type: string; reason: string }> = [];
       for (const item of items) {
+        // 被动收集 bot：历史消息中的 bot sender 注册到 registry（弥补实时事件可能未推送的情况）
+        const botDiscoveryChatId = containerType === 'chat' ? containerId : chatIdForBotDiscovery;
+        if (item.sender?.sender_type === 'app' && item.sender?.id && botDiscoveryChatId) {
+          chatBotRegistry.addBot(botDiscoveryChatId, item.sender.id, undefined, 'message_sender');
+        }
         if (item.deleted) { diagSkipped.push({ id: item.message_id ?? '?', type: item.msg_type ?? '?', reason: 'deleted' }); continue; }
         const msgType = item.msg_type ?? '';
         if (msgType !== 'text' && msgType !== 'post' && msgType !== 'merge_forward' && msgType !== 'file' && msgType !== 'image') { diagSkipped.push({ id: item.message_id ?? '?', type: msgType, reason: 'unsupported_type' }); continue; }
