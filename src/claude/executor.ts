@@ -239,27 +239,7 @@ gh search issues --repo owner/repo -- "keyword"
 cd /some/other/dir && gh pr view 123
 \`\`\``;
 
-  const feishuToolsGuide = config.feishu.tools.enabled ? `
-
-## 飞书文档工具
-
-你有以下飞书工具可用 (通过 mcp__feishu-tools__feishu_xxx 调用):
-
-- **feishu_doc**: 读写飞书文档。用户消息中的文档链接 (如 https://xxx.feishu.cn/docx/TOKEN) 中提取 doc_token。
-- **feishu_wiki**: 浏览知识库。链接格式: https://xxx.feishu.cn/wiki/TOKEN
-- **feishu_drive**: 浏览云空间文件。
-- **feishu_bitable**: 读写多维表格。链接格式: https://xxx.feishu.cn/base/TOKEN
-- **feishu_chat_members**: 获取当前群聊的成员列表 (open_id + 姓名)。在需要了解群内有谁、@某人、分配任务时使用。
-- **feishu_task**: 创建和管理飞书任务。action: create/get/list/list_tasklists/update/delete/add_members/remove_members。due/start 支持 Unix 时间戳或 ISO 日期 (如 "2026-03-15")。members 为 JSON 数组。update 需指定 update_fields。
-  - add_members/remove_members 用于创建后修改任务成员（执行者/关注者），需要 task_guid + members 参数
-  - list_tasklists 列出可用的任务清单，创建任务时可通过 tasklists 参数指定归属清单
-  - 创建任务后工具会返回正确的 applink URL，直接使用即可，**不要自行拼接或编造任务链接**
-
-URL Token 提取规则:
-- /docx/ABC123 → doc_token: ABC123
-- /wiki/ABC123 → node_token: ABC123
-- /drive/folder/ABC123 → folder_token: ABC123
-- /base/ABC123 → app_token: ABC123` : '';
+  // MCP 工具的 schema 和 description 由 Agent SDK 自动注入，无需在此重复列出
 
   // 动态检测当前仓库，注入"当前项目"提示，避免模型被 knowledge 中的仓库列表误导
   const isSelfRepo = !workingDir || isServiceOwnRepo(workingDir);
@@ -293,7 +273,7 @@ URL Token 提取规则:
 - 你的工作目录是服务仓库的隔离 clone，修改不会直接影响运行中的实例，需要推送代码并重启才能生效
 - 日志是 JSON 格式（Pino），可用 \`| jq .\` 格式化或 \`| grep "关键词"\` 过滤` : '';
 
-  return basePrompt + feishuToolsGuide + currentRepoGuide + selfRepoGuide;
+  return basePrompt + currentRepoGuide + selfRepoGuide;
 }
 
 /**
