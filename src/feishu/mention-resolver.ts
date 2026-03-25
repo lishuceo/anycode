@@ -3,6 +3,7 @@
  */
 
 import { feishuClient } from './client.js';
+import { chatBotRegistry } from './bot-registry.js';
 import { logger } from '../utils/logger.js';
 
 type PostElement = Record<string, unknown>;
@@ -27,13 +28,20 @@ export async function resolveMentions(
 
   try {
     const members = await feishuClient.getChatMembers(chatId);
-    if (members.length === 0) return null;
 
     // 构建 姓名→open_id 映射
     const nameToOpenId = new Map<string, string>();
     for (const m of members) {
       if (m.name && m.name !== '[未知]') {
         nameToOpenId.set(m.name, m.memberId);
+      }
+    }
+
+    // 合并 bot registry 中已知的 bot（getChatMembers 不返回 bot 成员）
+    const knownBots = chatBotRegistry.getBots(chatId);
+    for (const bot of knownBots) {
+      if (bot.name && !nameToOpenId.has(bot.name)) {
+        nameToOpenId.set(bot.name, bot.openId);
       }
     }
 
