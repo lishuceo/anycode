@@ -253,9 +253,7 @@ URL Token 提取规则:
 
 ### 运行中的服务实例
 - **PM2 进程名**: \`feishu-claude\`
-- **当前 PID**: \`${process.pid}\`
 - **服务部署目录**: \`${process.cwd()}\`
-- **Node.js**: \`${process.version}\`
 
 ### 常用命令
 - 查看最近日志: \`pm2 logs feishu-claude --lines 200 --nostream\`
@@ -474,17 +472,15 @@ export class ClaudeExecutor {
     // 注入层次：knowledge → persona/workspace prompt → 历史会话摘要
     // pipeline 模式使用独立的 system prompt，不需要工作区管理指引
     const baseAppend = systemPromptOverride ?? buildWorkspaceSystemPrompt(workingDir);
-    // 注入层次：knowledge → persona/workspace → 记忆 → 历史摘要
+    // system prompt 只保留静态内容（knowledge + base prompt），最大化 prompt caching 命中率
+    // 动态内容（记忆、历史摘要）移到 user prompt 前缀，避免 per-query 差异导致 cache miss
     const withKnowledge = input.knowledgeContent
       ? input.knowledgeContent + '\n\n' + baseAppend
       : baseAppend;
-    const withMemory = input.memoryContext
-      ? withKnowledge + input.memoryContext
-      : withKnowledge;
-    // System prompt 结构性哈希：仅包含 knowledge + base prompt（不含记忆和 historySummaries）
-    // 用于诊断日志，追踪 prompt 变化。不再用于自动失效 session —
-    // Agent SDK resume 时会使用新传入的 systemPrompt，旧 session 自然获得最新工具描述。
-    const hashInput = withKnowledge.replace(/\*\*当前 PID\*\*: `\d+`/, '**当前 PID**: `0`');
+    // System prompt 结构性哈希：用于诊断日志，追踪 prompt 变化。
+    // 不再用于自动失效 session — Agent SDK resume 时会使用新传入的 systemPrompt，
+    // 旧 session 自然获得最新工具描述。
+    const hashInput = withKnowledge;
     const systemPromptHash = createHash('sha256').update(hashInput).digest('hex').slice(0, 16);
 
     if (resumeSessionId && input.storedSystemPromptHash && input.storedSystemPromptHash !== systemPromptHash) {
@@ -496,23 +492,28 @@ export class ClaudeExecutor {
 
     const effectiveResumeId = resumeSessionId;
 
-    const promptAppend = historySummaries
-      ? withMemory + `\n\n## 历史会话摘要\n以下是该用户之前的会话记录，帮助你了解项目上下文：\n${historySummaries}`
-      : withMemory;
+    // system prompt append：仅静态内容
+    const promptAppend = withKnowledge;
 
-    // 只读提示放入 user prompt（而非 system prompt），避免 per-user 差异导致 cache miss
-    // toolAllow 放行的工具不列入禁止名单，避免提示与实际权限矛盾
-    let readOnlyPrefix = '';
+    // 动态内容拼入 user prompt 前缀（记忆 + 历史摘要 + 只读提示）
+    // 这些内容每次 query 可能不同，放在 user prompt 中不影响 system prompt 的缓存前缀
+    let userPromptPrefix = '';
+    if (input.memoryContext) {
+      userPromptPrefix += input.memoryContext + '\n\n';
+    }
+    if (historySummaries) {
+      userPromptPrefix += `## 历史会话摘要\n以下是该用户之前的会话记录，帮助你了解项目上下文：\n${historySummaries}\n\n`;
+    }
     if (readOnly) {
       const allowSet = new Set(input.toolAllow ?? []);
       const forbiddenTools = [...WRITE_TOOLS].filter(t => !allowSet.has(t));
       if (forbiddenTools.length > 0) {
-        readOnlyPrefix = `[系统提示：当前用户处于只读模式。你可以阅读和分析代码、回答问题，但不能修改文件或执行命令。不要尝试使用 ${forbiddenTools.join('、')} 等工具。如果用户请求代码修改，告知他们需要管理员权限。${allowSet.size > 0 ? `你可以使用 ${[...allowSet].join('、')} 工具。` : ''}]\n\n`;
+        userPromptPrefix += `[系统提示：当前用户处于只读模式。你可以阅读和分析代码、回答问题，但不能修改文件或执行命令。不要尝试使用 ${forbiddenTools.join('、')} 等工具。如果用户请求代码修改，告知他们需要管理员权限。${allowSet.size > 0 ? `你可以使用 ${[...allowSet].join('、')} 工具。` : ''}]\n\n`;
       } else {
-        readOnlyPrefix = '[系统提示：当前用户处于受限模式，请谨慎使用写入类工具。]\n\n';
+        userPromptPrefix += '[系统提示：当前用户处于受限模式，请谨慎使用写入类工具。]\n\n';
       }
     }
-    const effectivePrompt = readOnlyPrefix + prompt;
+    const effectivePrompt = userPromptPrefix + prompt;
 
     // 构建 SDK query
     // 有图片或文档时使用 AsyncIterable<SDKUserMessage> 多模态格式
