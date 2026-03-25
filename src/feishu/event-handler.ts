@@ -578,7 +578,11 @@ async function handleMessageEvent(data: MessageEventData, accountId: string = 'd
     // 补充 chatBotRegistry 中通过被动收集（sender_type=app）记录的跨 app bot open_id。
     const registryBotIds = chatBotRegistry.getBots(chatId).map(b => b.openId);
     const knownBotIds = new Set([...allBotOpenIds, ...registryBotIds]);
-    const anyBotMentioned = mentions.some(m => knownBotIds.has(m.id.open_id ?? ''));
+    // cli_ 前缀是飞书 bot/app 的 open_id 标识，无需 registry 即可判定
+    const anyBotMentioned = mentions.some(m => {
+      const oid = m.id.open_id ?? '';
+      return knownBotIds.has(oid) || oid.startsWith('cli_');
+    });
     let threadBypass = false;
     if (threadId && !anyBotMentioned && isThreadCreatorAgent(threadId, agentId)) {
       const ts = sessionManager.getThreadSession(threadId, agentId);
@@ -2593,7 +2597,8 @@ async function parseMessage(data: MessageEventData): Promise<ParsedMessage | nul
     for (const mention of message.mentions) {
       const openId = mention.id.open_id ?? '';
       const isSelfBot = botOpenId ? openId === botOpenId : false;
-      const isAnyBot = isSelfBot || allBotIds.has(openId);
+      // cli_ 前缀是飞书 bot/app 的 open_id 标识，无需 registry 即可判定
+      const isAnyBot = isSelfBot || allBotIds.has(openId) || openId.startsWith('cli_');
 
       if (isAnyBot) {
         // bot mention：去掉占位符
