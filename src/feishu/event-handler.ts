@@ -2117,7 +2117,7 @@ async function sendDirectReply(
     const truncated = errorMsg.length > 2000 ? errorMsg.slice(0, 2000) + '...' : errorMsg;
     if (threadReplyMsgId) {
       await feishuClient.replyTextInThread(threadReplyMsgId, `❌ ${truncated}`);
-      try { await feishuClient.sendText(chatId, `❌ ${truncated}`); } catch { /* best-effort */ }
+      try { await feishuClient.sendText(chatId, `❌ ${truncated}`); } catch (err) { logger.warn({ err, chatId }, 'Failed to send to main chat'); }
     } else {
       await feishuClient.replyText(messageId, `❌ ${truncated}`);
     }
@@ -2130,13 +2130,13 @@ async function sendDirectReply(
     if (postContent) {
       if (threadReplyMsgId) {
         await feishuClient.replyPostInThread(threadReplyMsgId, postContent);
-        try { await feishuClient.sendPost(chatId, '', postContent); } catch { /* best-effort */ }
+        try { await feishuClient.sendPost(chatId, '', postContent); } catch (err) { logger.warn({ err, chatId }, 'Failed to send to main chat'); }
       } else {
         await feishuClient.replyPost(messageId, postContent);
       }
     } else if (threadReplyMsgId) {
       await feishuClient.replyTextInThread(threadReplyMsgId, output);
-      try { await feishuClient.sendText(chatId, output); } catch { /* best-effort */ }
+      try { await feishuClient.sendText(chatId, output); } catch (err) { logger.warn({ err, chatId }, 'Failed to send to main chat'); }
     } else {
       await feishuClient.replyText(messageId, output);
     }
@@ -2147,7 +2147,7 @@ async function sendDirectReply(
     const card = buildResultCard(output, output, true, durationStr + costInfo);
     if (threadReplyMsgId) {
       await feishuClient.replyCardInThread(threadReplyMsgId, card);
-      try { await feishuClient.sendCard(chatId, card); } catch { /* best-effort */ }
+      try { await feishuClient.sendCard(chatId, card); } catch (err) { logger.warn({ err, chatId }, 'Failed to send to main chat'); }
     } else {
       await feishuClient.sendCard(chatId, card);
     }
