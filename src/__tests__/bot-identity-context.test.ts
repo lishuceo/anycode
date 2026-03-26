@@ -39,26 +39,28 @@ vi.mock('../config.js', () => ({
 }));
 
 // accountManager mock
-const mockGetAccount = vi.fn();
+interface MockAccount { accountId: string; botName: string; botOpenId?: string }
+interface MockBot { openId: string; name?: string; source: string; discoveredAt: number }
+const mockGetAccount = vi.fn<(id: string) => MockAccount | undefined>();
 const mockGetAllBotOpenIds = vi.fn(() => new Set<string>());
-const mockAllAccounts = vi.fn(() => []);
+const mockAllAccounts = vi.fn<() => MockAccount[]>(() => []);
 vi.mock('../feishu/multi-account.js', () => ({
   accountManager: {
     getAllBotOpenIds: () => mockGetAllBotOpenIds(),
     getBotOpenId: vi.fn(),
     getClient: vi.fn(),
     getDefaultClient: vi.fn(),
-    getAccount: (...args: any[]) => mockGetAccount(...args),
+    getAccount: (id: string) => mockGetAccount(id),
     allAccounts: () => mockAllAccounts(),
     initializeSingleBot: vi.fn(),
   },
 }));
 
 // chatBotRegistry mock
-const mockGetBots = vi.fn(() => []);
+const mockGetBots = vi.fn<(chatId: string) => MockBot[]>(() => []);
 vi.mock('../feishu/bot-registry.js', () => ({
   chatBotRegistry: {
-    getBots: (...args: any[]) => mockGetBots(...args),
+    getBots: (chatId: string) => mockGetBots(chatId),
     addBot: vi.fn(),
     removeBot: vi.fn(),
     clearChat: vi.fn(),
