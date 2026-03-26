@@ -16,13 +16,22 @@ vi.mock('../../config.js', () => ({
   },
 }));
 
-// Mock feishuClient
+// Mock feishuClient + feishuClientContext
 const mockRequest = vi.fn();
 const mockSendText = vi.fn();
 vi.mock('../client.js', () => ({
   feishuClient: {
     raw: { request: (...args: unknown[]) => mockRequest(...args) },
     sendText: (...args: unknown[]) => mockSendText(...args),
+  },
+  feishuClientContext: { getStore: () => 'dev-bot' },
+}));
+
+// Mock accountManager
+const mockAccountRequest = vi.fn();
+vi.mock('../multi-account.js', () => ({
+  accountManager: {
+    getClient: (accountId: string) => accountId ? { raw: { request: (...args: unknown[]) => mockAccountRequest(...args) } } : undefined,
   },
 }));
 
@@ -126,6 +135,7 @@ describe('handleOAuthCallback', () => {
       'u-access-token',
       'u-refresh-token',
       expect.any(Number),
+      'dev-bot',
     );
     expect(mockSendText).toHaveBeenCalledWith('oc_chat456', expect.stringContaining('授权成功'));
   });
@@ -173,19 +183,21 @@ describe('getValidUserToken', () => {
       accessToken: 'u-valid-token',
       refreshToken: 'u-refresh-token',
       tokenExpiry: Math.floor(Date.now() / 1000) + 3600, // 1 hour from now
+      accountId: 'dev-bot',
     });
     const token = await getValidUserToken('ou_user123');
     expect(token).toBe('u-valid-token');
-    expect(mockRequest).not.toHaveBeenCalled(); // no refresh needed
+    expect(mockAccountRequest).not.toHaveBeenCalled(); // no refresh needed
   });
 
-  it('should refresh token when expired', async () => {
+  it('should refresh token when expired using the correct per-account client', async () => {
     mockGetUserToken.mockReturnValue({
       accessToken: 'u-expired-token',
       refreshToken: 'u-refresh-token',
       tokenExpiry: Math.floor(Date.now() / 1000) - 100, // already expired
+      accountId: 'dev-bot',
     });
-    mockRequest.mockResolvedValue({
+    mockAccountRequest.mockResolvedValue({
       code: 0,
       data: {
         access_token: 'u-new-token',
@@ -196,14 +208,17 @@ describe('getValidUserToken', () => {
 
     const token = await getValidUserToken('ou_user123');
     expect(token).toBe('u-new-token');
-    expect(mockRequest).toHaveBeenCalledWith(expect.objectContaining({
+    // Should use per-account client (mockAccountRequest), NOT the default (mockRequest)
+    expect(mockAccountRequest).toHaveBeenCalledWith(expect.objectContaining({
       url: '/open-apis/authen/v1/oidc/refresh_access_token',
     }));
+    expect(mockRequest).not.toHaveBeenCalled();
     expect(mockUpsertUserToken).toHaveBeenCalledWith(
       'ou_user123',
       'u-new-token',
       'u-new-refresh',
       expect.any(Number),
+      'dev-bot',
     );
   });
 
@@ -212,8 +227,9 @@ describe('getValidUserToken', () => {
       accessToken: 'u-expired-token',
       refreshToken: 'u-refresh-token',
       tokenExpiry: Math.floor(Date.now() / 1000) - 100,
+      accountId: 'dev-bot',
     });
-    mockRequest.mockRejectedValue(new Error('refresh failed'));
+    mockAccountRequest.mockRejectedValue(new Error('refresh failed'));
 
     const token = await getValidUserToken('ou_user123');
     expect(token).toBeUndefined();
@@ -225,8 +241,9 @@ describe('getValidUserToken', () => {
       accessToken: 'u-about-to-expire',
       refreshToken: 'u-refresh-token',
       tokenExpiry: Math.floor(Date.now() / 1000) + 100, // less than 5 min buffer
+      accountId: 'dev-bot',
     });
-    mockRequest.mockResolvedValue({
+    mockAccountRequest.mockResolvedValue({
       code: 0,
       data: {
         access_token: 'u-refreshed-token',

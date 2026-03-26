@@ -307,11 +307,11 @@ export class SessionManager {
 
   // ── User Token (OAuth) ──
 
-  upsertUserToken(userId: string, accessToken: string, refreshToken: string, tokenExpiry: number): void {
-    this.db.upsertUserToken(userId, accessToken, refreshToken, tokenExpiry);
+  upsertUserToken(userId: string, accessToken: string, refreshToken: string, tokenExpiry: number, accountId: string = ''): void {
+    this.db.upsertUserToken(userId, accessToken, refreshToken, tokenExpiry, accountId);
   }
 
-  getUserToken(userId: string): { accessToken: string; refreshToken: string; tokenExpiry: number } | undefined {
+  getUserToken(userId: string): { accessToken: string; refreshToken: string; tokenExpiry: number; accountId: string } | undefined {
     return this.db.getUserToken(userId);
   }
 

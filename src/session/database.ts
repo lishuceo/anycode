@@ -237,6 +237,16 @@ export class SessionDatabase {
       this.db.exec('UPDATE schema_version SET version = 12');
     }
 
+    // Migration v12 → v13: add account_id column to user_tokens
+    // Tracks which bot app issued the token, so refresh uses the correct app_access_token.
+    if (version < 13) {
+      const cols = this.db.prepare("PRAGMA table_info(user_tokens)").all() as Array<{ name: string }>;
+      if (!cols.some((c) => c.name === 'account_id')) {
+        this.db.exec("ALTER TABLE user_tokens ADD COLUMN account_id TEXT NOT NULL DEFAULT ''");
+      }
+      this.db.exec('UPDATE schema_version SET version = 13');
+    }
+
     this.stmtUpsert = this.db.prepare(`
       INSERT INTO sessions (key, chat_id, user_id, working_dir, conversation_id, conversation_cwd, thread_id, thread_root_message_id, status, created_at, last_active_at)
       VALUES (@key, @chat_id, @user_id, @working_dir, @conversation_id, @conversation_cwd, @thread_id, @thread_root_message_id, @status, @created_at, @last_active_at)
@@ -378,12 +388,13 @@ export class SessionDatabase {
     );
 
     this.stmtUpsertUserToken = this.db.prepare(`
-      INSERT INTO user_tokens (user_id, access_token, refresh_token, token_expiry, created_at, updated_at)
-      VALUES (@user_id, @access_token, @refresh_token, @token_expiry, @created_at, @updated_at)
+      INSERT INTO user_tokens (user_id, access_token, refresh_token, token_expiry, account_id, created_at, updated_at)
+      VALUES (@user_id, @access_token, @refresh_token, @token_expiry, @account_id, @created_at, @updated_at)
       ON CONFLICT(user_id) DO UPDATE SET
         access_token  = @access_token,
         refresh_token = @refresh_token,
         token_expiry  = @token_expiry,
+        account_id    = @account_id,
         updated_at    = @updated_at
     `);
 
@@ -572,30 +583,33 @@ export class SessionDatabase {
 
   // ── User Token CRUD ──
 
-  upsertUserToken(userId: string, accessToken: string, refreshToken: string, tokenExpiry: number): void {
+  upsertUserToken(userId: string, accessToken: string, refreshToken: string, tokenExpiry: number, accountId: string = ''): void {
     const now = new Date().toISOString();
     this.stmtUpsertUserToken.run({
       user_id: userId,
       access_token: accessToken,
       refresh_token: refreshToken,
       token_expiry: tokenExpiry,
+      account_id: accountId,
       created_at: now,
       updated_at: now,
     });
   }
 
-  getUserToken(userId: string): { accessToken: string; refreshToken: string; tokenExpiry: number } | undefined {
+  getUserToken(userId: string): { accessToken: string; refreshToken: string; tokenExpiry: number; accountId: string } | undefined {
     const row = this.stmtGetUserToken.get(userId) as {
       user_id: string;
       access_token: string;
       refresh_token: string;
       token_expiry: number;
+      account_id: string;
     } | undefined;
     if (!row) return undefined;
     return {
       accessToken: row.access_token,
       refreshToken: row.refresh_token,
       tokenExpiry: row.token_expiry,
+      accountId: row.account_id || '',
     };
   }
 
