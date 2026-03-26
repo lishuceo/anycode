@@ -1,6 +1,7 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { config } from '../config.js';
-import { feishuClient } from './client.js';
+import { feishuClient, feishuClientContext } from './client.js';
+import { accountManager } from './multi-account.js';
 import { sessionManager } from '../session/manager.js';
 import { logger } from '../utils/logger.js';
 
@@ -138,13 +139,19 @@ export async function exchangeCodeForToken(code: string): Promise<{
 
 /**
  * Refresh an expired user access token using the refresh token.
+ *
+ * @param refreshToken - The refresh token from prior token acquisition
+ * @param accountId - The bot accountId that originally issued the token.
+ *   The refresh request MUST use the same app's app_access_token,
+ *   otherwise Feishu returns error 20024 (app_id mismatch).
  */
-export async function refreshUserToken(refreshToken: string): Promise<{
+export async function refreshUserToken(refreshToken: string, accountId?: string): Promise<{
   accessToken: string;
   refreshToken: string;
   expiresIn: number;
 }> {
-  const client = feishuClient.raw;
+  // Use the specific bot's client that issued the original token
+  const client = (accountId && accountManager.getClient(accountId)?.raw) || feishuClient.raw;
 
   const resp = await client.request<{
     code?: number;
@@ -194,11 +201,12 @@ export async function handleOAuthCallback(code: string, state: string): Promise<
       return '授权失败：授权用户与发起用户不一致。';
     }
 
-    // Store tokens
+    // Store tokens with the accountId of the bot that performed the exchange
     const tokenExpiry = Math.floor(Date.now() / 1000) + result.expiresIn;
-    sessionManager.upsertUserToken(userId, result.accessToken, result.refreshToken, tokenExpiry);
+    const accountId = feishuClientContext.getStore() || '';
+    sessionManager.upsertUserToken(userId, result.accessToken, result.refreshToken, tokenExpiry, accountId);
 
-    logger.info({ userId }, 'User OAuth token stored');
+    logger.info({ userId, accountId }, 'User OAuth token stored');
 
     // Notify in chat
     await feishuClient.sendText(chatId, '✅ 授权成功！现在可以查看你的个人任务了。');
@@ -221,9 +229,10 @@ export async function handleManualCode(code: string, userId: string, chatId: str
 
     const effectiveUserId = result.openId || userId;
     const tokenExpiry = Math.floor(Date.now() / 1000) + result.expiresIn;
-    sessionManager.upsertUserToken(effectiveUserId, result.accessToken, result.refreshToken, tokenExpiry);
+    const accountId = feishuClientContext.getStore() || '';
+    sessionManager.upsertUserToken(effectiveUserId, result.accessToken, result.refreshToken, tokenExpiry, accountId);
 
-    logger.info({ userId: effectiveUserId }, 'User OAuth token stored via manual code');
+    logger.info({ userId: effectiveUserId, accountId }, 'User OAuth token stored via manual code');
 
     await feishuClient.sendText(chatId, `授权成功！已保存 user token，现在可以查看个人任务了。`);
     return effectiveUserId;
@@ -275,13 +284,14 @@ async function _getStoredToken(userId: string): Promise<string | undefined> {
   }
 
   try {
-    const refreshed = await refreshUserToken(stored.refreshToken);
+    // Use the same bot's client that originally issued the token (fixes error 20024)
+    const refreshed = await refreshUserToken(stored.refreshToken, stored.accountId);
     const newExpiry = Math.floor(Date.now() / 1000) + refreshed.expiresIn;
-    sessionManager.upsertUserToken(userId, refreshed.accessToken, refreshed.refreshToken, newExpiry);
-    logger.info({ userId }, 'User token refreshed');
+    sessionManager.upsertUserToken(userId, refreshed.accessToken, refreshed.refreshToken, newExpiry, stored.accountId);
+    logger.info({ userId, accountId: stored.accountId }, 'User token refreshed');
     return refreshed.accessToken;
   } catch (err) {
-    logger.warn({ err, userId }, 'Failed to refresh user token, removing stored token');
+    logger.warn({ err, userId, accountId: stored.accountId }, 'Failed to refresh user token, removing stored token');
     sessionManager.deleteUserToken(userId);
     return undefined;
   }
