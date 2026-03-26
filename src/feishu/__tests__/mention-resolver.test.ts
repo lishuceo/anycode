@@ -1,8 +1,8 @@
 // @ts-nocheck — test file
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-// convertTextWithMentions is a pure function — no external deps needed
-import { convertTextWithMentions, resolveMentions } from '../mention-resolver.js';
+// convertTextWithMentions / convertTextToCardMentions are pure functions — no external deps needed
+import { convertTextWithMentions, convertTextToCardMentions, resolveMentions, resolveCardMentions } from '../mention-resolver.js';
 
 // Mock dependencies for resolveMentions tests
 vi.mock('../client.js', () => ({
@@ -185,5 +185,75 @@ describe('resolveMentions', () => {
         { tag: 'text', text: ' 你好' },
       ],
     ]);
+  });
+});
+
+describe('convertTextToCardMentions', () => {
+  it('should return original text when no @ present', () => {
+    expect(convertTextToCardMentions('普通文本', members)).toBe('普通文本');
+  });
+
+  it('should return original text when @ does not match any member', () => {
+    expect(convertTextToCardMentions('@王五 你好', members)).toBe('@王五 你好');
+  });
+
+  it('should convert single @mention to card at tag', () => {
+    expect(convertTextToCardMentions('请 @张三 处理', members)).toBe('请 <at id=ou_aaa></at> 处理');
+  });
+
+  it('should convert multiple @mentions', () => {
+    expect(convertTextToCardMentions('@张三 @李四 看看', members)).toBe('<at id=ou_aaa></at> <at id=ou_bbb></at> 看看');
+  });
+
+  it('should greedily match longer names first', () => {
+    expect(convertTextToCardMentions('@张三丰 和 @张三', members)).toBe('<at id=ou_ccc></at> 和 <at id=ou_aaa></at>');
+  });
+
+  it('should handle multi-line text', () => {
+    expect(convertTextToCardMentions('第一行\n@张三 处理\n第三行', members)).toBe('第一行\n<at id=ou_aaa></at> 处理\n第三行');
+  });
+
+  it('should handle empty member map', () => {
+    expect(convertTextToCardMentions('@张三', new Map())).toBe('@张三');
+  });
+
+  it('should not match email-like patterns', () => {
+    expect(convertTextToCardMentions('email@test.com', members)).toBe('email@test.com');
+  });
+});
+
+describe('resolveCardMentions', () => {
+  let mockGetChatMembers: ReturnType<typeof vi.fn>;
+  let mockGetBots: ReturnType<typeof vi.fn>;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    const { feishuClient } = await import('../client.js');
+    const { chatBotRegistry } = await import('../bot-registry.js');
+    mockGetChatMembers = feishuClient.getChatMembers as ReturnType<typeof vi.fn>;
+    mockGetBots = chatBotRegistry.getBots as ReturnType<typeof vi.fn>;
+  });
+
+  it('should resolve bot mentions to card at tags', async () => {
+    mockGetChatMembers.mockResolvedValue([]);
+    mockGetBots.mockReturnValue([
+      { openId: 'ou_bot1', name: '土豆儿', source: 'message_sender', discoveredAt: Date.now() },
+    ]);
+
+    const result = await resolveCardMentions('@土豆儿 你好呀', 'chat_123');
+    expect(result).toBe('<at id=ou_bot1></at> 你好呀');
+  });
+
+  it('should return original text when no matches', async () => {
+    mockGetChatMembers.mockResolvedValue([]);
+    mockGetBots.mockReturnValue([]);
+
+    const result = await resolveCardMentions('@不存在的人 你好', 'chat_123');
+    expect(result).toBe('@不存在的人 你好');
+  });
+
+  it('should return original text when no @ present', async () => {
+    const result = await resolveCardMentions('普通文本', 'chat_123');
+    expect(result).toBe('普通文本');
   });
 });

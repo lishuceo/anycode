@@ -28,7 +28,7 @@ import { accountManager } from './multi-account.js';
 import { chatBotRegistry } from './bot-registry.js';
 import type { AgentId } from '../agent/types.js';
 import { readPersonaFile, loadKnowledgeContent } from '../agent/config-loader.js';
-import { resolveMentions } from './mention-resolver.js';
+import { resolveMentions, resolveCardMentions } from './mention-resolver.js';
 import { createDiscussionMcpServer } from '../agent/tools/discussion.js';
 import { generateAuthUrl, hasCallbackUrl, handleManualCode } from './oauth.js';
 import { injectMemories } from '../memory/injector.js';
@@ -2252,12 +2252,26 @@ async function sendResultCard(
     ? ` | 💰 $${totalCostUsd.toFixed(4)}`
     : '';
 
+  // 解析卡片中的 @mention（转换为 lark_md 的 <at id=open_id></at> 格式）
+  const resolvedOutput = result.output
+    ? await resolveCardMentions(result.output, chatId)
+    : undefined;
+
+  // 逐条模式：lastTurn.textContent 也可能包含 @mention
+  let resolvedLastTurn = lastTurn;
+  if (lastTurn?.textContent) {
+    const resolvedText = await resolveCardMentions(lastTurn.textContent, chatId);
+    if (resolvedText !== lastTurn.textContent) {
+      resolvedLastTurn = { ...lastTurn, textContent: resolvedText };
+    }
+  }
+
   // 结果卡片：逐条模式包含最后一轮内容，否则包含完整输出
-  const resultCard = lastTurn
-    ? buildSimpleResultCard(prompt, result.success, durationStr + costInfo, result.error, lastTurn)
+  const resultCard = resolvedLastTurn
+    ? buildSimpleResultCard(prompt, result.success, durationStr + costInfo, result.error, resolvedLastTurn)
     : buildResultCard(
         prompt,
-        result.output || result.error || '(无输出)',
+        resolvedOutput || result.error || '(无输出)',
         result.success,
         durationStr + costInfo,
       );
