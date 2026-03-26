@@ -1640,6 +1640,7 @@ export async function executeClaudeTask(
       if (config.memory.enabled && restartResult.success && restartResult.output) {
         extractMemories(prompt, restartResult.output, {
           agentId, userId, chatId, workspaceDir: getRepoIdentity(result.newWorkingDir!), messageId,
+          userName: _userNameCache.get(userId),
         }).catch((err) => logger.warn({ err }, 'Memory extraction failed'));
       }
       return;
@@ -1708,6 +1709,7 @@ export async function executeClaudeTask(
     if (config.memory.enabled && result.success && result.output) {
       extractMemories(rawPrompt, result.output, {
         agentId, userId, chatId, workspaceDir: repoIdentity, messageId,
+        userName: _userNameCache.get(userId),
       }).catch((err) => logger.warn({ err }, 'Memory extraction failed'));
     }
 
@@ -1954,6 +1956,7 @@ export async function executeDirectTask(
     if (config.memory.enabled && result.success && result.output) {
       extractMemories(rawPrompt, result.output, {
         agentId, userId, chatId, workspaceDir: repoIdentity, messageId,
+        userName: _userNameCache.get(userId),
       }).catch((err) => logger.warn({ err }, 'Memory extraction failed'));
     }
 
