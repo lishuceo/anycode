@@ -587,26 +587,36 @@ describe('SessionDatabase — user_tokens', () => {
 
   it('should upsert and retrieve a user token', () => {
     const expiry = Math.floor(Date.now() / 1000) + 7200;
-    db.upsertUserToken('ou_user1', 'access-token-1', 'refresh-token-1', expiry);
+    db.upsertUserToken('ou_user1', 'access-token-1', 'refresh-token-1', expiry, 'dev-bot');
 
     const token = db.getUserToken('ou_user1');
     expect(token).toBeDefined();
     expect(token!.accessToken).toBe('access-token-1');
     expect(token!.refreshToken).toBe('refresh-token-1');
     expect(token!.tokenExpiry).toBe(expiry);
+    expect(token!.accountId).toBe('dev-bot');
+  });
+
+  it('should default accountId to empty string when not provided', () => {
+    const expiry = Math.floor(Date.now() / 1000) + 7200;
+    db.upsertUserToken('ou_user1', 'access-token-1', 'refresh-token-1', expiry);
+
+    const token = db.getUserToken('ou_user1');
+    expect(token!.accountId).toBe('');
   });
 
   it('should update existing token on upsert', () => {
     const expiry1 = Math.floor(Date.now() / 1000) + 3600;
-    db.upsertUserToken('ou_user1', 'old-access', 'old-refresh', expiry1);
+    db.upsertUserToken('ou_user1', 'old-access', 'old-refresh', expiry1, 'pm-bot');
 
     const expiry2 = Math.floor(Date.now() / 1000) + 7200;
-    db.upsertUserToken('ou_user1', 'new-access', 'new-refresh', expiry2);
+    db.upsertUserToken('ou_user1', 'new-access', 'new-refresh', expiry2, 'dev-bot');
 
     const token = db.getUserToken('ou_user1');
     expect(token!.accessToken).toBe('new-access');
     expect(token!.refreshToken).toBe('new-refresh');
     expect(token!.tokenExpiry).toBe(expiry2);
+    expect(token!.accountId).toBe('dev-bot');
   });
 
   it('should delete a user token', () => {
