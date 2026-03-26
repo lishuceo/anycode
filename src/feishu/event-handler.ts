@@ -1290,16 +1290,12 @@ export function buildBotIdentityContext(chatId: string): string | undefined {
   const selfName = selfAccount.botName;
   const selfOpenId = selfAccount.botOpenId;
 
-  // 从 chatBotRegistry 获取群内其他 bot（排除自己和同一系统下的其他 bot 账号）
-  const allManagedOpenIds = accountManager.getAllBotOpenIds();
+  // 从 chatBotRegistry 获取群内其他 bot（排除自己）
   const registryBots = chatBotRegistry.getBots(chatId);
   const otherBots = registryBots.filter(b => {
     if (!b.name) return false;
     // 排除自己
     if (selfOpenId && b.openId === selfOpenId) return false;
-    // 排除同系统管理的其他 bot（它们的 open_id 在 allManagedOpenIds 中，
-    // 但 registry 中的 open_id 是跨 app 的，不一定在集合中）
-    // 保留：registry 中的 bot 都是跨 app 视角发现的，都是"其他 bot"
     return true;
   });
 
