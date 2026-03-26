@@ -280,6 +280,44 @@ describe('extractMemories', () => {
   });
 });
 
+describe('extractMemories — userName identity context', () => {
+  let tempDir: string;
+
+  beforeEach(async () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'extractor-identity-test-'));
+    mockMemoryConfig.dbPath = join(tempDir, 'test.db');
+    mockMemoryConfig.enabled = true;
+    mockMemoryConfig.extractionModel = 'qwen-plus';
+    await initializeMemory();
+  });
+
+  afterEach(() => {
+    closeMemory();
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it('should accept userName in ExtractionContext', async () => {
+    const contextWithName = {
+      agentId: 'agent1',
+      userId: 'ou_abc123',
+      chatId: 'chat1',
+      workspaceDir: '/projects/test',
+      userName: '姜黎',
+    };
+    // Should not throw — userName is optional and accepted
+    await extractMemories('hello', 'a'.repeat(100), contextWithName);
+  });
+
+  it('should work without userName (backward compatible)', async () => {
+    const contextWithoutName = {
+      agentId: 'agent1',
+      userId: 'ou_abc123',
+      chatId: 'chat1',
+    };
+    await extractMemories('hello', 'a'.repeat(100), contextWithoutName);
+  });
+});
+
 describe('extractMemories — processExtractedMemory integration', () => {
   let tempDir: string;
 
