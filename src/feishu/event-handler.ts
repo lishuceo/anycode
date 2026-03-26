@@ -8,7 +8,7 @@ import { DEFAULT_IMAGE_PROMPT, DEFAULT_DOCUMENT_PROMPT } from '../claude/types.j
 import type { TurnInfo, ToolCallInfo, ImageAttachment, DocumentAttachment } from '../claude/types.js';
 import { buildResultCard, buildStatusCard, buildCancelledCard, buildPipelineCard, buildPipelineConfirmCard, buildProgressCard, buildToolProgressCard, buildTextContentCard, buildSimpleResultCard } from './message-builder.js';
 import { TOTAL_PHASES } from '../pipeline/types.js';
-import { feishuClient, runWithAccountId } from './client.js';
+import { feishuClient, feishuClientContext, runWithAccountId } from './client.js';
 import { config, isMultiBotMode } from '../config.js';
 import { setupWorkspace } from '../workspace/manager.js';
 import { checkAndRequestApproval, handleApprovalTextCommand, handleApprovalCardAction, setOnApproved } from './approval.js';
@@ -1271,6 +1271,75 @@ async function injectQuotedMessage(
 }
 
 /**
+ * 构建 bot 身份上下文（注入到 user prompt prefix）
+ *
+ * 多 bot 群聊场景下，告诉 agent：
+ * 1. 自己在飞书群中的显示名称（避免 @ 自己）
+ * 2. 群内其他 bot 的名称（可通过 @名称 与其交互）
+ * 3. 与其他 bot 交互的正确方式（在回复中 @，而非 send_to_chat）
+ */
+export function buildBotIdentityContext(chatId: string): string | undefined {
+  if (!isMultiBotMode()) return undefined;
+
+  const accountId = feishuClientContext.getStore();
+  if (!accountId) return undefined;
+
+  const selfAccount = accountManager.getAccount(accountId);
+  if (!selfAccount) return undefined;
+
+  const selfName = selfAccount.botName;
+  const selfOpenId = selfAccount.botOpenId;
+
+  // 从 chatBotRegistry 获取群内其他 bot（排除自己和同一系统下的其他 bot 账号）
+  const allManagedOpenIds = accountManager.getAllBotOpenIds();
+  const registryBots = chatBotRegistry.getBots(chatId);
+  const otherBots = registryBots.filter(b => {
+    if (!b.name) return false;
+    // 排除自己
+    if (selfOpenId && b.openId === selfOpenId) return false;
+    // 排除同系统管理的其他 bot（它们的 open_id 在 allManagedOpenIds 中，
+    // 但 registry 中的 open_id 是跨 app 的，不一定在集合中）
+    // 保留：registry 中的 bot 都是跨 app 视角发现的，都是"其他 bot"
+    return true;
+  });
+
+  // 同系统管理的其他 bot 也加入列表（从 accountManager 获取）
+  const managedOtherBots: { name: string }[] = [];
+  for (const account of accountManager.allAccounts()) {
+    if (account.accountId === accountId) continue; // 排除自己
+    if (account.botName && account.botName !== 'default') {
+      // 检查 registry 中是否已有同名 bot，避免重复
+      if (!otherBots.some(b => b.name === account.botName)) {
+        managedOtherBots.push({ name: account.botName });
+      }
+    }
+  }
+
+  const allOtherBots = [
+    ...otherBots.map(b => b.name!),
+    ...managedOtherBots.map(b => b.name),
+  ];
+
+  const lines: string[] = [
+    `## 你的身份`,
+    `你在飞书群中的名称是"${selfName}"。`,
+  ];
+
+  if (allOtherBots.length > 0) {
+    lines.push('');
+    lines.push('## 群内其他机器人');
+    for (const name of allOtherBots) {
+      lines.push(`- ${name}`);
+    }
+    lines.push('');
+    lines.push('如果需要与其他机器人交流，在你的回复文本中使用 @机器人名 即可（如 @' + allOtherBots[0] + '）。');
+    lines.push('不要使用 feishu_send_to_chat 工具来联系其他机器人——该工具仅用于向群主聊天发送重要通知。');
+  }
+
+  return lines.join('\n');
+}
+
+/**
  * 执行 Claude Agent SDK 任务
  * 支持 workspace 变更后自动 restart：第一次 query 触发 setup_workspace 后，
  * 自动以新 cwd 发起第二次 query，确保 CLAUDE.md 正确加载。
@@ -1509,6 +1578,9 @@ export async function executeClaudeTask(
       ? await injectMemories(rawPrompt, { agentId, userId, workspaceDir: repoIdentity, chatId })
       : '';
 
+    // Bot 身份上下文（多 bot 模式下告诉 agent 自己是谁、群内有哪些其他 bot）
+    const botIdentityContext = buildBotIdentityContext(chatId);
+
     const result = await claudeExecutor.execute({
       sessionKey,
       prompt: effectivePrompt,
@@ -1523,6 +1595,7 @@ export async function executeClaudeTask(
       bashAllowPatterns: agentCfg?.bashAllowPatterns,
       resumeSessionId: canResume ? activeConversationId : undefined,
       storedSystemPromptHash: activePromptHash,
+      botIdentityContext,
       onProgress,
       onWorkspaceChanged: isFirstMessage ? onWorkspaceChanged : undefined,
       onTurn,
@@ -1910,6 +1983,9 @@ export async function executeDirectTask(
       ? await injectMemories(rawPrompt, { agentId, userId, workspaceDir: repoIdentity, chatId })
       : '';
 
+    // Bot 身份上下文（多 bot 模式下告诉 agent 自己是谁、群内有哪些其他 bot）
+    const botIdentityContext = buildBotIdentityContext(chatId);
+
     const result = await claudeExecutor.execute({
       sessionKey,
       prompt: effectivePrompt,
@@ -1923,6 +1999,7 @@ export async function executeDirectTask(
       settingSources: agentCfg.settingSources,
       knowledgeContent: loadKnowledgeContent(agentId),
       memoryContext,
+      botIdentityContext,
       ...(personaPrompt ? { systemPromptOverride: personaPrompt } : {}),
       resumeSessionId,
       storedSystemPromptHash: activePromptHash,

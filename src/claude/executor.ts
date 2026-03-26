@@ -132,6 +132,8 @@ export interface ExecuteInput extends ExecuteOptions {
   storedSystemPromptHash?: string;
   /** 强制禁用 thinking（仅影响本次调用，不改变全局配置） */
   disableThinking?: boolean;
+  /** Bot 身份上下文（注入到 user prompt prefix，帮助 agent 知道自己是谁、群内有哪些其他 bot） */
+  botIdentityContext?: string;
   /** Agent ID（用于记忆系统隔离，来自 agentRegistry） */
   agentId?: string;
   /** 当前会话的 threadId（用于 cron MCP 绑定话题） */
@@ -478,6 +480,9 @@ export class ClaudeExecutor {
     let userPromptPrefix = '';
     if (input.memoryContext) {
       userPromptPrefix += input.memoryContext + '\n\n';
+    }
+    if (input.botIdentityContext) {
+      userPromptPrefix += input.botIdentityContext + '\n\n';
     }
     if (historySummaries) {
       userPromptPrefix += `## 历史会话摘要\n以下是该用户之前的会话记录，帮助你了解项目上下文：\n${historySummaries}\n\n`;
