@@ -2,6 +2,7 @@ import { tool } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 import { feishuClient } from '../client.js';
 import { logger } from '../../utils/logger.js';
+import { resolveMentions } from '../mention-resolver.js';
 
 /**
  * 发送消息到群主聊天的 MCP 工具
@@ -38,8 +39,14 @@ export function feishuMainChatTool(chatId?: string) {
       }
 
       try {
-        await feishuClient.sendText(chatId, args.text);
-        logger.info({ chatId, textLen: args.text.length }, 'feishu_send_to_chat tool invoked');
+        // 解析 @mention：有匹配时用 post 格式发送（支持 at 标签），否则用纯文本
+        const postContent = await resolveMentions(args.text, chatId);
+        if (postContent) {
+          await feishuClient.sendPost(chatId, '', postContent);
+        } else {
+          await feishuClient.sendText(chatId, args.text);
+        }
+        logger.info({ chatId, textLen: args.text.length, hasMentions: !!postContent }, 'feishu_send_to_chat tool invoked');
         return {
           content: [{ type: 'text' as const, text: '已发送到群主聊天' }],
         };
