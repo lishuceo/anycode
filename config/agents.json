@@ -13,6 +13,7 @@
     {
       "id": "pm",
       "displayName": "土豆儿",
+      "model": "claude-opus-4-6",
       "replyMode": "direct",
       "toolPolicy": {
         "profile": "readonly",
