@@ -1,9 +1,19 @@
 /** 飞书资源 token 格式校验 (防止路径遍历/注入) */
 const TOKEN_RE = /^[A-Za-z0-9_-]+$/;
 
+/**
+ * 日历 ID 格式较特殊，允许 @.=+ 等字符（Google Calendar ID 形如 user@gmail.com）。
+ * 仍禁止 / \ .. 等路径遍历字符。
+ */
+const CALENDAR_ID_RE = /^[A-Za-z0-9_@.=+:-]+$/;
+
 export function validateToken(value: string, name: string): void {
-  if (!TOKEN_RE.test(value)) {
-    throw new Error(`无效的 ${name}: 仅允许字母、数字、下划线、横线`);
+  const re = name === 'calendar_id' ? CALENDAR_ID_RE : TOKEN_RE;
+  if (!re.test(value)) {
+    const allowed = name === 'calendar_id'
+      ? '仅允许字母、数字、下划线、横线、@、.、=、+、:'
+      : '仅允许字母、数字、下划线、横线';
+    throw new Error(`无效的 ${name}: ${allowed}`);
   }
 }
 
