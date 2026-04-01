@@ -1877,8 +1877,10 @@ export async function executeDirectTask(
   if (options?.forceThread && !eventThreadId) {
     const threadResult = await ensureThread(chatId, userId, messageId, rootId, undefined, agentId);
     threadReplyMsgId = threadResult.threadReplyMsgId;
-    const s = sessionManager.getOrCreate(chatId, userId, agentId);
-    threadId = s.threadId;
+    if (threadReplyMsgId) {
+      const s = sessionManager.getOrCreate(chatId, userId, agentId);
+      threadId = s.threadId;
+    }
   }
 
   const sessionKey = threadId
