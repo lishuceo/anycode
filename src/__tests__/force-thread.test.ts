@@ -7,7 +7,7 @@
  * 3. /t prefix stripping in message handling
  */
 // @ts-nocheck — test file
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 
 // ============================================================
 // Mocks
