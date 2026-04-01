@@ -96,6 +96,8 @@ export interface QueueTask {
   documents?: import('../claude/types.js').DocumentAttachment[];
   /** 消息创建时间（毫秒级时间戳字符串，来自飞书 message.create_time） */
   createTime?: string;
+  /** 强制使用话题模式（/t 命令触发） */
+  forceThread?: boolean;
   resolve: (result: string) => void;
   reject: (error: Error) => void;
   createdAt: Date;
