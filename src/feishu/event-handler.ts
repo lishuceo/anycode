@@ -1111,6 +1111,9 @@ function formatCreateTime(createTimeMs?: string): string | undefined {
 /** 仅测试用：导出 formatCreateTime */
 export const _testFormatCreateTime = formatCreateTime;
 
+/** 仅测试用：导出 formatHistoryMessages */
+export const _testFormatHistoryMessages = formatHistoryMessages;
+
 /**
  * 格式化历史消息为上下文文本（共享逻辑）。
  *
@@ -1127,6 +1130,7 @@ async function formatHistoryMessages(
   messages: Array<{ messageId: string; senderId: string; senderType: 'user' | 'app'; content: string; msgType: string; createTime?: string }>,
   chatId?: string,
   selfBotOpenIds?: Set<string>,
+  options?: { parentMsgCount?: number },
 ): Promise<string | undefined> {
   if (messages.length === 0) return undefined;
 
@@ -1139,11 +1143,16 @@ async function formatHistoryMessages(
   const USER_MSG_MAX = 500;
   const SELF_BOT_MSG_MAX = 150;   // resume 上下文里有完整版，这里只需定位
   const OTHER_BOT_MSG_MAX = 4000; // 其他 bot 的回复需要较完整保留
-  const header = [
-    '## 飞书聊天近期上下文',
-    '以下是用户 @bot 之前的聊天记录，帮助你理解当前对话的背景：',
-    '',
-  ].join('\n');
+  const parentMsgCount = options?.parentMsgCount ?? 0;
+  const hasStructuredSections = parentMsgCount > 0;
+
+  const header = hasStructuredSections
+    ? '## 飞书聊天近期上下文'
+    : [
+        '## 飞书聊天近期上下文',
+        '以下是用户 @bot 之前的聊天记录，帮助你理解当前对话的背景：',
+        '',
+      ].join('\n');
 
   // 1. 格式化每条消息，按角色差异化截断
   const lines = messages.map(m => {
@@ -1183,10 +1192,34 @@ async function formatHistoryMessages(
   if (kept.length === 0) return undefined;
 
   const parts = [header];
-  if (keepFrom > 0) {
-    parts.push(`_(已省略 ${keepFrom} 条较早消息)_`);
+
+  if (hasStructuredSections) {
+    // 结构化分区：父群背景 + 当前话题
+    const adjustedSplit = Math.max(0, parentMsgCount - keepFrom);
+    const parentLines = kept.slice(0, adjustedSplit);
+    const threadLines = kept.slice(adjustedSplit);
+
+    if (parentLines.length > 0) {
+      parts.push('', '### 群主聊天（当前话题创建前的背景）', '');
+      if (keepFrom > 0) {
+        parts.push(`_(已省略 ${keepFrom} 条较早消息)_`);
+      }
+      parts.push(...parentLines);
+    }
+    if (threadLines.length > 0) {
+      parts.push('', '---', '', '### 当前话题', '');
+      parts.push(...threadLines);
+    } else if (parentLines.length === 0) {
+      // 全部被截断
+      return undefined;
+    }
+  } else {
+    if (keepFrom > 0) {
+      parts.push(`_(已省略 ${keepFrom} 条较早消息)_`);
+    }
+    parts.push(...kept);
   }
-  parts.push(...kept);
+
   return parts.join('\n');
 }
 
@@ -2125,6 +2158,7 @@ async function buildDirectTaskHistory(
   try {
     type HistoryMsg = { messageId: string; senderId: string; senderType: 'user' | 'app'; content: string; msgType: string; createTime?: string; imageRefs?: Array<{ imageKey: string }> };
     let messages: HistoryMsg[];
+    let parentMsgCount = 0;  // 父群补充消息数量，用于结构化分区
 
     if (!threadId) {
       // 主聊天区：直接取父群最近消息
@@ -2144,6 +2178,7 @@ async function buildDirectTaskHistory(
         const remaining = config.chat.historyMaxCount - filtered.length;
         if (remaining > 0) {
           const parentMsgs = await feishuClient.fetchRecentMessages(chatId, 'chat', remaining);
+          parentMsgCount = parentMsgs.length;
           messages = [...parentMsgs, ...filtered];
         } else {
           messages = filtered;
@@ -2197,7 +2232,7 @@ async function buildDirectTaskHistory(
     );
 
     const [text, images] = await Promise.all([
-      formatHistoryMessages(messages, chatId, selfBotOpenIds),
+      formatHistoryMessages(messages, chatId, selfBotOpenIds, parentMsgCount > 0 ? { parentMsgCount } : undefined),
       downloadHistoryImages(messages),
     ]);
     return { text: text ?? undefined, newestMsgId, ...(images.length > 0 ? { images } : {}) };
