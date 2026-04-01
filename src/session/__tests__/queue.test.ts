@@ -167,6 +167,22 @@ describe('TaskQueue', () => {
     });
   });
 
+  describe('forceThread flag', () => {
+    it('should preserve forceThread flag on dequeued task', () => {
+      queue.enqueue('chat1', 'chat1', 'user1', 'msg1', 'mid1', undefined, undefined, undefined, undefined, undefined, true);
+      const task = queue.dequeue('chat1');
+      expect(task).toBeDefined();
+      expect(task!.forceThread).toBe(true);
+    });
+
+    it('should default forceThread to undefined when not set', () => {
+      queue.enqueue('chat1', 'chat1', 'user1', 'msg1', 'mid1');
+      const task = queue.dequeue('chat1');
+      expect(task).toBeDefined();
+      expect(task!.forceThread).toBeUndefined();
+    });
+  });
+
   describe('cancelAllForChat', () => {
     it('should cancel pending tasks across all threads for a chat', async () => {
       const p1 = queue.enqueue('chat1:threadA', 'chat1', 'user1', 'msg1', 'mid1', 'threadA');
