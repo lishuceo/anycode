@@ -625,11 +625,12 @@ async function handleMessageEvent(data: MessageEventData, accountId: string = 'd
     return;
   }
 
-  // /t <text> — 强制话题回复 + 跳过 quick-ack
-  // 在斜杠命令路由之前检测，剥离前缀后以普通消息走 thread 模式执行
+  // /t <text> — 强制话题回复 + 跳过 quick-ack（仅对 direct 模式 agent 生效）
+  // thread 模式 agent 本身就会创建话题，/t 对其无意义，直接忽略前缀
   let forceThread = false;
   let strippedText = text; // /t 命令剥离前缀后的文本
-  if (text) {
+  const isAgentDirectMode = agentConfig?.replyMode === 'direct';
+  if (text && isAgentDirectMode) {
     const trimmedForT = text.trim();
     if (trimmedForT === '/t') {
       await feishuClient.replyText(messageId, '⚠️ 用法: `/t <消息内容>` — 强制开话题回复');

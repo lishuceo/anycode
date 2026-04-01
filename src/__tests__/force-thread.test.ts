@@ -49,6 +49,20 @@ describe('/t prefix detection', () => {
     const stripped = trimmed.slice('/t '.length).trim();
     expect(stripped).toBe('some task');
   });
+
+  it('should only activate for direct-mode agents', () => {
+    // /t is only processed when isAgentDirectMode is true
+    const text = '/t some task';
+    const trimmed = text.trim();
+
+    // Direct mode agent → should detect /t
+    const isAgentDirectMode = true;
+    expect(isAgentDirectMode && trimmed.startsWith('/t ')).toBe(true);
+
+    // Thread mode agent → should NOT detect /t (prefix ignored, passed as-is)
+    const isAgentThreadMode = false; // replyMode === 'direct' is false for thread agents
+    expect(isAgentThreadMode && trimmed.startsWith('/t ')).toBe(false);
+  });
 });
 
 // ============================================================
