@@ -1310,7 +1310,7 @@ export function buildBotIdentityContext(chatId: string): string | undefined {
   const selfOpenId = selfAccount.botOpenId;
 
   // 从 chatBotRegistry 获取群内其他 bot（排除自己和同一系统下的其他 bot 账号）
-  const allManagedOpenIds = accountManager.getAllBotOpenIds();
+  const _allManagedOpenIds = accountManager.getAllBotOpenIds();
   const registryBots = chatBotRegistry.getBots(chatId);
   const otherBots = registryBots.filter(b => {
     if (!b.name) return false;
