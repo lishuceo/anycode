@@ -1207,7 +1207,8 @@ async function formatHistoryMessages(
       parts.push(...parentLines);
     }
     if (threadLines.length > 0) {
-      parts.push('', '---', '', '### 当前话题', '');
+      if (parentLines.length > 0) parts.push('', '---');
+      parts.push('', '### 当前话题', '');
       parts.push(...threadLines);
     } else if (parentLines.length === 0) {
       // 全部被截断
