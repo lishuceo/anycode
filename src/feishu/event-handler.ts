@@ -323,7 +323,8 @@ function processQueue(queueKey: string, agentId: AgentId = 'dev'): void {
 
   const agentCfg = agentRegistry.get(agentId);
   // direct 模式 → executeDirectTask（话题内也走 direct 路径）
-  const useDirectMode = agentCfg?.replyMode === 'direct';
+  // forceThread 标记（/t 命令）强制走 thread 模式
+  const useDirectMode = agentCfg?.replyMode === 'direct' && !task.forceThread;
 
   const executeFn = useDirectMode
     ? executeDirectTask(task.message, task.chatId, task.userId, task.messageId, task.images, task.documents, agentId, task.threadId, task.rootId, task.createTime)
@@ -624,8 +625,25 @@ async function handleMessageEvent(data: MessageEventData, accountId: string = 'd
     return;
   }
 
+  // /t <text> — 强制话题回复 + 跳过 quick-ack（仅对 direct 模式 agent 生效）
+  // thread 模式 agent 本身就会创建话题，/t 对其无意义，直接忽略前缀
+  let forceThread = false;
+  let strippedText = text; // /t 命令剥离前缀后的文本
+  const isAgentDirectMode = agentConfig?.replyMode === 'direct';
+  if (text && isAgentDirectMode) {
+    const trimmedForT = text.trim();
+    if (trimmedForT === '/t') {
+      await feishuClient.replyText(messageId, '⚠️ 用法: `/t <消息内容>` — 强制开话题回复');
+      return;
+    }
+    if (trimmedForT.startsWith('/t ')) {
+      strippedText = trimmedForT.slice('/t '.length).trim();
+      forceThread = true;
+    }
+  }
+
   // 斜杠命令、管道确认、审批命令仅对文本消息有效
-  if (text) {
+  if (text && !forceThread) {
     // 处理斜杠命令（在 agent 角色确定后执行）
     const commandResult = await handleSlashCommand(text, chatId, userId, messageId, rootId, effectiveThreadId, agentId);
     if (commandResult) return;
@@ -644,32 +662,32 @@ async function handleMessageEvent(data: MessageEventData, accountId: string = 'd
     const session = sessionManager.get(chatId, userId, agentId);
     const threadIdForApproval = effectiveThreadId || session?.threadId;
     const approved = await checkAndRequestApproval(
-      userId, chatId, chatType, text, messageId,
+      userId, chatId, chatType, strippedText, messageId,
       rootId, rootId, threadIdForApproval,
     );
     if (!approved) return;
   }
 
   // 安全检查（图片消息无文本，跳过）
-  if (text && containsDangerousCommand(text)) {
+  if (strippedText && containsDangerousCommand(strippedText)) {
     await feishuClient.replyText(messageId, '⚠️ 检测到危险命令，已拒绝执行');
     return;
   }
 
   // 图片/文档消息无文字时使用默认 prompt
-  const effectiveText = text || (images?.length ? DEFAULT_IMAGE_PROMPT : documents?.length ? DEFAULT_DOCUMENT_PROMPT : '');
+  const effectiveText = strippedText || (images?.length ? DEFAULT_IMAGE_PROMPT : documents?.length ? DEFAULT_DOCUMENT_PROMPT : '');
 
   // 通过 taskQueue 串行化：queue key 包含 agentId，不同 agent 可并行
   // direct 模式加 userId，不同用户可并行
   // enqueue 返回的 Promise 的错误处理在 processQueue/executeClaudeTask 中完成
-  const isDirectMode = agentConfig?.replyMode === 'direct';
+  const isDirectMode = agentConfig?.replyMode === 'direct' && !forceThread;
   // 无话题消息并行执行：thread 模式下每条无 threadId 的消息会创建独立话题，
   // 用 messageId 区分队列键，避免同一 chat 内的独立消息被串行化
   const perMessageParallel = !effectiveThreadId && !isDirectMode;
   const queueKey = perMessageParallel
     ? makeQueueKey(chatId, undefined, agentId, messageId)
     : makeQueueKey(chatId, effectiveThreadId, agentId, isDirectMode ? userId : undefined);
-  taskQueue.enqueue(queueKey, chatId, userId, effectiveText, messageId, rootId, effectiveThreadId, images, documents, createTime).catch(() => {});
+  taskQueue.enqueue(queueKey, chatId, userId, effectiveText, messageId, rootId, effectiveThreadId, images, documents, createTime, forceThread).catch(() => {});
   processQueue(queueKey, agentId);
 }
 
@@ -882,6 +900,7 @@ async function handleSlashCommand(
       '**可用命令:**',
       '`/project <path>` - 切换工作目录',
       '`/workspace <url|path> [branch]` - 创建隔离工作区 (自动 clone + 创建分支)',
+      '`/t <text>` - 强制开话题回复，跳过 quick-ack',
       '`/dev <task>` - 自动开发管道 (方案→审查→实现→审查→推送)',
       '`/memory` - 查看/管理记忆',
       '`/status` - 查看当前会话状态',
@@ -1291,7 +1310,7 @@ export function buildBotIdentityContext(chatId: string): string | undefined {
   const selfOpenId = selfAccount.botOpenId;
 
   // 从 chatBotRegistry 获取群内其他 bot（排除自己和同一系统下的其他 bot 账号）
-  const allManagedOpenIds = accountManager.getAllBotOpenIds();
+  const _allManagedOpenIds = accountManager.getAllBotOpenIds();
   const registryBots = chatBotRegistry.getBots(chatId);
   const otherBots = registryBots.filter(b => {
     if (!b.name) return false;
