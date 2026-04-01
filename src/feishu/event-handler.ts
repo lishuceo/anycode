@@ -13,6 +13,7 @@ import { config, isMultiBotMode } from '../config.js';
 import { setupWorkspace } from '../workspace/manager.js';
 import { checkAndRequestApproval, handleApprovalTextCommand, handleApprovalCardAction, setOnApproved } from './approval.js';
 import { resolveThreadContext } from './thread-context.js';
+import { ensureThread } from './thread-utils.js';
 import { formatMergeForwardSubMessage } from './message-parser.js';
 import { pipelineStore } from '../pipeline/store.js';
 import {
@@ -323,11 +324,10 @@ function processQueue(queueKey: string, agentId: AgentId = 'dev'): void {
 
   const agentCfg = agentRegistry.get(agentId);
   // direct 模式 → executeDirectTask（话题内也走 direct 路径）
-  // forceThread 标记（/t 命令）强制走 thread 模式
-  const useDirectMode = agentCfg?.replyMode === 'direct' && !task.forceThread;
+  const useDirectMode = agentCfg?.replyMode === 'direct';
 
   const executeFn = useDirectMode
-    ? executeDirectTask(task.message, task.chatId, task.userId, task.messageId, task.images, task.documents, agentId, task.threadId, task.rootId, task.createTime)
+    ? executeDirectTask(task.message, task.chatId, task.userId, task.messageId, task.images, task.documents, agentId, task.threadId, task.rootId, task.createTime, { forceThread: task.forceThread })
     : executeClaudeTask(task.message, task.chatId, task.userId, task.messageId, task.rootId, task.threadId, task.images, task.documents, agentId, task.createTime);
 
   // 注册 task promise：graceful shutdown 时等待结果卡片发送完成
@@ -680,7 +680,7 @@ async function handleMessageEvent(data: MessageEventData, accountId: string = 'd
   // 通过 taskQueue 串行化：queue key 包含 agentId，不同 agent 可并行
   // direct 模式加 userId，不同用户可并行
   // enqueue 返回的 Promise 的错误处理在 processQueue/executeClaudeTask 中完成
-  const isDirectMode = agentConfig?.replyMode === 'direct' && !forceThread;
+  const isDirectMode = agentConfig?.replyMode === 'direct';
   // 无话题消息并行执行：thread 模式下每条无 threadId 的消息会创建独立话题，
   // 用 messageId 区分队列键，避免同一 chat 内的独立消息被串行化
   const perMessageParallel = !effectiveThreadId && !isDirectMode;
@@ -1862,27 +1862,33 @@ export async function executeDirectTask(
   eventThreadId?: string,
   rootId?: string,
   createTime?: string,
-  options?: { skipQuickAck?: boolean },
+  options?: { skipQuickAck?: boolean; forceThread?: boolean },
 ): Promise<void> {
   const agentCfg = agentRegistry.getOrThrow(agentId);
   const session = sessionManager.getOrCreate(chatId, userId, agentId);
   const workingDir = config.claude.defaultWorkDir;
-  const sessionKey = eventThreadId
-    ? `${chatId}:${userId}:${eventThreadId}`
-    : `${chatId}:${userId}`;
 
   sessionManager.setStatus(chatId, userId, 'busy', agentId);
 
-  // 话题升级标志（由 start_discussion_thread MCP 工具设置）
-  // 仅在真正处于话题内时（eventThreadId 存在）初始化；
-  // rootId 单独出现（无 eventThreadId）= 主面板引用回复，不是话题
+  // /t 命令：强制创建话题，后续回复在话题中
   let threadReplyMsgId: string | undefined = eventThreadId ? rootId : undefined;
   let threadId: string | undefined = eventThreadId;
+
+  if (options?.forceThread && !eventThreadId) {
+    const threadResult = await ensureThread(chatId, userId, messageId, rootId, undefined, agentId);
+    threadReplyMsgId = threadResult.threadReplyMsgId;
+    const s = sessionManager.getOrCreate(chatId, userId, agentId);
+    threadId = s.threadId;
+  }
+
+  const sessionKey = threadId
+    ? `${chatId}:${userId}:${threadId}`
+    : `${chatId}:${userId}`;
 
   // 话题内消息：跳过 quick-ack，改为先添加表情回复作为即时反馈
   // 正式回复发出后再移除表情（在 finally 中清理）
   let pendingReactionId: string | undefined;
-  if (eventThreadId) {
+  if (threadId) {
     pendingReactionId = await feishuClient.addReaction(messageId, 'OnIt').catch(() => undefined);
   }
 
@@ -1891,8 +1897,10 @@ export async function executeDirectTask(
     // 纯问候类消息直接回复后跳过 Claude，其他类型照常走完整查询
     // 话题内消息跳过 quick-ack：bot 可能是被 threadBypass 隐式触发的，不是被明确 @的
     // cron 定时任务跳过 quick-ack：占位消息已由 scheduler 发送，不需要额外确认
+    // forceThread 也跳过 quick-ack（/t 命令的预期行为）
     let quickAckMsgId: string | undefined;
-    const quickAck = (eventThreadId || options?.skipQuickAck) ? null : await generateQuickAck(rawPrompt);
+    const skipAck = !!threadId || !!options?.skipQuickAck || !!options?.forceThread;
+    const quickAck = skipAck ? null : await generateQuickAck(rawPrompt);
     if (quickAck) {
       let ackSent = false;
       try {
@@ -1915,12 +1923,13 @@ export async function executeDirectTask(
     }
 
     // Thread session 管理（话题内独立对话）
-    let threadSession = eventThreadId
-      ? sessionManager.getThreadSession(eventThreadId, agentId)
+    // threadId 可能来自 eventThreadId（用户在话题中发消息）或 forceThread（/t 创建的新话题）
+    let threadSession = threadId
+      ? sessionManager.getThreadSession(threadId, agentId)
       : undefined;
-    if (eventThreadId && !threadSession) {
-      sessionManager.upsertThreadSession(eventThreadId, chatId, userId, workingDir, agentId);
-      threadSession = sessionManager.getThreadSession(eventThreadId, agentId);
+    if (threadId && !threadSession) {
+      sessionManager.upsertThreadSession(threadId, chatId, userId, workingDir, agentId);
+      threadSession = sessionManager.getThreadSession(threadId, agentId);
     }
 
     // Resume 策略：per-thread 优先，否则使用全局 session
@@ -1978,8 +1987,8 @@ export async function executeDirectTask(
     }
 
     // discussion MCP server：允许 agent 动态创建话题（仅在非话题场景下注入）
-    // 如果消息已经在一个话题中（eventThreadId 存在），不需要再创建新话题
-    const discussionMcp = eventThreadId
+    // 如果消息已经在一个话题中（eventThreadId 或 forceThread 创建的），不需要再创建新话题
+    const discussionMcp = threadId
       ? null
       : createDiscussionMcpServer({
           chatId, userId, messageId, agentId,
