@@ -33,19 +33,29 @@ Feishu User → Feishu Platform → Bridge Server → Claude Agent SDK → Claud
 ### Key Modules
 
 - **`src/index.ts`** — Entry point: validates config, starts server, sets up 30-min cleanup interval and graceful shutdown (SIGINT/SIGTERM).
+- **`src/config.ts`** — Environment-based configuration loader. Exports single config object with Feishu, Claude, workspace, memory, cron settings.
 - **`src/server.ts`** — Express server with dual event mode: WebSocket (default, no public IP needed) or HTTP webhook.
-- **`src/feishu/client.ts`** — Feishu API wrapper using `@larksuiteoapi/node-sdk` for sending/updating messages and cards.
-- **`src/feishu/event-handler.ts`** — EventDispatcher handlers for incoming messages and card actions. Orchestrates the full flow: parse message → check allowlist → get/create session → enqueue task → execute → send result.
+- **`src/agent/`** — Multi-agent role system. `registry.ts` stores agent configs at runtime; `router.ts` routes messages to agents by chat binding rules; `config-loader.ts` loads agent configs from JSON (`config/agents.json`) with hot-reload.
+- **`src/claude/executor.ts`** — Wraps `@anthropic-ai/claude-agent-sdk` `query()`. Streams SDKMessage, tracks cost/duration, supports session resumption. Budget: `CLAUDE_MAX_BUDGET_USD` (default $50), `CLAUDE_MAX_TURNS` (default 500).
+- **`src/claude/router.ts`** — Lightweight routing agent (Sonnet) that determines working directory before main query. Returns `use_existing`/`clone_remote`/`use_default`/`need_clarification`.
+- **`src/feishu/client.ts`** — Feishu API wrapper for sending/updating messages and cards.
+- **`src/feishu/event-handler.ts`** — EventDispatcher: parse message → check allowlist → get/create session → enqueue task → execute → send result.
 - **`src/feishu/message-builder.ts`** — Constructs interactive Feishu card messages for progress and results.
-- **`src/claude/executor.ts`** — Wraps `@anthropic-ai/claude-agent-sdk` `query()`. Streams SDKMessage async generator, extracts output text, tracks cost/duration. Supports session resumption via `resumeSessionId`. Uses `permissionMode: 'acceptEdits'` + `canUseTool` auto-allow (not `bypassPermissions` which fails under root). Budget: configurable via `CLAUDE_MAX_BUDGET_USD` (default $50) and `CLAUDE_MAX_TURNS` (default 500). Injects MCP workspace tool via `createSdkMcpServer`.
-- **`src/workspace/tool.ts`** — MCP tool `setup_workspace` for creating isolated workspaces. Each query gets its own MCP server instance via closure to avoid concurrency issues.
-- **`src/workspace/manager.ts`** — Git clone + workspace isolation. Supports remote URL (via bare cache) and local path modes. URL normalization handles SSH shorthand.
-- **`src/workspace/cache.ts`** — Bare clone cache layer for fast repeated clones.
-- **`src/pipeline/orchestrator.ts`** — State-machine-driven multi-step dev pipeline (plan → review → implement → review → push). Uses parallel multi-agent review.
-- **`src/pipeline/reviewer.ts`** — Parallel review with 3 agents (correctness/security/architecture).
-- **`src/session/manager.ts`** — In-memory session store keyed by `chatId:userId`. Maps each chat to a working directory. Auto-cleans sessions idle >2 hours.
+- **`src/feishu/thread-context.ts`** — Unified thread/routing/workspace context resolution before execution.
+- **`src/feishu/bot-registry.ts`** — Tracks bot members in group chats; auto-discovers via events and message senders.
+- **`src/feishu/tools/`** — MCP tool suite: `doc.ts`(文档), `wiki.ts`(知识库), `bitable.ts`(多维表格), `drive.ts`(云空间), `chat.ts`, `calendar.ts`, `contact.ts`, `task.ts`. Action-based dispatch with Zod schemas.
+- **`src/workspace/manager.ts`** — Git clone + workspace isolation. Supports remote URL (via bare cache) and local path modes.
+- **`src/workspace/cache.ts`** — Bare clone cache layer with atomic creation and configurable fetch interval.
+- **`src/workspace/isolation.ts`** — Per-thread workspace isolation. Auto-creates clones from shared source repos to prevent concurrent git conflicts.
+- **`src/pipeline/orchestrator.ts`** — State-machine-driven dev pipeline (plan → plan_review → implement → code_review → push → pr_fixup). Max 2 retries per phase.
+- **`src/pipeline/reviewer.ts`** — Parallel review with 3 agents (correctness/security/architecture) + optional Codex reviewer.
+- **`src/session/manager.ts`** — SQLite-backed session store keyed by `agent:{agentId}:{chatId}:{userId}`. Thread-level sessions bind threadId → workdir/conversationId.
+- **`src/session/database.ts`** — SQLite persistence with 13 migrations. Stores sessions, thread sessions, summaries, and OAuth tokens.
 - **`src/session/queue.ts`** — Per-chat FIFO task queue ensuring one Claude query runs at a time per chat.
-- **`src/utils/security.ts`** — User allowlist check and dangerous command regex detection (`rm -rf /`, `mkfs`, `dd if=`, etc.).
+- **`src/memory/`** — Long-term memory system. `store.ts`(SQLite + sqlite-vec CRUD), `search.ts`(hybrid BM25 + vector), `extractor.ts`(LLM auto-extraction), `injector.ts`(prompt injection), `commands.ts`(/memory slash commands).
+- **`src/cron/`** — Scheduled task system. `scheduler.ts`(cron/interval/at scheduling with retry), `store.ts`(SQLite persistence), `tool.ts`(MCP tool for agent interaction).
+- **`src/platform/types.ts`** — Platform-agnostic message interfaces (MessagePort, InboundMessage).
+- **`src/utils/security.ts`** — User allowlist check and dangerous command regex detection.
 - **`src/utils/logger.ts`** — Pino logger singleton.
 
 ### Key Patterns
@@ -71,6 +81,8 @@ Environment variables loaded via dotenv (see `.env.example`):
 - **Claude**: `ANTHROPIC_API_KEY`, `DEFAULT_WORK_DIR` (default: `/home/ubuntu/projects`), `CLAUDE_TIMEOUT` (default: 300s), `CLAUDE_MAX_TURNS` (default: 500), `CLAUDE_MAX_BUDGET_USD` (default: 50)
 - **Workspace**: `REPO_CACHE_DIR` (bare clone cache), `WORKSPACE_BASE_DIR` (writable workspaces), `WORKSPACE_BRANCH_PREFIX`
 - **Event mode**: `FEISHU_EVENT_MODE` (`websocket` | `webhook`), `FEISHU_ENCRYPT_KEY`, `FEISHU_VERIFY_TOKEN` (webhook only)
+- **Memory**: `MEMORY_ENABLED`, `DASHSCOPE_API_KEY`, `MEMORY_DB_PATH` (default: `./data/memories.db`), `MEMORY_EMBEDDING_MODEL`, `MEMORY_VECTOR_WEIGHT`
+- **Cron**: `CRON_DB_PATH` (default: `./data/cron.db`)
 - **Security**: `ALLOWED_USER_IDS` (comma-separated, empty = allow all)
 - **Server**: `PORT` (default: 3000), `NODE_ENV`, `LOG_LEVEL`
 
@@ -93,20 +105,22 @@ Environment variables loaded via dotenv (see `.env.example`):
 - `@larksuiteoapi/node-sdk` for Feishu API + WebSocket events
 - Pino for structured logging, Zod available for validation
 
-## 开发计划文档
+## 项目文档
 
 文档按生命周期分三个目录：
 
 | 目录 | 内容 | 生命周期 |
 |------|------|----------|
-| `docs/plans/` | 活跃的实施计划 | 短期，完成后删除或标记 `status: completed` |
-| `docs/design/` | 长期架构设计 | 长期保留，持续维护 |
+| `docs/plans/` | 活跃的实施计划 | 短期，完成后蒸馏关键决策到 `design/`，再删除 |
+| `docs/design/` | 模块架构与设计决策（描述**现状**） | 长期保留，随代码持续更新 |
 | `docs/research/` | 调研分析 | 只读参考 |
 
 ### Agent 工作流
 
 - **开始新任务前**，扫描 `docs/plans/*.md` 的 YAML front matter，读取 `summary` 和 `read_when` 字段，判断是否与当前任务相关。如果相关，先读完该计划再动手。
 - 也可以运行 `node scripts/docs-list.mjs` 快速查看所有活跃计划的列表（支持 `--status in_progress` 过滤和 `--json` 输出）。
+- **修改代码时**，检查 `docs/design/*.md` 的 `related_paths` 字段。如果当前修改涉及某文档的关联路径，阅读该文档，若描述与代码现状不符则一并更新（将提案口吻改写为现状描述）。
+- **Plan 完成时**，将关键设计决策和架构信息蒸馏到 `docs/design/` 对应文档，然后删除 plan 文件。
 - **新建计划文件**时，必须包含以下 front matter：
 
 ```yaml
@@ -118,5 +132,16 @@ last_updated: "YYYY-MM-DD"
 read_when:
   - 触发场景 1
   - 触发场景 2
+---
+```
+
+- **Design 文档**也使用 front matter，格式：
+
+```yaml
+---
+summary: "一句话描述"
+related_paths:
+  - src/module/**
+last_updated: "YYYY-MM-DD"
 ---
 ```
