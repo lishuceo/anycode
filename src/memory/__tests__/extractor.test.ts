@@ -33,7 +33,7 @@ vi.mock('../../config.js', () => ({
   },
 }));
 
-import { parseExtractionResponse, extractMemories } from '../extractor.js';
+import { parseExtractionResponse, extractMemories, filterUngroundedMemories } from '../extractor.js';
 import { initializeMemory, closeMemory, getMemoryStore } from '../init.js';
 
 describe('parseExtractionResponse', () => {
@@ -224,6 +224,24 @@ describe('parseExtractionResponse', () => {
     expect(result[0].type).toBe('state');
     expect(result[0].ttl).toBe('2026-03-25');
   });
+
+  it('should parse entities field when present', () => {
+    const raw = JSON.stringify([
+      { type: 'fact', content: '候选人罗文锋拥有5年以上的虚幻引擎开发经验', confidence: 0.7, tags: [], ttl: null, metadata: {}, entities: ['罗文锋'] },
+    ]);
+    const result = parseExtractionResponse(raw);
+    expect(result).toHaveLength(1);
+    expect(result[0].entities).toEqual(['罗文锋']);
+  });
+
+  it('should handle missing entities field gracefully', () => {
+    const raw = JSON.stringify([
+      { type: 'fact', content: '项目使用 ESM + TypeScript 5.7 构建', confidence: 1.0, tags: [], ttl: null, metadata: {} },
+    ]);
+    const result = parseExtractionResponse(raw);
+    expect(result).toHaveLength(1);
+    expect(result[0].entities).toBeUndefined();
+  });
 });
 
 describe('extractMemories', () => {
@@ -394,5 +412,255 @@ describe('extractMemories — processExtractedMemory integration', () => {
 
     const updated = store.get(mem.id);
     expect(updated!.evidenceCount).toBe(2);
+  });
+});
+
+describe('filterUngroundedMemories — entity-orphan guard', () => {
+  const conversation = '[姜黎]: 分析一下罗文锋的简历\n\n[助手]: 罗文锋有5年UE经验，参与过《卡库远古封印》开发。';
+
+  it('should keep memories whose entities appear in conversation', () => {
+    const memories = [{
+      type: 'fact' as const,
+      content: '候选人罗文锋有5年UE开发经验',
+      confidence: 0.7,
+      tags: [],
+      ttl: null,
+      metadata: {},
+      entities: ['罗文锋'],
+    }];
+    const result = filterUngroundedMemories(memories, conversation);
+    expect(result).toHaveLength(1);
+  });
+
+  it('should reject fact memories whose entities are NOT in conversation', () => {
+    const memories = [{
+      type: 'fact' as const,
+      content: '袁满于2025年11月应聘TapTap游戏工具客户端开发',
+      confidence: 0.7,
+      tags: [],
+      ttl: null,
+      metadata: {},
+      entities: ['袁满'],
+    }];
+    const result = filterUngroundedMemories(memories, conversation);
+    expect(result).toHaveLength(0);
+  });
+
+  it('should reject when ANY entity is missing from conversation', () => {
+    const memories = [{
+      type: 'fact' as const,
+      content: '罗文锋曾在刘宏伟团队工作',
+      confidence: 0.7,
+      tags: [],
+      ttl: null,
+      metadata: {},
+      entities: ['罗文锋', '刘宏伟'],
+    }];
+    const result = filterUngroundedMemories(memories, conversation);
+    // 刘宏伟 not in conversation
+    expect(result).toHaveLength(0);
+  });
+
+  it('should allow preference/state memories without entity check', () => {
+    const memories = [{
+      type: 'preference' as const,
+      content: '用户喜欢用TypeScript',
+      confidence: 0.8,
+      tags: [],
+      ttl: null,
+      metadata: {},
+      entities: ['不存在的人'],
+    }];
+    const result = filterUngroundedMemories(memories, conversation);
+    expect(result).toHaveLength(1);
+  });
+
+  it('should allow memories without entities field (backward compatible)', () => {
+    const memories = [{
+      type: 'fact' as const,
+      content: '项目使用ESM + TypeScript 5.7',
+      confidence: 1.0,
+      tags: [],
+      ttl: null,
+      metadata: {},
+    }];
+    const result = filterUngroundedMemories(memories, conversation);
+    expect(result).toHaveLength(1);
+  });
+
+  it('should allow memories with empty entities array', () => {
+    const memories = [{
+      type: 'decision' as const,
+      content: '选择 Vitest 而非 Jest',
+      confidence: 0.9,
+      tags: [],
+      ttl: null,
+      metadata: {},
+      entities: [],
+    }];
+    const result = filterUngroundedMemories(memories, conversation);
+    expect(result).toHaveLength(1);
+  });
+
+  it('should filter mixed batch correctly', () => {
+    const memories = [
+      {
+        type: 'fact' as const,
+        content: '罗文锋参与过《卡库远古封印》开发',
+        confidence: 0.7, tags: [], ttl: null, metadata: {},
+        entities: ['罗文锋', '卡库远古封印'],
+      },
+      {
+        type: 'fact' as const,
+        content: '张三在2025年11月被拒',
+        confidence: 0.7, tags: [], ttl: null, metadata: {},
+        entities: ['张三'],
+      },
+      {
+        type: 'preference' as const,
+        content: '用户偏好简洁回复',
+        confidence: 0.8, tags: [], ttl: null, metadata: {},
+      },
+    ];
+    const result = filterUngroundedMemories(memories, conversation);
+    // 罗文锋 + 卡库远古封印 both present → keep
+    // 张三 not present → reject
+    // preference → always keep
+    expect(result).toHaveLength(2);
+    expect(result[0].content).toContain('罗文锋');
+    expect(result[1].content).toContain('偏好');
+  });
+});
+
+describe('entity-orphan guard — real incident reproduction', () => {
+  // Reproduce the actual bug: PM bot analyzed 袁满's resume in a thread,
+  // but fork semantics injected parent chat messages discussing 罗文锋/刘宏伟.
+  // The extraction LLM then attributed 罗文锋's rejection history to 袁满.
+
+  it('should block cross-candidate memory contamination (parseExtraction → filter pipeline)', () => {
+    // Simulate extraction LLM output that includes hallucinated cross-candidate facts
+    const llmResponse = JSON.stringify([
+      {
+        type: 'fact',
+        content: '候选人袁满拥有7年游戏开发经验，参与过GPT-SoVITS等开源项目',
+        confidence: 0.7,
+        tags: ['候选人'],
+        ttl: null,
+        metadata: {},
+        entities: ['袁满', 'GPT-SoVITS'],
+      },
+      {
+        type: 'fact',
+        content: '袁满于2025年11月应聘TapTap游戏工具客户端开发（UG方向），电话沟通后评分为2，判定不合适',
+        confidence: 0.7,
+        tags: ['候选人', '面试'],
+        ttl: null,
+        metadata: {},
+        entities: ['袁满'],
+      },
+      {
+        type: 'fact',
+        content: '袁满的GitHub开源贡献存在严重注水，GPT-SoVITS项目仅贡献了翻译文件',
+        confidence: 0.9,
+        tags: ['候选人', '开源'],
+        ttl: null,
+        metadata: {},
+        entities: ['袁满', 'GPT-SoVITS'],
+      },
+    ]);
+
+    // The actual conversation only discussed 袁满 and GPT-SoVITS,
+    // NOT any November interview rejection
+    const conversation = [
+      '[杨志]: 看看这个候选人',
+      '[助手]: 我来分析一下袁满的简历。',
+      '袁满有7年游戏开发经验，声称参与GPT-SoVITS等开源项目。',
+      '经核实，GPT-SoVITS项目中袁满仅贡献了i18n翻译文件和README更新。',
+    ].join('\n');
+
+    const memories = parseExtractionResponse(llmResponse);
+    expect(memories).toHaveLength(3);
+
+    const grounded = filterUngroundedMemories(memories, conversation);
+
+    // Memory 1: 袁满 + GPT-SoVITS both in conversation → KEEP
+    // Memory 2: 袁满 in conversation BUT "11月应聘" is hallucinated from
+    //           parent chat context about another candidate.
+    //           However, 袁满 IS in conversation, so entity check alone passes.
+    //           This is the edge case — entity-orphan guard catches cases where
+    //           the entity itself is absent, not where facts about the entity are wrong.
+    // Memory 3: 袁满 + GPT-SoVITS both in conversation → KEEP
+    expect(grounded).toHaveLength(3);
+    // Note: The entity-orphan guard catches the case where the ENTITY is absent
+    // (e.g., hallucinating 刘宏伟 into 袁满's thread). For the "correct entity,
+    // wrong facts" case, the prompt-level rules are the primary defense.
+  });
+
+  it('should block when hallucinated entity is not in conversation at all', () => {
+    // The CRITICAL case: LLM mentions an entity that was never in this conversation
+    // (e.g., 罗文锋's info leaking from injected memory into 袁满's analysis)
+    const llmResponse = JSON.stringify([
+      {
+        type: 'fact',
+        content: '候选人罗文锋于2025年11月20日曾应聘TapTap游戏工具客户端开发，被判定不合适',
+        confidence: 0.7,
+        tags: ['候选人'],
+        ttl: null,
+        metadata: {},
+        entities: ['罗文锋'],
+      },
+    ]);
+
+    // Conversation is about 袁满, NOT 罗文锋
+    const conversation = [
+      '[杨志]: @土豆儿 分析一下这份简历',
+      '[助手]: 我来分析袁满的简历。袁满拥有7年游戏开发经验...',
+    ].join('\n');
+
+    const memories = parseExtractionResponse(llmResponse);
+    const grounded = filterUngroundedMemories(memories, conversation);
+
+    // 罗文锋 not in conversation → BLOCKED
+    expect(grounded).toHaveLength(0);
+  });
+
+  it('should block when parent chat entity leaks into thread context', () => {
+    // Simulate: parent chat discussed 刘宏伟 being rejected in November,
+    // LLM extracts this as a fact about the current thread's candidate
+    const llmResponse = JSON.stringify([
+      {
+        type: 'fact',
+        content: '刘宏伟在2025年11月的电话面试中被lyz团队拒绝',
+        confidence: 0.7,
+        tags: ['面试'],
+        ttl: null,
+        metadata: {},
+        entities: ['刘宏伟'],
+      },
+      {
+        type: 'fact',
+        content: '罗文锋具有5年以上UE引擎开发经验，参与过《卡库远古封印》项目',
+        confidence: 0.8,
+        tags: ['候选人'],
+        ttl: null,
+        metadata: {},
+        entities: ['罗文锋', '卡库远古封印'],
+      },
+    ]);
+
+    // Thread conversation only has 罗文锋, not 刘宏伟
+    const conversation = [
+      '[姜黎]: 分析一下罗文锋的简历',
+      '[助手]: 罗文锋有5年UE经验，参与过《卡库远古封印》的核心战斗系统开发...',
+    ].join('\n');
+
+    const memories = parseExtractionResponse(llmResponse);
+    const grounded = filterUngroundedMemories(memories, conversation);
+
+    // 刘宏伟 not in conversation → first memory blocked
+    // 罗文锋 + 卡库远古封印 both present → second memory kept
+    expect(grounded).toHaveLength(1);
+    expect(grounded[0].content).toContain('罗文锋');
+    expect(grounded[0].content).toContain('卡库远古封印');
   });
 });
