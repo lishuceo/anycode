@@ -971,6 +971,75 @@ async function downloadHistoryImages(
   return images;
 }
 
+/** 历史消息中可下载的文本类文件扩展名 */
+const HISTORY_TEXT_FILE_EXTENSIONS = new Set([
+  '.md', '.txt', '.json', '.jsonl', '.log', '.yaml', '.yml',
+  '.csv', '.xml', '.html', '.htm', '.css', '.js', '.ts', '.jsx', '.tsx',
+  '.py', '.go', '.rs', '.java', '.c', '.cpp', '.h', '.hpp',
+  '.sh', '.bash', '.zsh', '.toml', '.ini', '.cfg', '.conf',
+  '.sql', '.graphql', '.proto', '.lua', '.rb', '.php', '.swift',
+  '.kt', '.kts', '.scala', '.r', '.m', '.mm',
+]);
+
+/** 最多从历史消息中下载的文件数 */
+const MAX_HISTORY_FILES = 3;
+
+/**
+ * 从历史消息中下载文件附件（PDF → DocumentAttachment, 文本类 → 嵌入文本）
+ *
+ * @returns { documents, fileTexts } — documents 供多模态传入, fileTexts 拼入 prompt
+ */
+async function downloadHistoryFiles(
+  messages: Array<{ messageId: string; fileRefs?: Array<{ fileKey: string; fileName: string }> }>,
+): Promise<{ documents: DocumentAttachment[]; fileTexts: string[] }> {
+  const refs: Array<{ messageId: string; fileKey: string; fileName: string }> = [];
+  for (const msg of messages) {
+    if (msg.fileRefs) {
+      for (const ref of msg.fileRefs) {
+        refs.push({ messageId: msg.messageId, ...ref });
+      }
+    }
+  }
+  if (refs.length === 0) return { documents: [], fileTexts: [] };
+
+  const toDownload = refs.slice(-MAX_HISTORY_FILES);
+  const MAX_PDF_SIZE = 30 * 1024 * 1024;
+  const MAX_TEXT_SIZE = 1 * 1024 * 1024;
+
+  const documents: DocumentAttachment[] = [];
+  const fileTexts: string[] = [];
+
+  await Promise.all(toDownload.map(async (ref) => {
+    try {
+      const fileNameLower = ref.fileName.toLowerCase();
+      const fileExt = fileNameLower.includes('.') ? '.' + fileNameLower.split('.').pop()! : '';
+
+      if (fileNameLower.endsWith('.pdf')) {
+        const buf = await feishuClient.downloadMessageFile(ref.messageId, ref.fileKey);
+        if (buf.length <= MAX_PDF_SIZE) {
+          documents.push({ data: buf.toString('base64'), mediaType: 'application/pdf', fileName: ref.fileName });
+          logger.info({ messageId: ref.messageId, fileName: ref.fileName, sizeBytes: buf.length }, 'History PDF downloaded');
+        }
+      } else if (HISTORY_TEXT_FILE_EXTENSIONS.has(fileExt)) {
+        const buf = await feishuClient.downloadMessageFile(ref.messageId, ref.fileKey);
+        if (buf.length <= MAX_TEXT_SIZE) {
+          const content = buf.toString('utf-8');
+          fileTexts.push(`[历史消息中的文件: ${ref.fileName}]\n\n\`\`\`\n${content}\n\`\`\``);
+          logger.info({ messageId: ref.messageId, fileName: ref.fileName, sizeBytes: buf.length }, 'History text file downloaded');
+        }
+      }
+    } catch (err) {
+      logger.warn({ err, messageId: ref.messageId, fileName: ref.fileName }, 'Failed to download history file, skipping');
+    }
+  }));
+
+  if (documents.length > 0 || fileTexts.length > 0) {
+    logger.info({ docCount: documents.length, textCount: fileTexts.length, totalRefs: refs.length }, 'Downloaded history files');
+  }
+
+  return { documents, fileTexts };
+}
+
 /**
  * 构建飞书聊天历史上下文（首次 @bot 时注入，帮助 Claude 理解对话背景）
  *
@@ -1009,11 +1078,18 @@ async function buildChatHistoryContext(
       // afterMsgId 不在列表中 → 可能消息已过期滚动，注入全部
     }
 
-    const [text, images] = await Promise.all([
+    const [text, images, historyFiles] = await Promise.all([
       formatHistoryMessages(filtered, chatId, selfBotOpenIds),
       downloadHistoryImages(filtered),
+      downloadHistoryFiles(filtered),
     ]);
-    return { text: text ?? undefined, newestMsgId, ...(images.length > 0 ? { images } : {}) };
+    return {
+      text: text ?? undefined,
+      newestMsgId,
+      ...(images.length > 0 ? { images } : {}),
+      ...(historyFiles.documents.length > 0 ? { documents: historyFiles.documents } : {}),
+      ...(historyFiles.fileTexts.length > 0 ? { fileTexts: historyFiles.fileTexts } : {}),
+    };
   } catch (err) {
     logger.error({ err, chatId, threadId }, 'Failed to build chat history context');
     return {};
@@ -1518,6 +1594,14 @@ export async function executeClaudeTask(
     if (history.images && history.images.length > 0) {
       images = [...(history.images), ...(images ?? [])];
     }
+    // 合并历史消息中的文档（PDF）
+    if (history.documents && history.documents.length > 0) {
+      documents = [...(history.documents), ...(documents ?? [])];
+    }
+    // 合并历史消息中的文本文件内容到 prompt
+    if (history.fileTexts && history.fileTexts.length > 0) {
+      effectivePrompt = history.fileTexts.join('\n\n') + '\n\n---\n\n' + effectivePrompt;
+    }
   }
 
   // rootId 引用消息注入（仅主面板引用回复，话题内 rootId 是锚定消息不需要注入）
@@ -2014,6 +2098,14 @@ export async function executeDirectTask(
     if (history.images && history.images.length > 0) {
       images = [...(history.images), ...(images ?? [])];
     }
+    // 合并历史消息中的文档（PDF）
+    if (history.documents && history.documents.length > 0) {
+      documents = [...(history.documents), ...(documents ?? [])];
+    }
+    // 合并历史消息中的文本文件内容到 prompt
+    if (history.fileTexts && history.fileTexts.length > 0) {
+      effectivePrompt = history.fileTexts.join('\n\n') + '\n\n---\n\n' + effectivePrompt;
+    }
 
     // rootId 引用消息注入（仅主面板引用回复，话题内 rootId 是锚定消息不需要注入）
     if (!eventThreadId) {
@@ -2134,6 +2226,10 @@ interface HistoryResult {
   newestMsgId?: string;
   /** 历史消息中提取的图片（已压缩） */
   images?: ImageAttachment[];
+  /** 历史消息中提取的文档附件（PDF） */
+  documents?: DocumentAttachment[];
+  /** 历史消息中提取的文本文件内容（已格式化，可拼入 prompt） */
+  fileTexts?: string[];
 }
 
 /**
@@ -2232,11 +2328,18 @@ async function buildDirectTaskHistory(
       'buildDirectTaskHistory message pipeline',
     );
 
-    const [text, images] = await Promise.all([
+    const [text, images, historyFiles] = await Promise.all([
       formatHistoryMessages(messages, chatId, selfBotOpenIds, parentMsgCount > 0 ? { parentMsgCount } : undefined),
       downloadHistoryImages(messages),
+      downloadHistoryFiles(messages),
     ]);
-    return { text: text ?? undefined, newestMsgId, ...(images.length > 0 ? { images } : {}) };
+    return {
+      text: text ?? undefined,
+      newestMsgId,
+      ...(images.length > 0 ? { images } : {}),
+      ...(historyFiles.documents.length > 0 ? { documents: historyFiles.documents } : {}),
+      ...(historyFiles.fileTexts.length > 0 ? { fileTexts: historyFiles.fileTexts } : {}),
+    };
   } catch (err) {
     logger.error({ err, chatId, threadId }, 'Failed to build direct task history');
     return {};
