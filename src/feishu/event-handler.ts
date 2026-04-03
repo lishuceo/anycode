@@ -2427,6 +2427,17 @@ function detectImageMediaType(buf: Buffer): ImageAttachment['mediaType'] {
 async function parseMessage(data: MessageEventData): Promise<ParsedMessage | null> {
   const { message, sender } = data;
 
+  // 支持下载并嵌入 prompt 的文本类文件扩展名
+  const TEXT_FILE_EXTENSIONS = new Set([
+    '.md', '.txt', '.json', '.jsonl', '.log', '.yaml', '.yml',
+    '.csv', '.xml', '.html', '.htm', '.css', '.js', '.ts', '.jsx', '.tsx',
+    '.py', '.go', '.rs', '.java', '.c', '.cpp', '.h', '.hpp',
+    '.sh', '.bash', '.zsh', '.toml', '.ini', '.cfg', '.conf',
+    '.sql', '.graphql', '.proto', '.lua', '.rb', '.php', '.swift',
+    '.kt', '.kts', '.scala', '.r', '.m', '.mm', '.env', '.gitignore',
+    '.dockerfile', '.makefile',
+  ]);
+
   // 只处理文本、图片、文件、富文本（post）和合并转发（merge_forward）消息
   const supportedTypes = new Set(['text', 'image', 'file', 'post', 'merge_forward']);
   if (!supportedTypes.has(message.message_type)) {
@@ -2648,8 +2659,9 @@ async function parseMessage(data: MessageEventData): Promise<ParsedMessage | nul
       return null;
     }
   } else if (message.message_type === 'file') {
-    // 文件消息：目前仅支持 PDF
+    // 文件消息：支持 PDF（多模态）和文本类文件（嵌入 prompt）
     const MAX_FILE_SIZE_BYTES = 30 * 1024 * 1024; // 30MB
+    const MAX_TEXT_FILE_SIZE_BYTES = 1 * 1024 * 1024; // 1MB for text files
     try {
       const content = JSON.parse(message.content);
       const fileKey = content.file_key as string | undefined;
@@ -2660,10 +2672,11 @@ async function parseMessage(data: MessageEventData): Promise<ParsedMessage | nul
         return null;
       }
 
-      // 仅支持 PDF 文件
-      if (!fileName.toLowerCase().endsWith('.pdf')) {
-        text = `[用户发送了文件: ${fileName}，但目前仅支持 PDF 文件]`;
-      } else {
+      const fileNameLower = fileName.toLowerCase();
+      const fileExt = fileNameLower.includes('.') ? '.' + fileNameLower.split('.').pop()! : '';
+
+      if (fileNameLower.endsWith('.pdf')) {
+        // PDF 文件：多模态 DocumentAttachment
         const buf = await feishuClient.downloadMessageFile(message.message_id, fileKey);
 
         if (buf.length > MAX_FILE_SIZE_BYTES) {
@@ -2674,6 +2687,21 @@ async function parseMessage(data: MessageEventData): Promise<ParsedMessage | nul
 
         documents = [{ data: buf.toString('base64'), mediaType: 'application/pdf', fileName }];
         logger.info({ messageId: message.message_id, fileName, sizeBytes: buf.length }, 'PDF file downloaded');
+      } else if (TEXT_FILE_EXTENSIONS.has(fileExt) || fileExt === '' && fileNameLower.match(/^(makefile|dockerfile|readme|license|changelog|todo)$/i)) {
+        // 文本类文件：下载后作为文本嵌入 prompt
+        const buf = await feishuClient.downloadMessageFile(message.message_id, fileKey);
+
+        if (buf.length > MAX_TEXT_FILE_SIZE_BYTES) {
+          logger.warn({ messageId: message.message_id, sizeBytes: buf.length, fileName }, 'Text file too large, skipping');
+          await feishuClient.replyText(message.message_id, `⚠️ 文本文件太大（${(buf.length / 1024 / 1024).toFixed(1)}MB），请压缩到 1MB 以内后重试`);
+          return null;
+        }
+
+        const fileContent = buf.toString('utf-8');
+        text = `[用户发送了文件: ${fileName}]\n\n\`\`\`\n${fileContent}\n\`\`\``;
+        logger.info({ messageId: message.message_id, fileName, sizeBytes: buf.length }, 'Text file downloaded and embedded in prompt');
+      } else {
+        text = `[用户发送了文件: ${fileName}，该文件类型暂不支持。支持的类型：PDF、常见文本/代码文件（.md, .txt, .json, .log, .py, .ts 等）]`;
       }
     } catch (err) {
       logger.error({ err, messageId: message.message_id }, 'Failed to process file message');
@@ -2706,14 +2734,28 @@ async function parseMessage(data: MessageEventData): Promise<ParsedMessage | nul
           const parentContent = JSON.parse(parent.body.content);
           const fileKey = parentContent.file_key as string | undefined;
           const fileName = (parentContent.file_name as string) || '未知文件';
-          if (fileKey && fileName.toLowerCase().endsWith('.pdf')) {
-            const MAX_FILE_SIZE_BYTES = 30 * 1024 * 1024;
-            const buf = await feishuClient.downloadMessageFile(parent.message_id, fileKey);
-            if (buf.length <= MAX_FILE_SIZE_BYTES) {
-              documents = [{ data: buf.toString('base64'), mediaType: 'application/pdf', fileName }];
-              logger.info({ messageId: message.message_id, parentId: message.parent_id, fileName, sizeBytes: buf.length }, 'PDF downloaded from quoted parent message');
-            } else {
-              logger.warn({ messageId: message.message_id, sizeBytes: buf.length, fileName }, 'Quoted file too large, skipping');
+          if (fileKey) {
+            const fileNameLower = fileName.toLowerCase();
+            const fileExt = fileNameLower.includes('.') ? '.' + fileNameLower.split('.').pop()! : '';
+            if (fileNameLower.endsWith('.pdf')) {
+              const MAX_FILE_SIZE_BYTES = 30 * 1024 * 1024;
+              const buf = await feishuClient.downloadMessageFile(parent.message_id, fileKey);
+              if (buf.length <= MAX_FILE_SIZE_BYTES) {
+                documents = [{ data: buf.toString('base64'), mediaType: 'application/pdf', fileName }];
+                logger.info({ messageId: message.message_id, parentId: message.parent_id, fileName, sizeBytes: buf.length }, 'PDF downloaded from quoted parent message');
+              } else {
+                logger.warn({ messageId: message.message_id, sizeBytes: buf.length, fileName }, 'Quoted file too large, skipping');
+              }
+            } else if (TEXT_FILE_EXTENSIONS.has(fileExt)) {
+              const MAX_TEXT_SIZE = 1 * 1024 * 1024;
+              const buf = await feishuClient.downloadMessageFile(parent.message_id, fileKey);
+              if (buf.length <= MAX_TEXT_SIZE) {
+                const fileContent = buf.toString('utf-8');
+                text = `${text}\n\n[引用的文件: ${fileName}]\n\n\`\`\`\n${fileContent}\n\`\`\``;
+                logger.info({ messageId: message.message_id, parentId: message.parent_id, fileName, sizeBytes: buf.length }, 'Text file downloaded from quoted parent message');
+              } else {
+                logger.warn({ messageId: message.message_id, sizeBytes: buf.length, fileName }, 'Quoted text file too large, skipping');
+              }
             }
           }
         }
