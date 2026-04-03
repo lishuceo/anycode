@@ -971,15 +971,26 @@ async function downloadHistoryImages(
   return images;
 }
 
-/** 历史消息中可下载的文本类文件扩展名 */
-const HISTORY_TEXT_FILE_EXTENSIONS = new Set([
+/** 支持下载并嵌入 prompt 的文本类文件扩展名 */
+const TEXT_FILE_EXTENSIONS = new Set([
   '.md', '.txt', '.json', '.jsonl', '.log', '.yaml', '.yml',
   '.csv', '.xml', '.html', '.htm', '.css', '.js', '.ts', '.jsx', '.tsx',
   '.py', '.go', '.rs', '.java', '.c', '.cpp', '.h', '.hpp',
   '.sh', '.bash', '.zsh', '.toml', '.ini', '.cfg', '.conf',
   '.sql', '.graphql', '.proto', '.lua', '.rb', '.php', '.swift',
   '.kt', '.kts', '.scala', '.r', '.m', '.mm',
+  '.gitignore', '.dockerfile', '.makefile',
 ]);
+
+/** 无扩展名但属于文本文件的文件名（大小写不敏感匹配） */
+const EXTENSIONLESS_TEXT_FILES = /^(makefile|dockerfile|readme|license|changelog|todo)$/i;
+
+/** 判断文件是否为文本类文件（统一入口，所有路径共用） */
+function isTextFile(fileName: string): boolean {
+  const lower = fileName.toLowerCase();
+  const ext = lower.includes('.') ? '.' + lower.split('.').pop()! : '';
+  return TEXT_FILE_EXTENSIONS.has(ext) || (ext === '' && EXTENSIONLESS_TEXT_FILES.test(lower));
+}
 
 /** 最多从历史消息中下载的文件数 */
 const MAX_HISTORY_FILES = 3;
@@ -1011,20 +1022,17 @@ async function downloadHistoryFiles(
 
   await Promise.all(toDownload.map(async (ref) => {
     try {
-      const fileNameLower = ref.fileName.toLowerCase();
-      const fileExt = fileNameLower.includes('.') ? '.' + fileNameLower.split('.').pop()! : '';
-
-      if (fileNameLower.endsWith('.pdf')) {
+      if (ref.fileName.toLowerCase().endsWith('.pdf')) {
         const buf = await feishuClient.downloadMessageFile(ref.messageId, ref.fileKey);
         if (buf.length <= MAX_PDF_SIZE) {
           documents.push({ data: buf.toString('base64'), mediaType: 'application/pdf', fileName: ref.fileName });
           logger.info({ messageId: ref.messageId, fileName: ref.fileName, sizeBytes: buf.length }, 'History PDF downloaded');
         }
-      } else if (HISTORY_TEXT_FILE_EXTENSIONS.has(fileExt)) {
+      } else if (isTextFile(ref.fileName)) {
         const buf = await feishuClient.downloadMessageFile(ref.messageId, ref.fileKey);
         if (buf.length <= MAX_TEXT_SIZE) {
           const content = buf.toString('utf-8');
-          fileTexts.push(`[历史消息中的文件: ${ref.fileName}]\n\n\`\`\`\n${content}\n\`\`\``);
+          fileTexts.push(`[历史消息中的文件: ${ref.fileName}]\n\n<file name="${ref.fileName}">\n${content}\n</file>`);
           logger.info({ messageId: ref.messageId, fileName: ref.fileName, sizeBytes: buf.length }, 'History text file downloaded');
         }
       }
@@ -2530,17 +2538,6 @@ function detectImageMediaType(buf: Buffer): ImageAttachment['mediaType'] {
 async function parseMessage(data: MessageEventData): Promise<ParsedMessage | null> {
   const { message, sender } = data;
 
-  // 支持下载并嵌入 prompt 的文本类文件扩展名
-  const TEXT_FILE_EXTENSIONS = new Set([
-    '.md', '.txt', '.json', '.jsonl', '.log', '.yaml', '.yml',
-    '.csv', '.xml', '.html', '.htm', '.css', '.js', '.ts', '.jsx', '.tsx',
-    '.py', '.go', '.rs', '.java', '.c', '.cpp', '.h', '.hpp',
-    '.sh', '.bash', '.zsh', '.toml', '.ini', '.cfg', '.conf',
-    '.sql', '.graphql', '.proto', '.lua', '.rb', '.php', '.swift',
-    '.kt', '.kts', '.scala', '.r', '.m', '.mm', '.env', '.gitignore',
-    '.dockerfile', '.makefile',
-  ]);
-
   // 只处理文本、图片、文件、富文本（post）和合并转发（merge_forward）消息
   const supportedTypes = new Set(['text', 'image', 'file', 'post', 'merge_forward']);
   if (!supportedTypes.has(message.message_type)) {
@@ -2775,10 +2772,7 @@ async function parseMessage(data: MessageEventData): Promise<ParsedMessage | nul
         return null;
       }
 
-      const fileNameLower = fileName.toLowerCase();
-      const fileExt = fileNameLower.includes('.') ? '.' + fileNameLower.split('.').pop()! : '';
-
-      if (fileNameLower.endsWith('.pdf')) {
+      if (fileName.toLowerCase().endsWith('.pdf')) {
         // PDF 文件：多模态 DocumentAttachment
         const buf = await feishuClient.downloadMessageFile(message.message_id, fileKey);
 
@@ -2790,7 +2784,7 @@ async function parseMessage(data: MessageEventData): Promise<ParsedMessage | nul
 
         documents = [{ data: buf.toString('base64'), mediaType: 'application/pdf', fileName }];
         logger.info({ messageId: message.message_id, fileName, sizeBytes: buf.length }, 'PDF file downloaded');
-      } else if (TEXT_FILE_EXTENSIONS.has(fileExt) || fileExt === '' && fileNameLower.match(/^(makefile|dockerfile|readme|license|changelog|todo)$/i)) {
+      } else if (isTextFile(fileName)) {
         // 文本类文件：下载后作为文本嵌入 prompt
         const buf = await feishuClient.downloadMessageFile(message.message_id, fileKey);
 
@@ -2801,7 +2795,7 @@ async function parseMessage(data: MessageEventData): Promise<ParsedMessage | nul
         }
 
         const fileContent = buf.toString('utf-8');
-        text = `[用户发送了文件: ${fileName}]\n\n\`\`\`\n${fileContent}\n\`\`\``;
+        text = `[用户发送了文件: ${fileName}]\n\n<file name="${fileName}">\n${fileContent}\n</file>`;
         logger.info({ messageId: message.message_id, fileName, sizeBytes: buf.length }, 'Text file downloaded and embedded in prompt');
       } else {
         text = `[用户发送了文件: ${fileName}，该文件类型暂不支持。支持的类型：PDF、常见文本/代码文件（.md, .txt, .json, .log, .py, .ts 等）]`;
@@ -2838,9 +2832,7 @@ async function parseMessage(data: MessageEventData): Promise<ParsedMessage | nul
           const fileKey = parentContent.file_key as string | undefined;
           const fileName = (parentContent.file_name as string) || '未知文件';
           if (fileKey) {
-            const fileNameLower = fileName.toLowerCase();
-            const fileExt = fileNameLower.includes('.') ? '.' + fileNameLower.split('.').pop()! : '';
-            if (fileNameLower.endsWith('.pdf')) {
+            if (fileName.toLowerCase().endsWith('.pdf')) {
               const MAX_FILE_SIZE_BYTES = 30 * 1024 * 1024;
               const buf = await feishuClient.downloadMessageFile(parent.message_id, fileKey);
               if (buf.length <= MAX_FILE_SIZE_BYTES) {
@@ -2849,12 +2841,12 @@ async function parseMessage(data: MessageEventData): Promise<ParsedMessage | nul
               } else {
                 logger.warn({ messageId: message.message_id, sizeBytes: buf.length, fileName }, 'Quoted file too large, skipping');
               }
-            } else if (TEXT_FILE_EXTENSIONS.has(fileExt)) {
+            } else if (isTextFile(fileName)) {
               const MAX_TEXT_SIZE = 1 * 1024 * 1024;
               const buf = await feishuClient.downloadMessageFile(parent.message_id, fileKey);
               if (buf.length <= MAX_TEXT_SIZE) {
                 const fileContent = buf.toString('utf-8');
-                text = `${text}\n\n[引用的文件: ${fileName}]\n\n\`\`\`\n${fileContent}\n\`\`\``;
+                text = `${text}\n\n[引用的文件: ${fileName}]\n\n<file name="${fileName}">\n${fileContent}\n</file>`;
                 logger.info({ messageId: message.message_id, parentId: message.parent_id, fileName, sizeBytes: buf.length }, 'Text file downloaded from quoted parent message');
               } else {
                 logger.warn({ messageId: message.message_id, sizeBytes: buf.length, fileName }, 'Quoted text file too large, skipping');
