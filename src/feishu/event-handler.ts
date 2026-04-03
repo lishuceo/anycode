@@ -971,6 +971,83 @@ async function downloadHistoryImages(
   return images;
 }
 
+/** 支持下载并嵌入 prompt 的文本类文件扩展名 */
+const TEXT_FILE_EXTENSIONS = new Set([
+  '.md', '.txt', '.json', '.jsonl', '.log', '.yaml', '.yml',
+  '.csv', '.xml', '.html', '.htm', '.css', '.js', '.ts', '.jsx', '.tsx',
+  '.py', '.go', '.rs', '.java', '.c', '.cpp', '.h', '.hpp',
+  '.sh', '.bash', '.zsh', '.toml', '.ini', '.cfg', '.conf',
+  '.sql', '.graphql', '.proto', '.lua', '.rb', '.php', '.swift',
+  '.kt', '.kts', '.scala', '.r', '.m', '.mm',
+  '.gitignore', '.dockerfile', '.makefile',
+]);
+
+/** 无扩展名但属于文本文件的文件名（大小写不敏感匹配） */
+const EXTENSIONLESS_TEXT_FILES = /^(makefile|dockerfile|readme|license|changelog|todo)$/i;
+
+/** 判断文件是否为文本类文件（统一入口，所有路径共用） */
+function isTextFile(fileName: string): boolean {
+  const lower = fileName.toLowerCase();
+  const ext = lower.includes('.') ? '.' + lower.split('.').pop()! : '';
+  return TEXT_FILE_EXTENSIONS.has(ext) || (ext === '' && EXTENSIONLESS_TEXT_FILES.test(lower));
+}
+
+/** 最多从历史消息中下载的文件数 */
+const MAX_HISTORY_FILES = 3;
+
+/**
+ * 从历史消息中下载文件附件（PDF → DocumentAttachment, 文本类 → 嵌入文本）
+ *
+ * @returns { documents, fileTexts } — documents 供多模态传入, fileTexts 拼入 prompt
+ */
+async function downloadHistoryFiles(
+  messages: Array<{ messageId: string; fileRefs?: Array<{ fileKey: string; fileName: string }> }>,
+): Promise<{ documents: DocumentAttachment[]; fileTexts: string[] }> {
+  const refs: Array<{ messageId: string; fileKey: string; fileName: string }> = [];
+  for (const msg of messages) {
+    if (msg.fileRefs) {
+      for (const ref of msg.fileRefs) {
+        refs.push({ messageId: msg.messageId, ...ref });
+      }
+    }
+  }
+  if (refs.length === 0) return { documents: [], fileTexts: [] };
+
+  const toDownload = refs.slice(-MAX_HISTORY_FILES);
+  const MAX_PDF_SIZE = 30 * 1024 * 1024;
+  const MAX_TEXT_SIZE = 1 * 1024 * 1024;
+
+  const documents: DocumentAttachment[] = [];
+  const fileTexts: string[] = [];
+
+  await Promise.all(toDownload.map(async (ref) => {
+    try {
+      if (ref.fileName.toLowerCase().endsWith('.pdf')) {
+        const buf = await feishuClient.downloadMessageFile(ref.messageId, ref.fileKey);
+        if (buf.length <= MAX_PDF_SIZE) {
+          documents.push({ data: buf.toString('base64'), mediaType: 'application/pdf', fileName: ref.fileName });
+          logger.info({ messageId: ref.messageId, fileName: ref.fileName, sizeBytes: buf.length }, 'History PDF downloaded');
+        }
+      } else if (isTextFile(ref.fileName)) {
+        const buf = await feishuClient.downloadMessageFile(ref.messageId, ref.fileKey);
+        if (buf.length <= MAX_TEXT_SIZE) {
+          const content = buf.toString('utf-8');
+          fileTexts.push(`[历史消息中的文件: ${ref.fileName}]\n\n<file name="${ref.fileName}">\n${content}\n</file>`);
+          logger.info({ messageId: ref.messageId, fileName: ref.fileName, sizeBytes: buf.length }, 'History text file downloaded');
+        }
+      }
+    } catch (err) {
+      logger.warn({ err, messageId: ref.messageId, fileName: ref.fileName }, 'Failed to download history file, skipping');
+    }
+  }));
+
+  if (documents.length > 0 || fileTexts.length > 0) {
+    logger.info({ docCount: documents.length, textCount: fileTexts.length, totalRefs: refs.length }, 'Downloaded history files');
+  }
+
+  return { documents, fileTexts };
+}
+
 /**
  * 构建飞书聊天历史上下文（首次 @bot 时注入，帮助 Claude 理解对话背景）
  *
@@ -1009,11 +1086,18 @@ async function buildChatHistoryContext(
       // afterMsgId 不在列表中 → 可能消息已过期滚动，注入全部
     }
 
-    const [text, images] = await Promise.all([
+    const [text, images, historyFiles] = await Promise.all([
       formatHistoryMessages(filtered, chatId, selfBotOpenIds),
       downloadHistoryImages(filtered),
+      downloadHistoryFiles(filtered),
     ]);
-    return { text: text ?? undefined, newestMsgId, ...(images.length > 0 ? { images } : {}) };
+    return {
+      text: text ?? undefined,
+      newestMsgId,
+      ...(images.length > 0 ? { images } : {}),
+      ...(historyFiles.documents.length > 0 ? { documents: historyFiles.documents } : {}),
+      ...(historyFiles.fileTexts.length > 0 ? { fileTexts: historyFiles.fileTexts } : {}),
+    };
   } catch (err) {
     logger.error({ err, chatId, threadId }, 'Failed to build chat history context');
     return {};
@@ -1518,6 +1602,14 @@ export async function executeClaudeTask(
     if (history.images && history.images.length > 0) {
       images = [...(history.images), ...(images ?? [])];
     }
+    // 合并历史消息中的文档（PDF）
+    if (history.documents && history.documents.length > 0) {
+      documents = [...(history.documents), ...(documents ?? [])];
+    }
+    // 合并历史消息中的文本文件内容到 prompt
+    if (history.fileTexts && history.fileTexts.length > 0) {
+      effectivePrompt = history.fileTexts.join('\n\n') + '\n\n---\n\n' + effectivePrompt;
+    }
   }
 
   // rootId 引用消息注入（仅主面板引用回复，话题内 rootId 是锚定消息不需要注入）
@@ -2014,6 +2106,14 @@ export async function executeDirectTask(
     if (history.images && history.images.length > 0) {
       images = [...(history.images), ...(images ?? [])];
     }
+    // 合并历史消息中的文档（PDF）
+    if (history.documents && history.documents.length > 0) {
+      documents = [...(history.documents), ...(documents ?? [])];
+    }
+    // 合并历史消息中的文本文件内容到 prompt
+    if (history.fileTexts && history.fileTexts.length > 0) {
+      effectivePrompt = history.fileTexts.join('\n\n') + '\n\n---\n\n' + effectivePrompt;
+    }
 
     // rootId 引用消息注入（仅主面板引用回复，话题内 rootId 是锚定消息不需要注入）
     if (!eventThreadId) {
@@ -2134,6 +2234,10 @@ interface HistoryResult {
   newestMsgId?: string;
   /** 历史消息中提取的图片（已压缩） */
   images?: ImageAttachment[];
+  /** 历史消息中提取的文档附件（PDF） */
+  documents?: DocumentAttachment[];
+  /** 历史消息中提取的文本文件内容（已格式化，可拼入 prompt） */
+  fileTexts?: string[];
 }
 
 /**
@@ -2232,11 +2336,18 @@ async function buildDirectTaskHistory(
       'buildDirectTaskHistory message pipeline',
     );
 
-    const [text, images] = await Promise.all([
+    const [text, images, historyFiles] = await Promise.all([
       formatHistoryMessages(messages, chatId, selfBotOpenIds, parentMsgCount > 0 ? { parentMsgCount } : undefined),
       downloadHistoryImages(messages),
+      downloadHistoryFiles(messages),
     ]);
-    return { text: text ?? undefined, newestMsgId, ...(images.length > 0 ? { images } : {}) };
+    return {
+      text: text ?? undefined,
+      newestMsgId,
+      ...(images.length > 0 ? { images } : {}),
+      ...(historyFiles.documents.length > 0 ? { documents: historyFiles.documents } : {}),
+      ...(historyFiles.fileTexts.length > 0 ? { fileTexts: historyFiles.fileTexts } : {}),
+    };
   } catch (err) {
     logger.error({ err, chatId, threadId }, 'Failed to build direct task history');
     return {};
@@ -2648,8 +2759,9 @@ async function parseMessage(data: MessageEventData): Promise<ParsedMessage | nul
       return null;
     }
   } else if (message.message_type === 'file') {
-    // 文件消息：目前仅支持 PDF
+    // 文件消息：支持 PDF（多模态）和文本类文件（嵌入 prompt）
     const MAX_FILE_SIZE_BYTES = 30 * 1024 * 1024; // 30MB
+    const MAX_TEXT_FILE_SIZE_BYTES = 1 * 1024 * 1024; // 1MB for text files
     try {
       const content = JSON.parse(message.content);
       const fileKey = content.file_key as string | undefined;
@@ -2660,10 +2772,8 @@ async function parseMessage(data: MessageEventData): Promise<ParsedMessage | nul
         return null;
       }
 
-      // 仅支持 PDF 文件
-      if (!fileName.toLowerCase().endsWith('.pdf')) {
-        text = `[用户发送了文件: ${fileName}，但目前仅支持 PDF 文件]`;
-      } else {
+      if (fileName.toLowerCase().endsWith('.pdf')) {
+        // PDF 文件：多模态 DocumentAttachment
         const buf = await feishuClient.downloadMessageFile(message.message_id, fileKey);
 
         if (buf.length > MAX_FILE_SIZE_BYTES) {
@@ -2674,6 +2784,21 @@ async function parseMessage(data: MessageEventData): Promise<ParsedMessage | nul
 
         documents = [{ data: buf.toString('base64'), mediaType: 'application/pdf', fileName }];
         logger.info({ messageId: message.message_id, fileName, sizeBytes: buf.length }, 'PDF file downloaded');
+      } else if (isTextFile(fileName)) {
+        // 文本类文件：下载后作为文本嵌入 prompt
+        const buf = await feishuClient.downloadMessageFile(message.message_id, fileKey);
+
+        if (buf.length > MAX_TEXT_FILE_SIZE_BYTES) {
+          logger.warn({ messageId: message.message_id, sizeBytes: buf.length, fileName }, 'Text file too large, skipping');
+          await feishuClient.replyText(message.message_id, `⚠️ 文本文件太大（${(buf.length / 1024 / 1024).toFixed(1)}MB），请压缩到 1MB 以内后重试`);
+          return null;
+        }
+
+        const fileContent = buf.toString('utf-8');
+        text = `[用户发送了文件: ${fileName}]\n\n<file name="${fileName}">\n${fileContent}\n</file>`;
+        logger.info({ messageId: message.message_id, fileName, sizeBytes: buf.length }, 'Text file downloaded and embedded in prompt');
+      } else {
+        text = `[用户发送了文件: ${fileName}，该文件类型暂不支持。支持的类型：PDF、常见文本/代码文件（.md, .txt, .json, .log, .py, .ts 等）]`;
       }
     } catch (err) {
       logger.error({ err, messageId: message.message_id }, 'Failed to process file message');
@@ -2706,14 +2831,26 @@ async function parseMessage(data: MessageEventData): Promise<ParsedMessage | nul
           const parentContent = JSON.parse(parent.body.content);
           const fileKey = parentContent.file_key as string | undefined;
           const fileName = (parentContent.file_name as string) || '未知文件';
-          if (fileKey && fileName.toLowerCase().endsWith('.pdf')) {
-            const MAX_FILE_SIZE_BYTES = 30 * 1024 * 1024;
-            const buf = await feishuClient.downloadMessageFile(parent.message_id, fileKey);
-            if (buf.length <= MAX_FILE_SIZE_BYTES) {
-              documents = [{ data: buf.toString('base64'), mediaType: 'application/pdf', fileName }];
-              logger.info({ messageId: message.message_id, parentId: message.parent_id, fileName, sizeBytes: buf.length }, 'PDF downloaded from quoted parent message');
-            } else {
-              logger.warn({ messageId: message.message_id, sizeBytes: buf.length, fileName }, 'Quoted file too large, skipping');
+          if (fileKey) {
+            if (fileName.toLowerCase().endsWith('.pdf')) {
+              const MAX_FILE_SIZE_BYTES = 30 * 1024 * 1024;
+              const buf = await feishuClient.downloadMessageFile(parent.message_id, fileKey);
+              if (buf.length <= MAX_FILE_SIZE_BYTES) {
+                documents = [{ data: buf.toString('base64'), mediaType: 'application/pdf', fileName }];
+                logger.info({ messageId: message.message_id, parentId: message.parent_id, fileName, sizeBytes: buf.length }, 'PDF downloaded from quoted parent message');
+              } else {
+                logger.warn({ messageId: message.message_id, sizeBytes: buf.length, fileName }, 'Quoted file too large, skipping');
+              }
+            } else if (isTextFile(fileName)) {
+              const MAX_TEXT_SIZE = 1 * 1024 * 1024;
+              const buf = await feishuClient.downloadMessageFile(parent.message_id, fileKey);
+              if (buf.length <= MAX_TEXT_SIZE) {
+                const fileContent = buf.toString('utf-8');
+                text = `${text}\n\n[引用的文件: ${fileName}]\n\n<file name="${fileName}">\n${fileContent}\n</file>`;
+                logger.info({ messageId: message.message_id, parentId: message.parent_id, fileName, sizeBytes: buf.length }, 'Text file downloaded from quoted parent message');
+              } else {
+                logger.warn({ messageId: message.message_id, sizeBytes: buf.length, fileName }, 'Quoted text file too large, skipping');
+              }
             }
           }
         }
