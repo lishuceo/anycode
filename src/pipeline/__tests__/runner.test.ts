@@ -51,7 +51,6 @@ vi.mock('../../session/manager.js', () => ({
     getThreadSession: vi.fn().mockReturnValue(null),
     upsertThreadSession: vi.fn(),
     setThreadWorkingDir: vi.fn(),
-    markThreadRoutingCompleted: vi.fn(),
     setThreadPipelineContext: vi.fn(),
     touchThreadSession: vi.fn(),
   },

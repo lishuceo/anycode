@@ -16,6 +16,26 @@ export type {
   Query,
 } from '@anthropic-ai/claude-agent-sdk';
 
+/** 工具调用轨迹（用于 restart 时传递上下文） */
+export interface ToolCallTrace {
+  /** tool_use_id，用于关联 tool_result */
+  id: string;
+  /** 工具名称 */
+  name: string;
+  /** 工具输入参数 */
+  input: Record<string, unknown>;
+  /** 工具返回结果（从 user message 的 tool_result block 回填） */
+  result?: string;
+}
+
+/** 对话轨迹中的一个 assistant turn */
+export interface ConversationTurn {
+  /** Agent 的推理文本 */
+  text: string;
+  /** Agent 调用的工具 */
+  toolCalls: ToolCallTrace[];
+}
+
 /** 本项目封装的 Claude Code 执行结果 */
 export interface ClaudeResult {
   /** 是否执行成功 */
@@ -40,6 +60,8 @@ export interface ClaudeResult {
   needsRestart?: boolean;
   /** 重启目标工作目录 */
   newWorkingDir?: string;
+  /** 对话轨迹（restart 时传递给第二次 query 的上下文） */
+  conversationTrace?: ConversationTurn[];
 }
 
 /** executor.execute() 的可选参数 */

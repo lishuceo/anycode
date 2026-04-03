@@ -3,10 +3,7 @@ import { basename } from 'node:path';
 import { config } from '../config.js';
 import { logger } from '../utils/logger.js';
 import { sessionManager } from '../session/manager.js';
-import { routeWorkspace, type RoutingDecision } from '../claude/router.js';
-import { isAutoWorkspacePath, ensureIsolatedWorkspace } from '../workspace/isolation.js';
-import { setupWorkspace } from '../workspace/manager.js';
-import { isOwner } from '../utils/security.js';
+import { isAutoWorkspacePath } from '../workspace/isolation.js';
 import { consumePreApproved } from './approval.js';
 import { ensureThread } from './thread-utils.js';
 import { feishuClient } from './client.js';
@@ -17,7 +14,10 @@ import type { ThreadSession } from '../session/types.js';
 // resolveThreadContext — 共享的话题上下文解析逻辑
 //
 // 统一 executeClaudeTask 和 executePipelineTask 的前置流程：
-// ensureThread → session 管理 → 路由状态机 → 工作区隔离 → greeting 更新
+// ensureThread → session 管理 → workingDir 确定 → greeting 更新
+//
+// 不再有前置路由 Agent。工作区默认使用 DEFAULT_WORK_DIR，
+// 主 Agent 在执行过程中通过 setup_workspace MCP tool 自主切换。
 // ============================================================
 
 /** 解析后的话题上下文 */
@@ -32,13 +32,12 @@ export interface ThreadContext {
   threadId?: string;
   /** Thread session 记录 */
   threadSession?: Readonly<ThreadSession>;
-  /** 可能被路由追问替换的 prompt */
+  /** prompt（透传，不再被路由修改） */
   prompt: string;
 }
 
 export type ResolveResult =
-  | { status: 'resolved'; ctx: ThreadContext; pipelineMode?: boolean }
-  | { status: 'pending' }   // 路由待澄清，已回复用户
+  | { status: 'resolved'; ctx: ThreadContext }
   | { status: 'stale' }     // 工作区已过期，已回复用户
   | { status: 'error' };    // 工作区创建失败，已回复用户
 
@@ -53,38 +52,17 @@ export interface ResolveParams {
   threadId?: string;
   /** agent 角色标识（多 agent 模式下传入，默认 'dev'） */
   agentId?: string;
-  /** 是否为 /dev pipeline 模式（存入 routing state，clarification 后恢复） */
-  pipelineMode?: boolean;
 }
 
 /**
- * 根据路由决策创建或隔离工作区
- *
- * clone_remote: 通过 setupWorkspace 从 bare cache 克隆到隔离工作区
- * use_existing / use_default: 通过 ensureIsolatedWorkspace 隔离本地仓库
- */
-function resolveWorkdir(
-  decision: RoutingDecision,
-  isolationMode: 'readonly' | 'writable',
-): { workingDir: string; warning?: string } {
-  if (decision.decision === 'clone_remote' && decision.repo_url) {
-    const result = setupWorkspace({ repoUrl: decision.repo_url, mode: isolationMode, sourceBranch: decision.branch });
-    return { workingDir: result.workspacePath, warning: result.warning };
-  }
-  const workingDir = decision.workdir || config.claude.defaultWorkDir;
-  const isolated = ensureIsolatedWorkspace(workingDir, isolationMode);
-  return { workingDir: isolated.workingDir, warning: isolated.warning };
-}
-
-/**
- * 解析话题上下文（thread + 路由 + 工作区隔离 + greeting）
+ * 解析话题上下文（thread + workingDir + greeting）
  *
  * 从 executeClaudeTask 和 executePipelineTask 提取的共享前置逻辑。
- * 返回 resolved context 或指示 pending/stale/error 状态（已回复用户）。
+ * 默认使用 DEFAULT_WORK_DIR，主 Agent 通过 setup_workspace MCP tool 自主切换。
+ * 返回 resolved context 或指示 stale/error 状态（已回复用户）。
  */
 export async function resolveThreadContext(params: ResolveParams): Promise<ResolveResult> {
-  const { chatId, userId, messageId, rootId, threadId: eventThreadId, agentId = 'dev' } = params;
-  let prompt = params.prompt;
+  const { prompt, chatId, userId, messageId, rootId, threadId: eventThreadId, agentId = 'dev' } = params;
 
   // 1. 确保话题存在
   const { threadReplyMsgId, greetingMsgId } = await ensureThread(chatId, userId, messageId, rootId, eventThreadId, agentId);
@@ -95,8 +73,9 @@ export async function resolveThreadContext(params: ResolveParams): Promise<Resol
   let threadSession = threadId ? sessionManager.getThreadSession(threadId, agentId) : undefined;
 
   // 确保 thread_sessions 中有记录（首条消息时创建）
+  // 新话题始终用 defaultWorkDir，不继承全局 session 的 workingDir（可能被上一个话题污染）
   if (threadId && !threadSession) {
-    sessionManager.upsertThreadSession(threadId, chatId, userId, session.workingDir, agentId);
+    sessionManager.upsertThreadSession(threadId, chatId, userId, config.claude.defaultWorkDir, agentId);
     threadSession = sessionManager.getThreadSession(threadId, agentId);
   }
 
@@ -110,152 +89,12 @@ export async function resolveThreadContext(params: ResolveParams): Promise<Resol
     sessionManager.touchThreadSession(threadId, agentId);
   }
 
-  // 3. 路由状态机：决定工作目录
-  let workingDir: string;
-  let warning: string | undefined;
-  let restoredPipelineMode: boolean | undefined;
-  const needsRouting = (threadId && threadSession?.routingState?.status === 'pending_clarification')
-    || (threadId && !threadSession?.routingCompleted);
-
-  // 路由可能耗时较长，先给用户即时反馈
-  if (needsRouting && threadReplyMsgId) {
-    await feishuClient.replyTextInThread(threadReplyMsgId, '🔍 正在分析工作目录...');
-  }
-
-  if (threadId && threadSession?.routingState?.status === 'pending_clarification') {
-    // 3a. 用户回复了路由澄清问题
-    const retryCount = threadSession.routingState.retryCount ?? 0;
-    const MAX_ROUTING_RETRIES = 3;
-
-    if (retryCount >= MAX_ROUTING_RETRIES) {
-      // 超过最大追问次数，使用默认目录
-      logger.warn({ chatId, userId, threadId, retryCount }, 'Routing clarification limit reached, using default workdir');
-      workingDir = config.claude.defaultWorkDir;
-      sessionManager.clearThreadRoutingState(threadId, agentId);
-      sessionManager.setThreadWorkingDir(threadId, workingDir, agentId);
-      sessionManager.markThreadRoutingCompleted(threadId, agentId);
-      threadSession = sessionManager.getThreadSession(threadId);
-    } else {
-      // 拼接上下文重新路由
-      const context = [
-        `[原始请求] ${threadSession.routingState.originalPrompt}`,
-        `[路由问题] ${threadSession.routingState.question}`,
-        `[用户回复] ${prompt}`,
-      ].join('\n');
-
-      logger.info({ chatId, userId, threadId, retryCount }, 'Re-routing with clarification context');
-      const decision = await routeWorkspace(context, chatId, userId, threadId);
-
-      if (decision.decision === 'need_clarification') {
-        const question = decision.question || '请提供更多信息，我需要知道你想要操作哪个仓库或项目。';
-        sessionManager.setThreadRoutingState(threadId, {
-          status: 'pending_clarification',
-          originalPrompt: threadSession.routingState.originalPrompt,
-          question,
-          retryCount: retryCount + 1,
-          pipelineMode: threadSession.routingState.pipelineMode,
-        }, agentId);
-        if (threadReplyMsgId) {
-          await feishuClient.replyTextInThread(threadReplyMsgId, question);
-        } else {
-          await feishuClient.replyText(messageId, question);
-        }
-        return { status: 'pending' };
-      }
-
-      // clone 失败时通知用户，不静默回退
-      if (decision.cloneError) {
-        const errorMsg = `❌ ${decision.cloneError}`;
-        if (threadReplyMsgId) {
-          await feishuClient.replyTextInThread(threadReplyMsgId, errorMsg);
-        } else {
-          await feishuClient.replyText(messageId, errorMsg);
-        }
-        return { status: 'error' };
-      }
-
-      warning = decision.warning;
-      try {
-        const isolationMode = isOwner(userId) ? 'writable' : (decision.mode || 'readonly');
-        const resolved = resolveWorkdir(decision, isolationMode);
-        workingDir = resolved.workingDir;
-        warning = warning || resolved.warning;
-      } catch (err) {
-        const errorMsg = `❌ 无法创建隔离工作区: ${(err as Error).message}`;
-        if (threadReplyMsgId) {
-          await feishuClient.replyTextInThread(threadReplyMsgId, errorMsg);
-        } else {
-          await feishuClient.replyText(messageId, errorMsg);
-        }
-        return { status: 'error' };
-      }
-      // 路由成功后恢复原始请求作为主查询 prompt
-      prompt = threadSession.routingState.originalPrompt;
-      restoredPipelineMode = threadSession.routingState.pipelineMode;
-      sessionManager.clearThreadRoutingState(threadId, agentId);
-      sessionManager.setThreadWorkingDir(threadId, workingDir, agentId);
-      sessionManager.markThreadRoutingCompleted(threadId, agentId);
-      threadSession = sessionManager.getThreadSession(threadId, agentId);
-    }
-
-  } else if (threadId && !threadSession?.routingCompleted && !threadSession?.conversationId) {
-    // 3b. Thread 首条消息，需要路由
-    logger.info({ chatId, userId, threadId }, 'First message in thread, running routing agent');
-    const decision = await routeWorkspace(prompt, chatId, userId, threadId);
-
-    if (decision.decision === 'need_clarification') {
-      const question = decision.question || '请提供更多信息，我需要知道你想要操作哪个仓库或项目。';
-      sessionManager.setThreadRoutingState(threadId, {
-        status: 'pending_clarification',
-        originalPrompt: prompt,
-        question,
-        retryCount: 0,
-        pipelineMode: params.pipelineMode || undefined,
-      }, agentId);
-      if (threadReplyMsgId) {
-        await feishuClient.replyTextInThread(threadReplyMsgId, question);
-      } else {
-        await feishuClient.replyText(messageId, question);
-      }
-      return { status: 'pending' };
-    }
-
-    // clone 失败时通知用户，不静默回退
-    if (decision.cloneError) {
-      const errorMsg = `❌ ${decision.cloneError}`;
-      if (threadReplyMsgId) {
-        await feishuClient.replyTextInThread(threadReplyMsgId, errorMsg);
-      } else {
-        await feishuClient.replyText(messageId, errorMsg);
-      }
-      return { status: 'error' };
-    }
-
-    warning = decision.warning;
-    try {
-      const isolationMode = isOwner(userId) ? 'writable' : (decision.mode || 'readonly');
-      const resolved = resolveWorkdir(decision, isolationMode);
-      workingDir = resolved.workingDir;
-      warning = warning || resolved.warning;
-    } catch (err) {
-      const errorMsg = `❌ 无法创建隔离工作区: ${(err as Error).message}`;
-      if (threadReplyMsgId) {
-        await feishuClient.replyTextInThread(threadReplyMsgId, errorMsg);
-      } else {
-        await feishuClient.replyText(messageId, errorMsg);
-      }
-      return { status: 'error' };
-    }
-    sessionManager.setThreadWorkingDir(threadId, workingDir, agentId);
-    sessionManager.markThreadRoutingCompleted(threadId, agentId);
-    // 同步更新全局 session 的 workingDir
-    sessionManager.setWorkingDir(chatId, userId, workingDir, agentId);
-    threadSession = sessionManager.getThreadSession(threadId, agentId);
-
-  } else {
-    // 3c. Thread 后续消息，使用已绑定的 workdir
-    workingDir = threadSession?.workingDir ?? session.workingDir;
-  }
+  // 3. 确定工作目录
+  // 后续消息使用已绑定的 workingDir（可能已被 setup_workspace 切换）
+  // 首条消息使用 defaultWorkDir，主 Agent 在执行中自主判断是否需要切换
+  // 注意：不能 fallback 到 session.workingDir，因为全局 session 可能被上一个话题的
+  // workspace 切换污染（setWorkingDir 更新的是 per-chat 全局 session）
+  const workingDir = threadSession?.workingDir ?? config.claude.defaultWorkDir;
 
   // 4. 过期工作区检测
   if (isAutoWorkspacePath(workingDir) && !existsSync(workingDir)) {
@@ -279,7 +118,7 @@ export async function resolveThreadContext(params: ResolveParams): Promise<Resol
   if (greetingMsgId && threadId) {
     feishuClient.updateCard(
       greetingMsgId,
-      buildGreetingCardReady(threadId, workingDir, warning),
+      buildGreetingCardReady(threadId, workingDir),
     ).catch((err) => {
       logger.warn({ err }, 'Failed to update greeting card');
     });
@@ -295,6 +134,5 @@ export async function resolveThreadContext(params: ResolveParams): Promise<Resol
       threadSession,
       prompt,
     },
-    pipelineMode: restoredPipelineMode,
   };
 }

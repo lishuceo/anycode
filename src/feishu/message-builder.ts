@@ -9,7 +9,7 @@ import type { TurnInfo, ToolCallInfo } from '../claude/types.js';
 import type { Memory, MemorySearchResult } from '../memory/types.js';
 import { MEMORY_PAGE_SIZE } from '../memory/types.js';
 
-/** 构建新会话问候卡片（初始状态，工作目录未确定） */
+/** 构建新会话问候卡片（初始状态） */
 export function buildGreetingCard(): Record<string, unknown> {
   return {
     config: { wide_screen_mode: true },
@@ -22,7 +22,7 @@ export function buildGreetingCard(): Record<string, unknown> {
         tag: 'div',
         text: {
           tag: 'lark_md',
-          content: '⏳ 正在初始化工作目录...',
+          content: '⏳ 正在启动...',
         },
       },
     ],

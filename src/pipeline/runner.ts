@@ -142,7 +142,6 @@ export async function startPipeline(pipelineId: string): Promise<void> {
     } else if (existingTs.workingDir !== workingDir) {
       sessionManager.setThreadWorkingDir(pipelineThreadId, workingDir);
     }
-    sessionManager.markThreadRoutingCompleted(pipelineThreadId);
   }
 
   const pipelineStartTime = Date.now();

@@ -36,12 +36,11 @@ Feishu User → Feishu Platform → Bridge Server → Claude Agent SDK → Claud
 - **`src/config.ts`** — Environment-based configuration loader. Exports single config object with Feishu, Claude, workspace, memory, cron settings.
 - **`src/server.ts`** — Express server with dual event mode: WebSocket (default, no public IP needed) or HTTP webhook.
 - **`src/agent/`** — Multi-agent role system. `registry.ts` stores agent configs at runtime; `router.ts` routes messages to agents by chat binding rules; `config-loader.ts` loads agent configs from JSON (`config/agents.json`) with hot-reload.
-- **`src/claude/executor.ts`** — Wraps `@anthropic-ai/claude-agent-sdk` `query()`. Streams SDKMessage, tracks cost/duration, supports session resumption. Budget: `CLAUDE_MAX_BUDGET_USD` (default $50), `CLAUDE_MAX_TURNS` (default 500).
-- **`src/claude/router.ts`** — Lightweight routing agent (Sonnet) that determines working directory before main query. Returns `use_existing`/`clone_remote`/`use_default`/`need_clarification`.
+- **`src/claude/executor.ts`** — Wraps `@anthropic-ai/claude-agent-sdk` `query()`. Streams SDKMessage, tracks cost/duration, supports session resumption and workspace restart with conversation trace forwarding. Budget: `CLAUDE_MAX_BUDGET_USD` (default $50), `CLAUDE_MAX_TURNS` (default 500).
 - **`src/feishu/client.ts`** — Feishu API wrapper for sending/updating messages and cards.
 - **`src/feishu/event-handler.ts`** — EventDispatcher: parse message → check allowlist → get/create session → enqueue task → execute → send result.
 - **`src/feishu/message-builder.ts`** — Constructs interactive Feishu card messages for progress and results.
-- **`src/feishu/thread-context.ts`** — Unified thread/routing/workspace context resolution before execution.
+- **`src/feishu/thread-context.ts`** — Unified thread/workspace context resolution before execution. Defaults to `DEFAULT_WORK_DIR`; main agent uses `setup_workspace` MCP tool to switch repos during execution.
 - **`src/feishu/bot-registry.ts`** — Tracks bot members in group chats; auto-discovers via events and message senders.
 - **`src/feishu/tools/`** — MCP tool suite: `doc.ts`(文档), `wiki.ts`(知识库), `bitable.ts`(多维表格), `drive.ts`(云空间), `chat.ts`, `calendar.ts`, `contact.ts`, `task.ts`. Action-based dispatch with Zod schemas.
 - **`src/workspace/manager.ts`** — Git clone + workspace isolation. Supports remote URL (via bare cache) and local path modes.

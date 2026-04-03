@@ -4,7 +4,7 @@ import { config } from '../config.js';
 import { logger } from '../utils/logger.js';
 import { SessionDatabase } from './database.js';
 import { isAutoWorkspacePath } from '../workspace/isolation.js';
-import type { Session, ThreadSession, RoutingState, PipelineContext } from './types.js';
+import type { Session, ThreadSession, PipelineContext } from './types.js';
 
 /**
  * 会话管理器
@@ -152,27 +152,6 @@ export class SessionManager {
    */
   setThreadWorkingDir(threadId: string, workingDir: string, agentId: string = 'dev'): void {
     this.db.updateThreadWorkingDir(this.makeThreadKey(threadId, agentId), workingDir);
-  }
-
-  /**
-   * 设置 thread 的路由状态（need_clarification 时保存上下文）
-   */
-  setThreadRoutingState(threadId: string, state: RoutingState, agentId: string = 'dev'): void {
-    this.db.updateThreadRoutingState(this.makeThreadKey(threadId, agentId), state);
-  }
-
-  /**
-   * 清空 thread 的路由状态（路由完成后）
-   */
-  clearThreadRoutingState(threadId: string, agentId: string = 'dev'): void {
-    this.db.clearThreadRoutingState(this.makeThreadKey(threadId, agentId));
-  }
-
-  /**
-   * 标记 thread 的路由已完成
-   */
-  markThreadRoutingCompleted(threadId: string, agentId: string = 'dev'): void {
-    this.db.markThreadRoutingCompleted(this.makeThreadKey(threadId, agentId));
   }
 
   /**

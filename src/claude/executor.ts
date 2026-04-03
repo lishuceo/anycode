@@ -1,6 +1,7 @@
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import type { Query, SDKMessage } from '@anthropic-ai/claude-agent-sdk';
-import { mkdirSync, existsSync } from 'node:fs';
+import { mkdirSync, existsSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { config } from '../config.js';
 import { logger } from '../utils/logger.js';
@@ -12,7 +13,7 @@ import { createCronMcpServer } from '../cron/tool.js';
 import { getCronScheduler } from '../cron/init.js';
 import { feishuClientContext } from '../feishu/client.js';
 import { isAutoWorkspacePath, isServiceOwnRepo } from '../workspace/isolation.js';
-import type { ClaudeResult, ExecuteOptions, ProgressCallback, TurnInfo, ToolCallInfo, ImageAttachment, DocumentAttachment, MultimodalContentBlock } from './types.js';
+import type { ClaudeResult, ExecuteOptions, ProgressCallback, TurnInfo, ToolCallInfo, ImageAttachment, DocumentAttachment, MultimodalContentBlock, ConversationTurn, ToolCallTrace } from './types.js';
 
 // ============================================================
 // Claude Agent SDK 执行器
@@ -140,13 +141,45 @@ export interface ExecuteInput extends ExecuteOptions {
   threadId?: string;
   /** 当前话题的根消息 ID（用于 cron MCP 绑定话题） */
   threadRootMessageId?: string;
+  /** 前次 query 的对话轨迹（restart 时注入，帮助新 query 了解之前的分析） */
+  priorContext?: string;
 }
 
-/** 构建工作区管理系统提示词（注入实际目录路径） */
+/** 构建工作区管理系统提示词（注入实际目录路径 + 可用项目列表） */
 function buildWorkspaceSystemPrompt(workingDir?: string): string {
   const projectsDir = config.claude.defaultWorkDir;
   const cacheDir = config.repoCache.dir;
   const workspacesDir = config.workspace.baseDir;
+
+  // 扫描 defaultWorkDir 下的项目目录，提供给 Agent 参考
+  let projectListSection = '';
+  try {
+    const projectList = readdirSync(projectsDir, { withFileTypes: true })
+      .filter(d => d.isDirectory() && !d.name.startsWith('.'))
+      .filter(d => existsSync(join(projectsDir, d.name, '.git')))
+      .map(d => d.name)
+      .slice(0, 30);
+    if (projectList.length > 0) {
+      projectListSection = `\n\n## 可用项目\n\n以下项目在 \`${projectsDir}\` 下可用：\n${projectList.map(p => `- ${p}`).join('\n')}`;
+    }
+  } catch {
+    // best-effort: 如果目录不存在或无权限则跳过
+  }
+
+  // 从缓存目录提取常用 GitHub org（用于搜索引导）
+  let knownOrgs: string[] = [];
+  try {
+    const hosts = readdirSync(cacheDir, { withFileTypes: true }).filter(d => d.isDirectory() && !d.name.startsWith('.'));
+    const orgSet = new Set<string>();
+    for (const host of hosts) {
+      if (!host.name.includes('.')) continue; // 跳过非域名目录
+      const orgs = readdirSync(join(cacheDir, host.name), { withFileTypes: true }).filter(d => d.isDirectory());
+      for (const org of orgs) orgSet.add(`${host.name}/${org.name}`);
+    }
+    knownOrgs = [...orgSet].slice(0, 10);
+  } catch {
+    // best-effort
+  }
 
   const basePrompt = `你正在通过飞书消息与用户交互。请保持回复简洁，适合在聊天消息中阅读。
 
@@ -155,13 +188,24 @@ function buildWorkspaceSystemPrompt(workingDir?: string): string {
 你需要知道以下几个关键目录：
 - **项目目录**: \`${projectsDir}\` — 用户手动 clone 的项目都在这里
 - **仓库缓存目录**: \`${cacheDir}\` — setup_workspace 自动缓存的 bare clone
-- **可写工作区目录**: \`${workspacesDir}\` — setup_workspace 创建的隔离工作区
+- **可写工作区目录**: \`${workspacesDir}\` — setup_workspace 创建的隔离工作区${projectListSection}
 
 ## 工作区管理
 
 你当前的工作目录已经由系统预先设定好。**大多数情况下直接在当前目录工作即可**。
 
-你有一个 setup_workspace 工具可用，但**仅在用户明确要求切换到另一个仓库或提供新的仓库 URL 时使用**。
+如果用户的请求明确指向某个特定仓库或项目（通过 URL、项目名、或上下文推断），且当前工作目录不是该仓库，使用 setup_workspace 工具切换到正确的工作区。
+
+### 查找仓库的顺序
+
+当用户提到一个仓库名但你不确定 URL 时，按以下顺序查找：
+
+1. **检查可用项目列表**（见上方）和本地目录 \`ls ${projectsDir}\`
+2. **搜索本地缓存** — \`find ${cacheDir} -maxdepth 3 -name "*.git" -type d\` 查找匹配的 bare clone，从路径推导 URL（如 \`${cacheDir}/github.com/org/repo.git\` → \`https://github.com/org/repo\`）
+3. **GitHub 搜索** — 优先在团队组织内搜索：${knownOrgs.length > 0 ? knownOrgs.filter(o => o.startsWith('github.com/')).map(o => `\`gh search repos <关键词> --owner=${o.replace('github.com/', '')} --json fullName,url --limit 10\``).join('，然后 ') + '。' : ''} 如果组织内没找到，再全局搜索 \`gh search repos <关键词> --json fullName,url --limit 10\`
+4. 都找不到 → 向用户询问仓库 URL
+
+**不要跳过搜索步骤直接问用户要 URL。** 先尝试自己找到仓库。
 
 **绝对不要用 setup_workspace 来切换当前工作区的模式（如从 readonly 切换到 writable）。** 当前工作区已经配置好了正确的权限，直接在当前目录工作即可。
 
@@ -496,6 +540,19 @@ export class ClaudeExecutor {
         userPromptPrefix += '[系统提示：当前用户处于受限模式，请谨慎使用写入类工具。]\n\n';
       }
     }
+    // 前次 query 的对话轨迹（workspace 切换 restart 时注入）
+    if (input.priorContext) {
+      userPromptPrefix += [
+        '<prior-analysis>',
+        '以下是你在切换工作区前的完整工作记录（推理、工具调用和结果）。',
+        '基于此继续工作，不要重复已完成的分析。',
+        '注意：文件路径可能指向旧工作区，当前已切换到新工作区。',
+        '',
+        input.priorContext,
+        '</prior-analysis>',
+        '',
+      ].join('\n');
+    }
     const effectivePrompt = userPromptPrefix + prompt;
 
     // 构建 SDK query
@@ -665,6 +722,13 @@ export class ClaudeExecutor {
     let activityToolCallCount = 0;
     let currentActivity: 'thinking' | 'tool_call' = 'thinking';
 
+    // 对话轨迹累积（用于 restart 时传递上下文）
+    const conversationTrace: ConversationTurn[] = [];
+    const traceByteCosts: number[] = []; // 每个 turn 插入时快照的 byte cost
+    const pendingToolCalls = new Map<string, ToolCallTrace>();
+    let conversationTraceBytes = 0;
+    const MAX_TRACE_BYTES = 50 * 1024; // 50KB 上限
+
     try {
       // 遍历 SDK 流式消息
       for await (const message of q) {
@@ -695,6 +759,7 @@ export class ClaudeExecutor {
             // 提取文本输出和工具调用
             const turnText: string[] = [];
             const turnTools: ToolCallInfo[] = [];
+            const traceToolCalls: ToolCallTrace[] = [];
 
             if (message.message?.content) {
               for (const block of message.message.content) {
@@ -711,7 +776,31 @@ export class ClaudeExecutor {
                 }
                 if ('type' in block && block.type === 'tool_use' && 'name' in block && 'input' in block) {
                   turnTools.push({ name: block.name as string, input: block.input as Record<string, unknown> });
+                  // 记录工具调用到对话轨迹，通过 id 关联后续的 tool_result
+                  const trace: ToolCallTrace = {
+                    id: (block as Record<string, unknown>).id as string ?? '',
+                    name: block.name as string,
+                    input: block.input as Record<string, unknown>,
+                  };
+                  traceToolCalls.push(trace);
+                  if (trace.id) pendingToolCalls.set(trace.id, trace);
                 }
+              }
+            }
+
+            // 累积对话轨迹（用于 restart 上下文传递）
+            if (conversationTraceBytes < MAX_TRACE_BYTES && (turnText.length > 0 || traceToolCalls.length > 0)) {
+              const turnTextStr = turnText.join('');
+              const turn: ConversationTurn = { text: turnTextStr, toolCalls: traceToolCalls };
+              // 在 tool_result 回填前快照 byte cost，避免 mutate 后计算漂移
+              const byteCost = turnTextStr.length + JSON.stringify(traceToolCalls).length;
+              conversationTrace.push(turn);
+              traceByteCosts.push(byteCost);
+              conversationTraceBytes += byteCost;
+              // 超过上限时丢弃最早的 turn（使用快照的 byteCost）
+              while (conversationTraceBytes > MAX_TRACE_BYTES && conversationTrace.length > 1) {
+                conversationTrace.shift();
+                conversationTraceBytes -= traceByteCosts.shift()!;
               }
             }
 
@@ -744,6 +833,36 @@ export class ClaudeExecutor {
                 lastStreamTime = now;
                 lastStreamLen = output.length;
                 lastStreamPromise = onStreamUpdate(output).catch(() => { streamFailed++; });
+              }
+            }
+            break;
+          }
+
+          case 'user': {
+            // 回填工具结果到对应的 toolCall 轨迹
+            const content = (message as Record<string, unknown>).message as Record<string, unknown> | undefined;
+            const blocks = (content?.content as Array<Record<string, unknown>>) ?? [];
+            for (const block of blocks) {
+              if (block.type === 'tool_result' && typeof block.tool_use_id === 'string') {
+                const trace = pendingToolCalls.get(block.tool_use_id);
+                if (trace) {
+                  // 提取文本结果
+                  let text = '';
+                  const resultContent = block.content;
+                  if (typeof resultContent === 'string') {
+                    text = resultContent;
+                  } else if (Array.isArray(resultContent)) {
+                    text = (resultContent as Array<Record<string, unknown>>)
+                      .filter(c => c.type === 'text')
+                      .map(c => c.text as string)
+                      .join('');
+                  }
+                  // 截断过长的工具结果
+                  trace.result = text.length > 2000
+                    ? text.slice(0, 1500) + '\n...(truncated)...\n' + text.slice(-500)
+                    : text;
+                  pendingToolCalls.delete(block.tool_use_id);
+                }
               }
             }
             break;
@@ -782,6 +901,7 @@ export class ClaudeExecutor {
         durationMs,
         needsRestart: workspaceChanged,
         newWorkingDir,
+        conversationTrace,
       };
     }
 
@@ -885,7 +1005,6 @@ export class ClaudeExecutor {
    *
    * 匹配逻辑适配 agent-prefixed key 格式:
    *   agent:{agentId}:{chatId}:{userId}:...
-   *   routing:agent:{agentId}:{chatId}:...
    *   以及旧格式 {chatId}:{userId}:... (兼容)
    */
   killSessionsForChat(chatId: string, userId: string): void {
@@ -895,10 +1014,8 @@ export class ClaudeExecutor {
       const matchesChat = key.includes(`${chatId}:${userId}`);
       // 旧格式兼容
       const matchesOld = key === oldPrefix || key.startsWith(oldPrefix + ':');
-      // routing 前缀兼容
-      const matchesRouting = key === `routing:${oldPrefix}` || key.startsWith(`routing:${oldPrefix}:`);
 
-      if (matchesChat || matchesOld || matchesRouting) {
+      if (matchesChat || matchesOld) {
         q.close();
         this.runningQueries.delete(key);
         logger.info({ sessionKey: key }, 'Killed Claude Agent SDK query');
