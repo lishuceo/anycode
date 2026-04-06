@@ -1,6 +1,7 @@
 import dotenv from 'dotenv';
 dotenv.config();
 
+import { dirname } from 'node:path';
 import type { BotAccountConfig, AgentBinding, GroupConfig } from './agent/types.js';
 
 function parseBotAccounts(raw?: string): BotAccountConfig[] {
@@ -82,7 +83,7 @@ export const config = {
 
   // Claude Code 配置
   claude: {
-    defaultWorkDir: process.env.DEFAULT_WORK_DIR || '/home/ubuntu/projects',
+    defaultWorkDir: process.env.DEFAULT_WORK_DIR || dirname(process.cwd()),
     /** Anthropic API Base URL（支持代理/自定义端点），默认官方地址 */
     apiBaseUrl: process.env.ANTHROPIC_BASE_URL || '',
     /** 单步空闲超时 (秒)：某步骤长时间无 SDK 消息活动时 abort。不限制总执行时长 */

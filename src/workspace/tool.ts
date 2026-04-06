@@ -2,6 +2,8 @@ import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 import { setupWorkspace } from './manager.js';
 import { logger } from '../utils/logger.js';
+import { toCanonicalUrl, updateRegistryEntry } from './registry.js';
+import { sanitizeRepoUrl } from './cache.js';
 
 // ============================================================
 // Workspace MCP 工具
@@ -30,6 +32,55 @@ export function createWorkspaceMcpServer(onWorkspaceChanged?: SessionUpdater) {
     name: 'workspace-manager',
     version: '1.0.0',
     tools: [
+      tool(
+        'update_repo_registry',
+        [
+          '更新仓库 registry 中某个仓库的描述或关键词。',
+          '',
+          '使用场景：',
+          '- 用户澄清了某个仓库的用途后，记录关键词以便下次自动匹配',
+          '- 例如用户说"推荐系统是 rec-engine"，给 rec-engine 添加关键词"推荐系统"',
+          '',
+          '注意：repo_url 必须是 registry 中已有的 canonical URL（见 .repo-registry.md 中的 ID 字段）。',
+        ].join('\n'),
+        {
+          repo_url: z.string().describe('仓库的 canonical URL（registry 中的 ID）'),
+          description: z.string().optional().describe('仓库描述'),
+          keywords: z.array(z.string()).optional().describe('追加的关键词列表'),
+        },
+        async (args) => {
+          logger.info({ args }, 'update_repo_registry tool invoked');
+          try {
+            updateRegistryEntry(args.repo_url, {
+              description: args.description,
+              keywords: args.keywords,
+            });
+            return {
+              content: [{
+                type: 'text' as const,
+                text: `Registry 已更新: ${args.repo_url}`,
+              }],
+            };
+          } catch (err) {
+            const errorMsg = err instanceof Error ? err.message : String(err);
+            logger.error({ err: errorMsg }, 'update_repo_registry failed');
+            return {
+              content: [{
+                type: 'text' as const,
+                text: `Registry 更新失败: ${errorMsg}`,
+              }],
+              isError: true,
+            };
+          }
+        },
+        {
+          annotations: {
+            readOnlyHint: false,
+            destructiveHint: false,
+            openWorldHint: false,
+          },
+        },
+      ),
       tool(
         'setup_workspace',
         [
@@ -79,6 +130,19 @@ export function createWorkspaceMcpServer(onWorkspaceChanged?: SessionUpdater) {
               );
             } else {
               logger.warn('No session updater set, workingDir not updated');
+            }
+
+            // 增量更新 registry（如果该仓库不在 registry 中，自动追加）
+            try {
+              const repoUrl = args.repo_url || args.local_path;
+              if (repoUrl) {
+                const canonical = args.repo_url
+                  ? toCanonicalUrl(sanitizeRepoUrl(args.repo_url))
+                  : `local://${args.local_path}`;
+                updateRegistryEntry(canonical, {});
+              }
+            } catch (registryErr) {
+              logger.debug({ err: registryErr }, 'Registry update after setup_workspace failed (non-blocking)');
             }
 
             return {

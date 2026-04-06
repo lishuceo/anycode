@@ -2,7 +2,7 @@
 summary: "Per-thread 工作区隔离：防止并发 git 操作冲突"
 related_paths:
   - src/workspace/isolation.ts
-last_updated: "2026-04-02"
+last_updated: "2026-04-06"
 ---
 
 # Per-Thread Workspace Isolation
@@ -46,6 +46,7 @@ last_updated: "2026-04-02"
 
 - `isAutoWorkspacePath(dir)` — 检查是否在 `WORKSPACE_BASE_DIR` 内（用 `realpathSync` 解析 symlink）
 - `isServiceOwnRepo(dir)` — 检查是否为 bridge 服务自身仓库
+- `isInsideSourceRepo(path)` — 检查路径是否在 `DEFAULT_WORK_DIR` 下的源仓库工作树内（含子目录）。用于源仓库保护（`canUseTool` 中阻止写操作）。优先使用 registry 缓存的路径集合做前缀匹配，fallback 到向上遍历目录树。详见 `workspace-cache-and-restart.md` 的源仓库保护章节
 
 ## 与路由的集成
 

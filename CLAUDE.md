@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Feishu Claude Code Bridge — a TypeScript/Node.js server that bridges Feishu (Lark) messaging with Anthropic's Claude Code via the Agent SDK. Users send messages in Feishu chats, and the server executes Claude Code queries against a working directory on the host machine.
+Anycode — a multi-agent development system with Feishu (Lark) as collaboration UI, powered by Anthropic's Claude Code via the Agent SDK. Users send messages in Feishu chats, and the server executes Claude Code queries against a working directory on the host machine.
 
 ## Commands
 
@@ -45,7 +45,8 @@ Feishu User → Feishu Platform → Bridge Server → Claude Agent SDK → Claud
 - **`src/feishu/tools/`** — MCP tool suite: `doc.ts`(文档), `wiki.ts`(知识库), `bitable.ts`(多维表格), `drive.ts`(云空间), `chat.ts`, `calendar.ts`, `contact.ts`, `task.ts`. Action-based dispatch with Zod schemas.
 - **`src/workspace/manager.ts`** — Git clone + workspace isolation. Supports remote URL (via bare cache) and local path modes.
 - **`src/workspace/cache.ts`** — Bare clone cache layer with atomic creation and configurable fetch interval.
-- **`src/workspace/isolation.ts`** — Per-thread workspace isolation. Auto-creates clones from shared source repos to prevent concurrent git conflicts.
+- **`src/workspace/registry.ts`** — Repo registry system. Scans DEFAULT_WORK_DIR + .repo-cache, maintains JSON index (`.repo-registry.json`) with canonical URL keys, generates Markdown for LLM reading. Caches source repo paths for `isInsideSourceRepo()`.
+- **`src/workspace/isolation.ts`** — Per-thread workspace isolation + source repo protection. `isInsideSourceRepo()` blocks writes to DEFAULT_WORK_DIR source repos via `canUseTool`.
 - **`src/pipeline/orchestrator.ts`** — State-machine-driven dev pipeline (plan → plan_review → implement → code_review → push → pr_fixup). Max 2 retries per phase.
 - **`src/pipeline/reviewer.ts`** — Parallel review with 3 agents (correctness/security/architecture) + optional Codex reviewer.
 - **`src/session/manager.ts`** — SQLite-backed session store keyed by `agent:{agentId}:{chatId}:{userId}`. Thread-level sessions bind threadId → workdir/conversationId.
@@ -95,7 +96,7 @@ Environment variables loaded via dotenv (see `.env.example`):
 ## Deployment
 
 - PR 合并到 main 后会自动触发 GitHub Actions deploy workflow，将代码部署到服务器并自动 `pm2 restart`。
-- **严禁在对话中执行 `pm2 restart feishu-claude`** — Claude 作为 bridge server 的子进程运行，执行此命令会杀掉自己的父进程，导致级联重启。
+- **严禁在对话中执行 `pm2 restart anycode`** — Claude 作为服务的子进程运行，执行此命令会杀掉自己的父进程，导致级联重启。
 
 ## Tech Stack
 

@@ -1815,6 +1815,7 @@ export async function executeClaudeTask(
         knowledgeContent,
         memoryContext,
         disableWorkspaceTool: true,
+        isRestart: true,
         priorContext: formatConversationTrace(result.conversationTrace),
         agentId,
         ...(customSystemPrompt ? { systemPromptOverride: customSystemPrompt } : {}),
