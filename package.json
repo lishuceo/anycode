@@ -1,7 +1,7 @@
 {
-  "name": "feishu-claude-bridge",
+  "name": "anycode",
   "version": "0.1.0",
-  "description": "通过飞书对话控制 Linux 服务器上的 Claude Code",
+  "description": "Multi-agent development system with Feishu as collaboration UI",
   "type": "module",
   "main": "dist/index.js",
   "scripts": {
