@@ -217,6 +217,7 @@ configure_env() {
   echo ""
   echo -e "  ${BOLD}事件订阅：${NC}"
   echo "    • im.message.receive_v1         — 接收消息事件"
+  echo "    • card.action.trigger           — 卡片按钮交互回调（AskUser 等）"
   echo "    • p2p_chat_create               — 用户首次私聊 Bot"
   echo "    • im.chat.member.bot.added_v1   — Bot 被拉入群"
   echo ""
