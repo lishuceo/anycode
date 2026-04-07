@@ -737,6 +737,13 @@ export class ClaudeExecutor {
           hasToolActivity = true;
           resetIdleTimer(`canUseTool:${toolName}`);
 
+          // workspace 变更后 deny 所有后续工具调用，迫使 agent 只输出文本后自然结束
+          // 不使用 abort（会导致 SDK handleControlRequest unhandled rejection 卡死）
+          if (workspaceChanged) {
+            logger.info({ toolName }, 'canUseTool denied — workspace changed, forcing query to end');
+            return { behavior: 'deny' as const, message: '工作区已切换，当前 query 即将结束。请直接输出简短确认。' };
+          }
+
           // AskUserQuestion 拦截：通过飞书卡片收集用户回答，注入 answers 后放行
           if (toolName === 'AskUserQuestion' && input.onAskUser) {
             const questions = inputObj.questions as Array<{
