@@ -17,11 +17,12 @@ import { chatBotRegistry } from './feishu/bot-registry.js';
 import { initializeMemory, closeMemory, runMemoryMaintenance } from './memory/init.js';
 import { warmup as warmupQuickAck } from './utils/quick-ack.js';
 import { initializeCron, closeCron, cleanCronRuns } from './cron/init.js';
+import { scanAndSyncRegistry } from './workspace/registry.js';
 import { executeClaudeTask, executeDirectTask } from './feishu/event-handler.js';
 import { agentRegistry } from './agent/registry.js';
 import type { AgentId } from './agent/types.js';
 
-const INTERRUPTED_SESSIONS_FILE = '/tmp/feishu-claude-interrupted.json';
+const INTERRUPTED_SESSIONS_FILE = '/tmp/anycode-interrupted.json';
 
 async function main(): Promise<void> {
   logger.info('Starting Feishu Claude Code Bridge...');
@@ -62,6 +63,11 @@ async function main(): Promise<void> {
   // 启动时清理残留的 .tmp-* 临时目录和孤儿 Claude 子进程
   cleanupTmpDirs();
   killOrphanedClaudeProcesses();
+
+  // 异步扫描仓库 registry（不阻塞启动）
+  scanAndSyncRegistry().catch(err => {
+    logger.warn({ err }, 'Registry scan failed at startup (non-blocking)');
+  });
 
   // 初始化记忆系统（async: 加载 sqlite-vec，创建 DB）
   if (config.memory.enabled) {

@@ -462,6 +462,8 @@ export class PipelineOrchestrator {
       onActivityChange,
       historySummaries,
       systemPromptOverride: systemPrompt,
+      // pipeline 不支持 mid-execution workspace 切换（orchestrator 无 restart 处理）
+      disableWorkspaceTool: true,
       ...(timeoutSeconds != null ? { timeoutSeconds } : {}),
     });
   }

@@ -47,4 +47,4 @@ jobs:
         run: |
           export NVM_DIR="$HOME/.nvm"
           . "$NVM_DIR/nvm.sh"
-          pm2 restart feishu-claude || pm2 start /root/dev/anywhere-code/ecosystem.config.cjs
+          pm2 restart anycode || pm2 start /root/dev/anywhere-code/ecosystem.config.cjs

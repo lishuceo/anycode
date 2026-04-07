@@ -91,12 +91,13 @@ describe('config', () => {
       expect(config.feishu.eventMode).toBe('websocket');
     });
 
-    it('should default work dir to /home/ubuntu/projects', async () => {
+    it('should default work dir to parent of process.cwd()', async () => {
       vi.stubEnv('FEISHU_APP_ID', 'id');
       vi.stubEnv('FEISHU_APP_SECRET', 'secret');
       vi.stubEnv('DEFAULT_WORK_DIR', '');
       const { config } = await loadConfig();
-      expect(config.claude.defaultWorkDir).toBe('/home/ubuntu/projects');
+      const { dirname } = await import('node:path');
+      expect(config.claude.defaultWorkDir).toBe(dirname(process.cwd()));
     });
   });
 });

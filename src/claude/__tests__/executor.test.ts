@@ -43,9 +43,11 @@ vi.mock('../../feishu/tools/index.js', () => ({
 
 // Mock workspace isolation utility
 const mockIsAutoWorkspacePath = vi.fn(() => false);
+const mockIsInsideSourceRepo = vi.fn(() => false);
 vi.mock('../../workspace/isolation.js', () => ({
   isAutoWorkspacePath: (...args: unknown[]) => mockIsAutoWorkspacePath(...args),
   isServiceOwnRepo: () => false,
+  isInsideSourceRepo: (...args: unknown[]) => mockIsInsideSourceRepo(...args),
 }));
 
 // Mock the SDK query function — returns an async iterable of messages

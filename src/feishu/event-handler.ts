@@ -5,8 +5,8 @@ import { sessionManager } from '../session/manager.js';
 import { taskQueue } from '../session/queue.js';
 import { claudeExecutor } from '../claude/executor.js';
 import { DEFAULT_IMAGE_PROMPT, DEFAULT_DOCUMENT_PROMPT } from '../claude/types.js';
-import type { TurnInfo, ToolCallInfo, ImageAttachment, DocumentAttachment } from '../claude/types.js';
-import { buildResultCard, buildStatusCard, buildCancelledCard, buildPipelineCard, buildPipelineConfirmCard, buildProgressCard, buildToolProgressCard, buildTextContentCard, buildSimpleResultCard } from './message-builder.js';
+import type { TurnInfo, ToolCallInfo, ImageAttachment, DocumentAttachment, ConversationTurn } from '../claude/types.js';
+import { buildResultCard, buildStatusCard, buildCancelledCard, buildPipelineCard, buildPipelineConfirmCard, buildProgressCard, buildToolProgressCard, buildTextContentCard, buildSimpleResultCard, buildWorkspaceSwitchCard } from './message-builder.js';
 import { TOTAL_PHASES } from '../pipeline/types.js';
 import { feishuClient, feishuClientContext, runWithAccountId } from './client.js';
 import { config, isMultiBotMode } from '../config.js';
@@ -60,6 +60,30 @@ setOnApproved((chatId, userId, text, messageId, rootId, threadId) => {
 //
 // 配合 adaptExpress 可以一行代码接入 Express
 // ============================================================
+
+/**
+ * 将对话轨迹格式化为文本，用于 restart 时注入 priorContext。
+ * 保留 Agent 的推理文本和关键工具交互，截断过长内容。
+ */
+export function formatConversationTrace(trace?: ConversationTurn[]): string {
+  if (!trace?.length) return '';
+  const MAX_TOTAL = 15000;
+  const parts: string[] = [];
+  for (const turn of trace) {
+    if (turn.text) parts.push(turn.text);
+    for (const tc of turn.toolCalls) {
+      // 只保留关键输入字段，避免序列化完整 input
+      const inputSummary = tc.name === 'Read' ? String(tc.input.file_path ?? '')
+        : tc.name === 'Bash' ? String(tc.input.command ?? '')
+        : tc.name === 'Grep' ? `${tc.input.pattern ?? ''} in ${tc.input.path ?? '.'}`
+        : JSON.stringify(tc.input).slice(0, 200);
+      parts.push(`[${tc.name}] ${inputSummary}`);
+      if (tc.result) parts.push(tc.result);
+    }
+  }
+  const joined = parts.join('\n');
+  return joined.length > MAX_TOTAL ? joined.slice(-MAX_TOTAL) : joined;
+}
 
 // 消息去重缓存 (accountId:message_id → 时间戳)，防止飞书重试导致重复处理
 // 多 bot 模式下每个 bot 独立去重（key 包含 accountId），避免跨 bot 误去重
@@ -1496,7 +1520,7 @@ export async function executeClaudeTask(
   agentId: AgentId = 'dev',
   createTime?: string,
 ): Promise<void> {
-  // 1. 解析话题上下文（thread + 路由 + 工作区隔离 + greeting）
+  // 1. 解析话题上下文（thread + workingDir + greeting）
   const resolved = await resolveThreadContext({
     prompt: rawPrompt,
     chatId,
@@ -1509,23 +1533,7 @@ export async function executeClaudeTask(
 
   if (resolved.status !== 'resolved') return;
 
-  // clarification 恢复后发现原始请求是 /dev pipeline → 转交 pipeline 执行
-  if (resolved.pipelineMode) {
-    const { workingDir, threadReplyMsgId, prompt } = resolved.ctx;
-    await createPendingPipeline({
-      chatId,
-      userId,
-      messageId,
-      rootId,
-      threadId: eventThreadId,
-      prompt,
-      workingDir,
-      threadReplyMsgId,
-    });
-    return;
-  }
-
-  const { threadReplyMsgId, workingDir, threadId, threadSession, prompt } = resolved.ctx;
+  const { threadReplyMsgId, greetingMsgId, workingDir, threadId, threadSession, prompt } = resolved.ctx;
   const session = sessionManager.getOrCreate(chatId, userId, agentId);
 
   // sessionKey 包含 threadId，per-thread 并行时各 query 有独立的 key
@@ -1711,11 +1719,6 @@ export async function executeClaudeTask(
     const customSystemPrompt = readPersonaFile(agentId);
     const knowledgeContent = loadKnowledgeContent(agentId);
 
-    // 后续消息（有 conversationId）不允许切换工作区：
-    // 首条消息的路由已确定 workingDir，后续切换会触发 restart 导致上下文丢失
-    // （Agent SDK 不支持跨 cwd resume，restart 只能起新 session）
-    const isFirstMessage = !activeConversationId;
-
     // 记忆注入：搜索相关记忆，格式化为 system prompt 片段
     // 使用 repo identity（而非带随机后缀的工作区路径）确保同仓库记忆互通
     const repoIdentity = getRepoIdentity(workingDir);
@@ -1742,14 +1745,14 @@ export async function executeClaudeTask(
       storedSystemPromptHash: activePromptHash,
       botIdentityContext,
       onProgress,
-      onWorkspaceChanged: isFirstMessage ? onWorkspaceChanged : undefined,
+      onWorkspaceChanged,
       onTurn,
       historySummaries,
       memoryContext,
       images,
       documents,
       knowledgeContent,
-      disableWorkspaceTool: !isFirstMessage,
+      disableWorkspaceTool: false,
       agentId,
       threadId,
       threadRootMessageId: threadReplyMsgId,
@@ -1790,6 +1793,35 @@ export async function executeClaudeTask(
       }
       sessionManager.setConversationId(chatId, userId, '', undefined, agentId);
 
+      // 发送工作区切换卡片（更新 greeting 卡片或独立发送）
+      {
+        const { basename } = await import('node:path');
+        const dirName = basename(result.newWorkingDir);
+        // 从目录名解析仓库名和分支（格式: repoName-writable-shortId）
+        const parts = dirName.split('-');
+        parts.pop(); // shortId
+        parts.pop(); // writable/readonly
+        const repoName = parts.join('-') || dirName;
+        let branch: string | undefined;
+        try {
+          const { execFileSync } = await import('node:child_process');
+          branch = execFileSync('git', ['-C', result.newWorkingDir, 'branch', '--show-current'], { encoding: 'utf-8', timeout: 3000 }).trim() || undefined;
+        } catch { /* best-effort */ }
+
+        const switchCard = buildWorkspaceSwitchCard(repoName, result.newWorkingDir, branch);
+        if (greetingMsgId) {
+          // 更新 greeting 卡片为工作区切换信息
+          feishuClient.updateCard(greetingMsgId, switchCard).catch(err => {
+            logger.warn({ err }, 'Failed to update greeting card with workspace switch');
+          });
+        } else if (threadReplyMsgId) {
+          // 没有 greeting 卡片时，在话题中独立发送
+          feishuClient.replyCardInThread(threadReplyMsgId, switchCard).catch(err => {
+            logger.warn({ err }, 'Failed to send workspace switch card');
+          });
+        }
+      }
+
       // 第二次 query：以新 cwd 执行，CLAUDE.md 正确加载
       // - 不传 resumeSessionId（Agent SDK 不支持跨 cwd resume，会 exit code 1）
       // - 不传 onWorkspaceChanged（不触发二次 restart）
@@ -1812,6 +1844,8 @@ export async function executeClaudeTask(
         knowledgeContent,
         memoryContext,
         disableWorkspaceTool: true,
+        isRestart: true,
+        priorContext: formatConversationTrace(result.conversationTrace),
         agentId,
         ...(customSystemPrompt ? { systemPromptOverride: customSystemPrompt } : {}),
       });
@@ -2474,7 +2508,7 @@ async function executePipelineTask(
   let threadReplyMsgId: string | undefined;
 
   try {
-    // 1. 解析话题上下文（共享逻辑：thread + 路由 + 工作区隔离 + greeting）
+    // 1. 解析话题上下文（thread + workingDir + greeting）
     const resolved = await resolveThreadContext({
       prompt,
       chatId,
@@ -2482,7 +2516,6 @@ async function executePipelineTask(
       messageId,
       rootId,
       threadId: eventThreadId,
-      pipelineMode: true,
     });
 
     if (resolved.status !== 'resolved') return;
@@ -2490,7 +2523,7 @@ async function executePipelineTask(
     threadReplyMsgId = resolved.ctx.threadReplyMsgId;
     const { workingDir } = resolved.ctx;
 
-    // 2. 创建 pipeline，使用路由确定的工作目录
+    // 2. 创建 pipeline，使用当前 workingDir（默认 defaultWorkDir 或已被 setup_workspace 切换的目录）
     await createPendingPipeline({
       chatId,
       userId,
