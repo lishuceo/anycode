@@ -8,4 +8,6 @@ data/
 # User-specific agent config (copy agents.example.json → agents.json to customize)
 config/agents.json
 config/knowledge/*.md
+!config/knowledge/*.example.md
 config/personas/*.md
+!config/personas/*.example.md
