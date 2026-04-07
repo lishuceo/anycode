@@ -23,6 +23,9 @@ export function isOwner(userId: string): boolean {
   return userId === ownerUserId;
 }
 
+/** 防止并发调用 autoDetectOwner 的重入 guard */
+let settingOwner = false;
+
 /**
  * 自动设置首个用户为 owner（OWNER_USER_ID 未配置时）。
  * 将 owner 写入内存 config 并回写 .env 持久化。
@@ -30,6 +33,15 @@ export function isOwner(userId: string): boolean {
  */
 export function autoDetectOwner(userId: string): boolean {
   if (config.security.ownerUserId) return false;
+  if (settingOwner) return false;
+
+  // 校验 userId 格式（飞书 open_id: ou_ 前缀 + 字母数字下划线）
+  if (!/^[a-zA-Z0-9_]+$/.test(userId)) {
+    logger.warn({ userId }, 'autoDetectOwner: invalid userId format, skipping');
+    return false;
+  }
+
+  settingOwner = true;
 
   // 设置内存中的 owner
   config.security.ownerUserId = userId;
