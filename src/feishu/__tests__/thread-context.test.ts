@@ -255,7 +255,7 @@ describe('resolveThreadContext', () => {
   });
 
   describe('greeting card update', () => {
-    it('should update greeting card with threadId and workingDir', async () => {
+    it('should NOT update greeting card (workspace switch card is sent later by event-handler)', async () => {
       // Reset isAutoWorkspacePath to false (may have been set to true by previous test)
       const { isAutoWorkspacePath } = await import('../../workspace/isolation.js');
       vi.mocked(isAutoWorkspacePath).mockReturnValue(false);
@@ -272,10 +272,8 @@ describe('resolveThreadContext', () => {
       });
 
       expect(result.status).toBe('resolved');
-      expect(mockUpdateCard).toHaveBeenCalledWith(
-        'greeting-1',
-        { type: 'greeting_ready' },
-      );
+      // greeting card is no longer updated here — workspace switch card is handled in event-handler
+      expect(mockUpdateCard).not.toHaveBeenCalled();
     });
   });
 });
