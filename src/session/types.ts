@@ -64,6 +64,8 @@ export interface ThreadSession {
   pipelineContext?: PipelineContext;
   /** 该 thread 是否已被 owner 审批通过（非 owner 用户需要审批） */
   approved?: boolean;
+  /** 该 thread 是否为原地编辑模式（/edit 命令触发，跳过源仓库保护） */
+  inplaceEdit?: boolean;
   /** 创建时间 */
   createdAt: Date;
   /** 最后更新时间 */

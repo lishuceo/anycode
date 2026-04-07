@@ -479,3 +479,32 @@ export function updateRegistryEntry(
   writeRegistry(data);
   refreshSourceRepoCache(data);
 }
+
+/**
+ * 按仓库名称查找 registry 条目，返回绝对本地路径。
+ * 名称匹配忽略大小写，优先精确匹配 name 字段，其次匹配 canonical URL 末段。
+ * 仅返回有 localPath 且未 removed 的条目。
+ */
+export function findLocalPathByName(name: string): string | null {
+  const data = readRegistry();
+  const lower = name.toLowerCase();
+  const projectsDir = config.claude.defaultWorkDir;
+
+  for (const entry of Object.values(data.repos)) {
+    if (entry.removed || !entry.localPath) continue;
+    if (entry.name.toLowerCase() === lower) {
+      return resolve(projectsDir, entry.localPath);
+    }
+  }
+
+  // Fallback: 匹配 canonical URL 末段 (e.g., "anywhere-code" matches "https://github.com/org/anywhere-code")
+  for (const [url, entry] of Object.entries(data.repos)) {
+    if (entry.removed || !entry.localPath) continue;
+    const urlName = basename(url.replace(/\.git$/, ''));
+    if (urlName.toLowerCase() === lower) {
+      return resolve(projectsDir, entry.localPath);
+    }
+  }
+
+  return null;
+}
