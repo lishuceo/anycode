@@ -18,6 +18,7 @@ import { initializeMemory, closeMemory, runMemoryMaintenance } from './memory/in
 import { warmup as warmupQuickAck } from './utils/quick-ack.js';
 import { initializeCron, closeCron, cleanCronRuns } from './cron/init.js';
 import { scanAndSyncRegistry } from './workspace/registry.js';
+import { initGitHubOrgCache } from './claude/executor.js';
 import { executeClaudeTask, executeDirectTask } from './feishu/event-handler.js';
 import { agentRegistry } from './agent/registry.js';
 import type { AgentId } from './agent/types.js';
@@ -123,6 +124,9 @@ async function main(): Promise<void> {
       },
     });
   }
+
+  // 预取 GitHub 用户组织（用于仓库搜索，fire-and-forget）
+  initGitHubOrgCache().catch(() => {});
 
   // 预热 quick-ack client（避免首次调用冷启动）
   warmupQuickAck();
