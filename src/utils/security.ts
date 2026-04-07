@@ -1,3 +1,5 @@
+import { readFileSync, writeFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { config } from '../config.js';
 import { logger } from './logger.js';
 
@@ -19,6 +21,41 @@ export function isOwner(userId: string): boolean {
   const { ownerUserId } = config.security;
   if (!ownerUserId) return true;
   return userId === ownerUserId;
+}
+
+/**
+ * 自动设置首个用户为 owner（OWNER_USER_ID 未配置时）。
+ * 将 owner 写入内存 config 并回写 .env 持久化。
+ * @returns true 如果本次调用设置了 owner（首次），false 如果已有 owner
+ */
+export function autoDetectOwner(userId: string): boolean {
+  if (config.security.ownerUserId) return false;
+
+  // 设置内存中的 owner
+  config.security.ownerUserId = userId;
+  logger.info({ userId }, 'Auto-detected owner from first message');
+
+  // 回写 .env 持久化
+  try {
+    const envPath = resolve(process.cwd(), '.env');
+    const content = readFileSync(envPath, 'utf-8');
+
+    // 替换已有的 OWNER_USER_ID 行（含注释状态），或追加
+    const ownerLine = `OWNER_USER_ID=${userId}`;
+    let updated: string;
+    if (/^#?\s*OWNER_USER_ID=/m.test(content)) {
+      updated = content.replace(/^#?\s*OWNER_USER_ID=.*/m, ownerLine);
+    } else {
+      updated = content.trimEnd() + '\n' + ownerLine + '\n';
+    }
+
+    writeFileSync(envPath, updated, 'utf-8');
+    logger.info({ userId, envPath }, 'OWNER_USER_ID written to .env');
+  } catch (err) {
+    logger.warn({ err, userId }, 'Failed to write OWNER_USER_ID to .env (in-memory value still active)');
+  }
+
+  return true;
 }
 
 /** 危险命令模式 */

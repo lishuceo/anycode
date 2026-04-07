@@ -1,6 +1,6 @@
 import * as lark from '@larksuiteoapi/node-sdk';
 import { logger } from '../utils/logger.js';
-import { isUserAllowed, containsDangerousCommand, isOwner } from '../utils/security.js';
+import { isUserAllowed, containsDangerousCommand, isOwner, autoDetectOwner } from '../utils/security.js';
 import { sessionManager } from '../session/manager.js';
 import { taskQueue } from '../session/queue.js';
 import { claudeExecutor } from '../claude/executor.js';
@@ -789,6 +789,11 @@ async function handleMessageEvent(data: MessageEventData, accountId: string = 'd
     logger.warn({ userId }, 'Unauthorized user');
     await feishuClient.replyText(messageId, '⚠️ 你没有权限使用此机器人');
     return;
+  }
+
+  // 自动检测 owner：OWNER_USER_ID 未配置时，首个发消息的用户自动成为管理员
+  if (autoDetectOwner(userId)) {
+    await feishuClient.replyText(messageId, `🔑 已自动将你设为管理员 (${userId})，已写入 .env`);
   }
 
   // /t <text> — 强制话题回复 + 跳过 quick-ack（仅对 direct 模式 agent 生效）
