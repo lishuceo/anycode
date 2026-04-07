@@ -1799,7 +1799,7 @@ export async function executeClaudeTask(
         const dirName = basename(result.newWorkingDir);
         // 从目录名解析仓库名和分支（格式: repoName-writable-shortId）
         const parts = dirName.split('-');
-        const shortId = parts.pop(); // shortId
+        parts.pop(); // shortId
         parts.pop(); // writable/readonly
         const repoName = parts.join('-') || dirName;
         let branch: string | undefined;
