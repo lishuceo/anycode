@@ -114,6 +114,60 @@ const pendingQuestions = new Map<string, PendingQuestion>();
 /** AskUserQuestion 等待超时（5 分钟） */
 const ASK_USER_TIMEOUT_MS = 5 * 60 * 1000;
 
+/**
+ * 创建 AskUserQuestion 回调（供 executeClaudeTask / executeDirectTask 共用）
+ * 将 Claude 的 AskUserQuestion 工具调用渲染为飞书交互卡片，等待用户点击按钮回答。
+ */
+function createAskUserHandler(chatId: string, getThreadReplyMsgId: () => string | undefined) {
+  return async (questions: Array<{ question: string; header?: string; options: Array<{ label: string; description?: string }>; multiSelect?: boolean }>) => {
+    const questionId = `ask_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const questionItems: AskUserQuestionItem[] = questions.map(q => ({
+      question: q.question,
+      header: q.header,
+      options: q.options.map(o => ({ label: o.label, description: o.description })),
+      multiSelect: q.multiSelect,
+    }));
+
+    const card = buildAskUserQuestionCard(questionId, questionItems);
+
+    return new Promise<Record<string, string>>((resolve, reject) => {
+      const pending: PendingQuestion = {
+        questions: questionItems,
+        answers: {},
+        totalQuestions: questions.length,
+        resolve,
+        reject,
+        chatId,
+      };
+
+      pending.timeoutTimer = setTimeout(() => {
+        pendingQuestions.delete(questionId);
+        reject(new Error('AskUserQuestion timed out'));
+      }, ASK_USER_TIMEOUT_MS);
+
+      pendingQuestions.set(questionId, pending);
+
+      // 发送卡片（在话题内回复或直接发到群）
+      // 如果发送失败，立即 reject 而非等待 5 分钟超时
+      const trySendCard = async () => {
+        try {
+          const threadMsgId = getThreadReplyMsgId();
+          const msgId = threadMsgId
+            ? await feishuClient.replyCardInThread(threadMsgId, card)
+            : await feishuClient.sendCard(chatId, card);
+          pending.cardMessageId = msgId ?? undefined;
+        } catch (err) {
+          logger.warn({ err, questionId }, 'Failed to send AskUserQuestion card');
+          pendingQuestions.delete(questionId);
+          if (pending.timeoutTimer) clearTimeout(pending.timeoutTimer);
+          reject(err instanceof Error ? err : new Error('Failed to send AskUserQuestion card'));
+        }
+      };
+      trySendCard();
+    });
+  };
+}
+
 /** 处理 AskUserQuestion 卡片按钮点击 */
 function handleAskUserAnswer(actionValue: Record<string, unknown>): Record<string, unknown> {
   const questionId = actionValue.questionId as string | undefined;
@@ -136,19 +190,27 @@ function handleAskUserAnswer(actionValue: Record<string, unknown>): Record<strin
   const question = pending.questions[questionIndex];
   if (!question) return {};
 
-  // 记录答案
-  pending.answers[question.question] = optionLabel;
+  // 用 questionIndex 作为内部 key，避免相同问题文本导致 key 冲突
+  pending.answers[String(questionIndex)] = optionLabel;
 
   // 检查是否所有问题都已回答
   if (Object.keys(pending.answers).length >= pending.totalQuestions) {
-    // 全部回答完毕
+    // 全部回答完毕：将 index-keyed 答案转换回 question-text-keyed（SDK 需要）
     if (pending.timeoutTimer) clearTimeout(pending.timeoutTimer);
-    const answers = { ...pending.answers };
-    pending.resolve(answers);
+    const sdkAnswers: Record<string, string> = {};
+    const displayAnswers: Record<string, string> = {};
+    for (const [idx, answer] of Object.entries(pending.answers)) {
+      const q = pending.questions[Number(idx)];
+      if (q) {
+        sdkAnswers[q.question] = answer;
+        displayAnswers[q.question] = answer;
+      }
+    }
+    pending.resolve(sdkAnswers);
     pendingQuestions.delete(questionId);
 
     // 返回已回答卡片（替换原卡片）
-    return buildAskUserAnsweredCard(pending.questions, answers);
+    return buildAskUserAnsweredCard(pending.questions, displayAnswers);
   }
 
   // 部分回答：返回 toast 提示
@@ -1863,49 +1925,7 @@ export async function executeClaudeTask(
     const botIdentityContext = buildBotIdentityContext(chatId);
 
     // AskUserQuestion 回调：将 Claude 的提问渲染为飞书交互卡片
-    const onAskUser = async (questions: Array<{ question: string; header?: string; options: Array<{ label: string; description?: string }>; multiSelect?: boolean }>) => {
-      const questionId = `ask_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-      const questionItems: AskUserQuestionItem[] = questions.map(q => ({
-        question: q.question,
-        header: q.header,
-        options: q.options.map(o => ({ label: o.label, description: o.description })),
-        multiSelect: q.multiSelect,
-      }));
-
-      const card = buildAskUserQuestionCard(questionId, questionItems);
-
-      return new Promise<Record<string, string>>((resolve, reject) => {
-        const pending: PendingQuestion = {
-          questions: questionItems,
-          answers: {},
-          totalQuestions: questions.length,
-          resolve,
-          reject,
-          chatId,
-        };
-
-        // 设置超时
-        pending.timeoutTimer = setTimeout(() => {
-          pendingQuestions.delete(questionId);
-          reject(new Error('AskUserQuestion timed out'));
-        }, ASK_USER_TIMEOUT_MS);
-
-        pendingQuestions.set(questionId, pending);
-
-        // 发送卡片（在话题内回复或直接发到群）
-        const sendCard = async () => {
-          try {
-            const msgId = threadReplyMsgId
-              ? await feishuClient.replyCardInThread(threadReplyMsgId, card)
-              : await feishuClient.sendCard(chatId, card);
-            pending.cardMessageId = msgId ?? undefined;
-          } catch (err) {
-            logger.warn({ err, questionId }, 'Failed to send AskUserQuestion card');
-          }
-        };
-        sendCard();
-      });
-    };
+    const onAskUser = createAskUserHandler(chatId, () => threadReplyMsgId);
 
     const result = await claudeExecutor.execute({
       sessionKey,
@@ -2367,47 +2387,7 @@ export async function executeDirectTask(
     const botIdentityContext = buildBotIdentityContext(chatId);
 
     // AskUserQuestion 回调（与 executeClaudeTask 共享逻辑）
-    const onAskUserDirect = async (questions: Array<{ question: string; header?: string; options: Array<{ label: string; description?: string }>; multiSelect?: boolean }>) => {
-      const questionId = `ask_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-      const questionItems: AskUserQuestionItem[] = questions.map(q => ({
-        question: q.question,
-        header: q.header,
-        options: q.options.map(o => ({ label: o.label, description: o.description })),
-        multiSelect: q.multiSelect,
-      }));
-
-      const card = buildAskUserQuestionCard(questionId, questionItems);
-
-      return new Promise<Record<string, string>>((resolve, reject) => {
-        const pending: PendingQuestion = {
-          questions: questionItems,
-          answers: {},
-          totalQuestions: questions.length,
-          resolve,
-          reject,
-          chatId,
-        };
-
-        pending.timeoutTimer = setTimeout(() => {
-          pendingQuestions.delete(questionId);
-          reject(new Error('AskUserQuestion timed out'));
-        }, ASK_USER_TIMEOUT_MS);
-
-        pendingQuestions.set(questionId, pending);
-
-        const sendCard = async () => {
-          try {
-            const msgId = threadReplyMsgId
-              ? await feishuClient.replyCardInThread(threadReplyMsgId, card)
-              : await feishuClient.sendCard(chatId, card);
-            pending.cardMessageId = msgId ?? undefined;
-          } catch (err) {
-            logger.warn({ err, questionId }, 'Failed to send AskUserQuestion card');
-          }
-        };
-        sendCard();
-      });
-    };
+    const onAskUserDirect = createAskUserHandler(chatId, () => threadReplyMsgId);
 
     const result = await claudeExecutor.execute({
       sessionKey,
