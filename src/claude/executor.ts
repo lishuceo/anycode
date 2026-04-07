@@ -568,10 +568,11 @@ export class ClaudeExecutor {
           workspaceChanged = true;
           newWorkingDir = newDir;
           onWorkspaceChanged(newDir);
-          // workspace 变更后立即 abort 当前 query，不再等它自然结束
-          // event-handler 通过 needsRestart 用新 cwd 立即 restart
-          abortController.abort();
-          logger.info({ sessionKey, newDir }, 'Workspace changed — aborting query for immediate restart');
+          // 不再立即 abort — SDK 在 MCP 工具执行期间 abort 会导致 handleControlRequest
+          // 写入已死进程 stdin 时抛出 unhandled "Operation aborted"，使 query 卡住。
+          // 系统提示词已告知 agent 调用 setup_workspace 后立即结束，query 会自然结束，
+          // event-handler 通过 needsRestart 标记触发 restart。
+          logger.info({ sessionKey, newDir }, 'Workspace changed — will restart after query completes');
         }
       : undefined;
 
