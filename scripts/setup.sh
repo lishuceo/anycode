@@ -25,6 +25,18 @@ header(){ echo -e "\n${BOLD}${CYAN}── $* ──${NC}\n"; }
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
+# 自动将 .example.md 复制为正式文件（仅当正式文件不存在时）
+init_config_files() {
+  for src in "$ROOT"/config/personas/*.example.md "$ROOT"/config/knowledge/*.example.md; do
+    [[ -f "$src" ]] || continue
+    dst="${src/.example.md/.md}"
+    if [[ ! -f "$dst" ]]; then
+      cp "$src" "$dst"
+      ok "已创建 $(basename "$dst") ← 可编辑自定义"
+    fi
+  done
+}
+
 # ============================================================
 # Step 1: 环境检测
 # ============================================================
@@ -360,6 +372,7 @@ if [[ -f "$ROOT/config/agents.json" ]]; then
       ok "已备份为 agents.json.bak"
       cp "$ROOT/config/agents.example.json" "$ROOT/config/agents.json"
       ok "已从示例文件重新生成 config/agents.json"
+      init_config_files
       ;;
     *)
       ok "跳过 Agent 配置"
@@ -377,10 +390,12 @@ else
     *)
       cp "$ROOT/config/agents.example.json" "$ROOT/config/agents.json"
       ok "已创建 config/agents.json（PM + Dev 双 agent）"
+      init_config_files
       echo ""
-      info "可选: 自定义 persona 和 knowledge 文件"
-      info "  cp config/personas/pm.example.md config/personas/pm.md"
-      info "  cp config/knowledge/team.example.md config/knowledge/team.md"
+      info "可编辑以下文件自定义 agent 人设和知识库（支持热加载，改完即生效）:"
+      info "  config/personas/pm.md    — PM agent 人设"
+      info "  config/knowledge/team.md — 团队信息"
+      info "也可以直接在飞书群里让 bot 帮你修改这些文件"
       ;;
   esac
 fi
