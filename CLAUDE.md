@@ -75,10 +75,18 @@ Feishu User → Feishu Platform → Bridge Server → Claude Agent SDK → Claud
 
 ## Configuration
 
-Environment variables loaded via dotenv (see `.env.example`):
+### Agent Config (`config/`)
+
+Agent definitions, knowledge files, and persona prompts live in `config/` but are **not checked into git** (deployment-specific). Only `config/agents.example.json` is tracked as a structural reference.
+
+First-time setup: `cp config/agents.example.json config/agents.json` then customize. Without `config/agents.json`, the system falls back to a minimal built-in dev agent.
+
+### Environment Variables
+
+Loaded via dotenv (see `.env.example`):
 
 - **Required**: `FEISHU_APP_ID`, `FEISHU_APP_SECRET`
-- **Claude**: `ANTHROPIC_API_KEY`, `DEFAULT_WORK_DIR` (default: `/home/ubuntu/projects`), `CLAUDE_TIMEOUT` (default: 300s), `CLAUDE_MAX_TURNS` (default: 500), `CLAUDE_MAX_BUDGET_USD` (default: 50)
+- **Claude**: `ANTHROPIC_API_KEY`, `DEFAULT_WORK_DIR` (default: parent of cwd), `CLAUDE_TIMEOUT` (default: 300s), `CLAUDE_MAX_TURNS` (default: 500), `CLAUDE_MAX_BUDGET_USD` (default: 50)
 - **Workspace**: `REPO_CACHE_DIR` (bare clone cache), `WORKSPACE_BASE_DIR` (writable workspaces), `WORKSPACE_BRANCH_PREFIX`
 - **Event mode**: `FEISHU_EVENT_MODE` (`websocket` | `webhook`), `FEISHU_ENCRYPT_KEY`, `FEISHU_VERIFY_TOKEN` (webhook only)
 - **Memory**: `MEMORY_ENABLED`, `DASHSCOPE_API_KEY`, `MEMORY_DB_PATH` (default: `./data/memories.db`), `MEMORY_EMBEDDING_MODEL`, `MEMORY_VECTOR_WEIGHT`

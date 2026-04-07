@@ -4,3 +4,8 @@ data/
 .env
 *.log
 .DS_Store
+
+# User-specific agent config (copy agents.example.json → agents.json to customize)
+config/agents.json
+config/knowledge/*.md
+config/personas/*.md
