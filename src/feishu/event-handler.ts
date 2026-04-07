@@ -1731,6 +1731,16 @@ export async function executeClaudeTask(
   const { threadReplyMsgId, greetingMsgId, workingDir, threadId, threadSession, prompt } = resolved.ctx;
   const session = sessionManager.getOrCreate(chatId, userId, agentId);
 
+  // 如果本次处理新建了话题（eventThreadId 为空但 threadId 已存在），
+  // 锁定 per-thread queueKey 防止后续消息（携带 threadId、使用不同 queueKey）并发执行。
+  // 场景：perMessageParallel 模式下第一条消息创建话题后，workspace 切换+restart 期间
+  // 第二条消息不应并发读取到旧的 workingDir。
+  let lockedThreadQueueKey: string | undefined;
+  if (!eventThreadId && threadId) {
+    lockedThreadQueueKey = makeQueueKey(chatId, threadId, agentId);
+    taskQueue.markBusy(lockedThreadQueueKey);
+  }
+
   // sessionKey 包含 threadId，per-thread 并行时各 query 有独立的 key
   const sessionKey = threadId ? `${chatId}:${userId}:${threadId}` : `${chatId}:${userId}`;
 
@@ -2190,6 +2200,11 @@ export async function executeClaudeTask(
       sessionManager.setStatus(chatId, userId, 'idle', agentId);
     } catch (err) {
       logger.error({ err, chatId, userId }, 'Failed to reset session status');
+    }
+    // 释放 per-thread queueKey 锁，处理等待中的消息
+    if (lockedThreadQueueKey) {
+      taskQueue.complete(lockedThreadQueueKey);
+      processQueue(lockedThreadQueueKey, agentId);
     }
   }
 }

@@ -78,6 +78,19 @@ export class TaskQueue {
   }
 
   /**
+   * 标记某个队列为忙碌（占位，阻止 dequeue）
+   *
+   * 用于 perMessageParallel 任务创建话题后锁定 per-thread queueKey，
+   * 防止后续消息（带 threadId，使用不同 queueKey）并发执行。
+   */
+  markBusy(queueKey: string): void {
+    if (!this.running.has(queueKey)) {
+      this.running.set(queueKey, {} as QueueTask);
+      logger.debug({ queueKey }, 'Queue marked busy (placeholder)');
+    }
+  }
+
+  /**
    * 检查某个队列是否有正在执行的任务
    */
   isBusy(queueKey: string): boolean {
