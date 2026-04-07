@@ -202,6 +202,8 @@ export interface ExecuteInput extends ExecuteOptions {
   isRestart?: boolean;
   /** 原地编辑模式（/edit 命令触发），跳过源仓库写入保护 */
   inplaceEdit?: boolean;
+  /** AskUserQuestion 回调：拦截 AskUserQuestion 工具调用，由上层实现交互式卡片 */
+  onAskUser?: (questions: Array<{ question: string; header?: string; options: Array<{ label: string; description?: string }>; multiSelect?: boolean }>) => Promise<Record<string, string>>;
 }
 
 /** 扫描 defaultWorkDir 下的 git 项目名列表（best-effort） */
@@ -684,6 +686,25 @@ export class ClaudeExecutor {
           // 2. 重置 idle timer → 防止长时间 MCP 工具执行导致误超时
           hasToolActivity = true;
           resetIdleTimer(`canUseTool:${toolName}`);
+
+          // AskUserQuestion 拦截：通过飞书卡片收集用户回答，注入 answers 后放行
+          if (toolName === 'AskUserQuestion' && input.onAskUser) {
+            const questions = inputObj.questions as Array<{
+              question: string;
+              header?: string;
+              options: Array<{ label: string; description?: string }>;
+              multiSelect?: boolean;
+            }> | undefined;
+            if (questions?.length) {
+              try {
+                const answers = await input.onAskUser(questions);
+                return { behavior: 'allow' as const, updatedInput: { ...inputObj, answers } };
+              } catch (err) {
+                logger.warn({ err }, 'AskUserQuestion card interaction failed, allowing tool to proceed without answers');
+                return { behavior: 'allow' as const, updatedInput: inputObj };
+              }
+            }
+          }
 
           // per-agent 工具禁止列表（优先级最高）
           if (input.toolDeny?.some(p => matchToolPattern(toolName, p))) {

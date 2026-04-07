@@ -8,6 +8,7 @@
  */
 // @ts-nocheck — test file
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { resolve } from 'path';
 
 // ============================================================
 // 1. Agent Registry — replyMode configuration
@@ -15,8 +16,11 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 describe('AgentConfig replyMode', () => {
   it('pm agent has direct replyMode', async () => {
+    // Use example config so the test works in CI (agents.json is gitignored)
+    process.env.AGENT_CONFIG_PATH = resolve(process.cwd(), 'config', 'agents.example.json');
+    // Clear module cache to pick up fresh env
+    vi.resetModules();
     const { agentRegistry } = await import('../agent/registry.js');
-    // Registry starts empty; load config to populate agents
     const { loadAgentConfig } = await import('../agent/config-loader.js');
     loadAgentConfig();
     const chatConfig = agentRegistry.get('pm');
