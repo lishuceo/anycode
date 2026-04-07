@@ -412,8 +412,8 @@ node -v  # 确认 v22.x
 #### 3.1 克隆项目
 
 ```bash
-git clone https://github.com/lishuceo/anywhere-code.git
-cd anywhere-code
+git clone https://github.com/lishuceo/anycode.git
+cd anycode
 ```
 
 #### 3.2 安装依赖
