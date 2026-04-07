@@ -9,7 +9,7 @@ import type { TurnInfo, ToolCallInfo } from '../claude/types.js';
 import type { Memory, MemorySearchResult } from '../memory/types.js';
 import { MEMORY_PAGE_SIZE } from '../memory/types.js';
 
-/** 构建新会话问候卡片（初始状态，工作目录未确定） */
+/** 构建新会话问候卡片（初始状态） */
 export function buildGreetingCard(): Record<string, unknown> {
   return {
     config: { wide_screen_mode: true },
@@ -22,51 +22,45 @@ export function buildGreetingCard(): Record<string, unknown> {
         tag: 'div',
         text: {
           tag: 'lark_md',
-          content: '⏳ 正在初始化工作目录...',
+          content: '⏳ 正在启动...',
         },
       },
     ],
   };
 }
 
-/** 构建新会话问候卡片（已就绪，显示话题 ID 和工作目录） */
-export function buildGreetingCardReady(
-  threadId: string,
+/** 构建工作区切换卡片（setup_workspace 成功后显示） */
+export function buildWorkspaceSwitchCard(
+  repoName: string,
   workingDir: string,
-  warning?: string,
+  branch?: string,
 ): Record<string, unknown> {
-  const elements: Record<string, unknown>[] = [
+  const fields: Record<string, unknown>[] = [
     {
-      tag: 'div',
-      fields: [
-        {
-          is_short: true,
-          text: { tag: 'lark_md', content: `**话题 ID:**\n\`${threadId}\`` },
-        },
-        {
-          is_short: true,
-          text: { tag: 'lark_md', content: `**工作目录:**\n${workingDir}` },
-        },
-      ],
+      is_short: true,
+      text: { tag: 'lark_md', content: `**仓库:**\n${repoName}` },
+    },
+    {
+      is_short: true,
+      text: { tag: 'lark_md', content: `**分支:**\n${branch ?? 'default'}` },
     },
   ];
-
-  if (warning) {
-    elements.push({
-      tag: 'note',
-      elements: [
-        { tag: 'plain_text', content: `⚠️ ${warning}` },
-      ],
-    });
-  }
 
   return {
     config: { wide_screen_mode: true },
     header: {
-      title: { tag: 'plain_text', content: warning ? '🤖 新会话已就绪（有警告）' : '🤖 新会话已就绪' },
-      template: warning ? 'orange' : 'green',
+      title: { tag: 'plain_text', content: `📂 工作区已切换` },
+      template: 'green',
     },
-    elements,
+    elements: [
+      { tag: 'div', fields },
+      {
+        tag: 'note',
+        elements: [
+          { tag: 'plain_text', content: workingDir },
+        ],
+      },
+    ],
   };
 }
 

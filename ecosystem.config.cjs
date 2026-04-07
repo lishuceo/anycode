@@ -1,6 +1,6 @@
 module.exports = {
   apps: [{
-    name: 'feishu-claude',
+    name: 'anycode',
     script: 'dist/index.js',
 
     // 给 shutdown handler 足够时间清理子进程（默认 1600ms 太短）
