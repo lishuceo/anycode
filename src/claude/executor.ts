@@ -106,7 +106,11 @@ function checkSourceRepoProtection(
   toolName: string,
   inputObj: Record<string, unknown>,
   workingDir?: string,
+  inplaceEdit?: boolean,
 ): { behavior: 'deny'; message: string } | null {
+  // /edit 原地编辑模式：OWNER 主动 opt-in，跳过源仓库保护
+  if (inplaceEdit) return null;
+
   // workspace-manager MCP 工具始终放行（setup_workspace / update_repo_registry）
   if (toolName.startsWith('mcp__workspace-manager__')) return null;
 
@@ -196,6 +200,8 @@ export interface ExecuteInput extends ExecuteOptions {
   priorContext?: string;
   /** workspace 切换后的 restart query 标志。控制 system prompt 精简（去掉仓库探索指引） */
   isRestart?: boolean;
+  /** 原地编辑模式（/edit 命令触发），跳过源仓库写入保护 */
+  inplaceEdit?: boolean;
 }
 
 /** 扫描 defaultWorkDir 下的 git 项目名列表（best-effort） */
@@ -688,7 +694,7 @@ export class ClaudeExecutor {
           // ★ 源仓库保护（系统安全机制，优先级高于 toolAllow）★
           // 必须在 toolAllow 之前检查，因为 toolAllow 匹配后会提前 return allow。
           {
-            const sourceRepoDeny = checkSourceRepoProtection(toolName, inputObj, workingDir);
+            const sourceRepoDeny = checkSourceRepoProtection(toolName, inputObj, workingDir, input.inplaceEdit);
             if (sourceRepoDeny) return sourceRepoDeny;
           }
 

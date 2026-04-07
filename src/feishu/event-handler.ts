@@ -877,6 +877,107 @@ async function handleSlashCommand(
     return true;
   }
 
+  // /edit [repo] [task] - 原地编辑源仓库（OWNER only）
+  if (trimmed === '/edit' || trimmed.startsWith('/edit ')) {
+    if (!isOwner(userId)) {
+      const reply = '⚠️ 只有管理员可以使用 /edit 命令';
+      if (threadReplyMsgId) {
+        await feishuClient.replyTextInThread(threadReplyMsgId, reply);
+      } else {
+        await feishuClient.replyText(messageId, reply);
+      }
+      return true;
+    }
+
+    const args = trimmed.slice('/edit'.length).trim();
+    const { resolve: resolvePath } = await import('node:path');
+    const { existsSync } = await import('node:fs');
+    const { findLocalPathByName } = await import('../workspace/registry.js');
+
+    let targetDir: string | undefined;
+    let task = args;
+
+    if (args) {
+      // 尝试解析第一个 token 为仓库名或路径
+      const firstToken = args.split(/\s+/)[0];
+      const rest = args.slice(firstToken.length).trim();
+
+      // 1. 绝对路径
+      if (firstToken.startsWith('/') && existsSync(firstToken)) {
+        targetDir = resolvePath(firstToken);
+        task = rest;
+      } else {
+        // 2. 按名字从 registry 查找
+        const found = findLocalPathByName(firstToken);
+        if (found && existsSync(found)) {
+          targetDir = found;
+          task = rest;
+        }
+        // 3. 未匹配到仓库名 → 整个 args 作为 task，使用当前 workdir
+      }
+    }
+
+    // fallback: 使用当前 session 的 workingDir
+    if (!targetDir) {
+      const session = sessionManager.getOrCreate(chatId, userId, agentId);
+      targetDir = session.workingDir;
+    }
+
+    // 验证目标路径存在
+    if (!existsSync(targetDir)) {
+      const reply = `⚠️ 路径不存在: ${targetDir}`;
+      if (threadReplyMsgId) {
+        await feishuClient.replyTextInThread(threadReplyMsgId, reply);
+      } else {
+        await feishuClient.replyText(messageId, reply);
+      }
+      return true;
+    }
+
+    // 设置 session workingDir
+    sessionManager.getOrCreate(chatId, userId, agentId);
+    sessionManager.setWorkingDir(chatId, userId, targetDir, agentId);
+
+    // 确保话题存在并标记 inplaceEdit
+    const threadResult = await ensureThread(chatId, userId, messageId, rootId, effectiveThreadId);
+    const editThreadReplyMsgId = threadResult.threadReplyMsgId;
+    const editThreadId = effectiveThreadId || sessionManager.getOrCreate(chatId, userId, agentId).threadId;
+
+    if (editThreadId) {
+      // 确保 thread session 存在
+      if (!sessionManager.getThreadSession(editThreadId, agentId)) {
+        sessionManager.upsertThreadSession(editThreadId, chatId, userId, targetDir, agentId);
+      } else {
+        sessionManager.setThreadWorkingDir(editThreadId, targetDir, agentId);
+      }
+      sessionManager.setThreadInplaceEdit(editThreadId, true, agentId);
+    }
+
+    // 确认消息
+    const { basename: baseName } = await import('node:path');
+    const repoName = baseName(targetDir);
+    const confirmReply = [
+      `📝 原地编辑模式 — ${repoName} (${targetDir})`,
+      '⚠️ 直接修改源仓库，hot-reload 即时生效',
+    ].join('\n');
+    if (editThreadReplyMsgId) {
+      await feishuClient.replyTextInThread(editThreadReplyMsgId, confirmReply);
+    } else {
+      await feishuClient.replyText(messageId, confirmReply);
+    }
+
+    // 如果有 task 内容，将其作为普通消息入队执行
+    if (task) {
+      const queueKey = editThreadId
+        ? makeQueueKey(chatId, editThreadId, agentId)
+        : makeQueueKey(chatId, undefined, agentId);
+      taskQueue.enqueue(queueKey, chatId, userId, task, messageId, editThreadReplyMsgId || rootId, editThreadId).catch(() => {});
+      processQueue(queueKey, agentId);
+    }
+
+    return true;
+  }
+
   // /dev <task> - 自动开发管道
   if (trimmed.startsWith('/dev ')) {
     if (!isOwner(userId)) {
@@ -924,6 +1025,7 @@ async function handleSlashCommand(
       '**可用命令:**',
       '`/project <path>` - 切换工作目录',
       '`/workspace <url|path> [branch]` - 创建隔离工作区 (自动 clone + 创建分支)',
+      '`/edit [repo] [task]` - 原地编辑源仓库 (跳过隔离，hot-reload 即时生效，仅管理员)',
       '`/t <text>` - 强制开话题回复，跳过 quick-ack',
       '`/dev <task>` - 自动开发管道 (方案→审查→实现→审查→推送)',
       '`/memory` - 查看/管理记忆',
@@ -1753,6 +1855,7 @@ export async function executeClaudeTask(
       documents,
       knowledgeContent,
       disableWorkspaceTool: false,
+      inplaceEdit: threadSession?.inplaceEdit,
       agentId,
       threadId,
       threadRootMessageId: threadReplyMsgId,

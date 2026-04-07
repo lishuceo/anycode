@@ -16,6 +16,7 @@ interface ThreadSessionRow {
   routing_state: string | null;
   pipeline_context: string | null;
   approved: number | null;
+  inplace_edit: number | null;
   created_at: string;
   updated_at: string;
 }
@@ -68,6 +69,7 @@ export class SessionDatabase {
   private stmtMarkThreadRoutingCompleted: Database.Statement;
   private stmtSetThreadPipelineContext: Database.Statement;
   private stmtSetThreadApproved: Database.Statement;
+  private stmtSetThreadInplaceEdit: Database.Statement;
   private stmtTouchThreadSession: Database.Statement;
   private stmtGetAllThreadSessions: Database.Statement;
   private stmtUpsertUserToken: Database.Statement;
@@ -247,6 +249,15 @@ export class SessionDatabase {
       this.db.exec('UPDATE schema_version SET version = 13');
     }
 
+    // Migration v13 → v14: add inplace_edit column to thread_sessions
+    if (version < 14) {
+      const cols = this.db.prepare("PRAGMA table_info(thread_sessions)").all() as Array<{ name: string }>;
+      if (!cols.some((c) => c.name === 'inplace_edit')) {
+        this.db.exec('ALTER TABLE thread_sessions ADD COLUMN inplace_edit INTEGER DEFAULT 0');
+      }
+      this.db.exec('UPDATE schema_version SET version = 14');
+    }
+
     this.stmtUpsert = this.db.prepare(`
       INSERT INTO sessions (key, chat_id, user_id, working_dir, conversation_id, conversation_cwd, thread_id, thread_root_message_id, status, created_at, last_active_at)
       VALUES (@key, @chat_id, @user_id, @working_dir, @conversation_id, @conversation_cwd, @thread_id, @thread_root_message_id, @status, @created_at, @last_active_at)
@@ -377,6 +388,10 @@ export class SessionDatabase {
 
     this.stmtSetThreadApproved = this.db.prepare(
       'UPDATE thread_sessions SET approved = ?, updated_at = ? WHERE thread_id = ?',
+    );
+
+    this.stmtSetThreadInplaceEdit = this.db.prepare(
+      'UPDATE thread_sessions SET inplace_edit = ?, updated_at = ? WHERE thread_id = ?',
     );
 
     this.stmtTouchThreadSession = this.db.prepare(
@@ -581,6 +596,10 @@ export class SessionDatabase {
     this.stmtSetThreadApproved.run(approved ? 1 : 0, new Date().toISOString(), threadId);
   }
 
+  setThreadInplaceEdit(threadId: string, inplaceEdit: boolean): void {
+    this.stmtSetThreadInplaceEdit.run(inplaceEdit ? 1 : 0, new Date().toISOString(), threadId);
+  }
+
   // ── User Token CRUD ──
 
   upsertUserToken(userId: string, accessToken: string, refreshToken: string, tokenExpiry: number, accountId: string = ''): void {
@@ -651,6 +670,7 @@ export class SessionDatabase {
       routingState,
       pipelineContext,
       approved: row.approved === 1 ? true : row.approved === 0 ? false : undefined,
+      inplaceEdit: !!row.inplace_edit,
       createdAt: new Date(row.created_at),
       updatedAt: new Date(row.updated_at),
     };

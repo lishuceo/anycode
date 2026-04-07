@@ -162,6 +162,13 @@ export class SessionManager {
   }
 
   /**
+   * 设置 thread 的原地编辑模式（/edit 命令触发，跳过源仓库保护）
+   */
+  setThreadInplaceEdit(threadId: string, inplaceEdit: boolean, agentId: string = 'dev'): void {
+    this.db.setThreadInplaceEdit(this.makeThreadKey(threadId, agentId), inplaceEdit);
+  }
+
+  /**
    * 保存 pipeline 上下文到 thread session（pipeline 完成后调用）
    */
   setThreadPipelineContext(threadId: string, context: PipelineContext, agentId: string = 'dev'): void {

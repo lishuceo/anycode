@@ -56,7 +56,7 @@ vi.mock('../cache.js', () => ({
 
 import { execFileSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { toCanonicalUrl, scanAndSyncRegistry, updateRegistryEntry } from '../registry.js';
+import { toCanonicalUrl, scanAndSyncRegistry, updateRegistryEntry, findLocalPathByName } from '../registry.js';
 
 const mockExecFileSync = vi.mocked(execFileSync);
 const mockExistsSync = vi.mocked(existsSync);
@@ -301,5 +301,67 @@ describe('updateRegistryEntry', () => {
     const written = JSON.parse(jsonCalls[0][1] as string);
     const kw = written.repos['https://github.com/org/repo'].keywords;
     expect(kw).toEqual(['a', 'b', 'c']);
+  });
+});
+
+describe('findLocalPathByName', () => {
+  it('should find repo by name (case-insensitive)', () => {
+    mockExistsSync.mockImplementation((p: string) => {
+      if (String(p).endsWith('.repo-registry.json')) return true;
+      return false;
+    });
+    mockReadFileSync.mockReturnValue(JSON.stringify({
+      repos: {
+        'https://github.com/org/my-project': {
+          name: 'my-project', localPath: './my-project', cachePath: null,
+          description: null, keywords: [], techStack: [],
+        },
+      },
+    }));
+
+    expect(findLocalPathByName('my-project')).toBe('/root/dev/my-project');
+    expect(findLocalPathByName('My-Project')).toBe('/root/dev/my-project');
+  });
+
+  it('should return null for unknown name', () => {
+    mockExistsSync.mockReturnValue(false);
+    mockReadFileSync.mockReturnValue('{"repos":{}}');
+
+    expect(findLocalPathByName('nonexistent')).toBeNull();
+  });
+
+  it('should skip removed entries', () => {
+    mockExistsSync.mockImplementation((p: string) => {
+      if (String(p).endsWith('.repo-registry.json')) return true;
+      return false;
+    });
+    mockReadFileSync.mockReturnValue(JSON.stringify({
+      repos: {
+        'https://github.com/org/old-repo': {
+          name: 'old-repo', localPath: './old-repo', cachePath: null,
+          description: null, keywords: [], techStack: [], removed: true,
+        },
+      },
+    }));
+
+    expect(findLocalPathByName('old-repo')).toBeNull();
+  });
+
+  it('should fallback to canonical URL basename', () => {
+    mockExistsSync.mockImplementation((p: string) => {
+      if (String(p).endsWith('.repo-registry.json')) return true;
+      return false;
+    });
+    mockReadFileSync.mockReturnValue(JSON.stringify({
+      repos: {
+        'https://github.com/org/anywhere-code': {
+          name: 'ac', localPath: './anywhere-code', cachePath: null,
+          description: null, keywords: [], techStack: [],
+        },
+      },
+    }));
+
+    // Name doesn't match 'ac', but URL basename 'anywhere-code' matches
+    expect(findLocalPathByName('anywhere-code')).toBe('/root/dev/anywhere-code');
   });
 });
