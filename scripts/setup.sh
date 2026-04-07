@@ -159,6 +159,9 @@ fi
 # ============================================================
 header "Step 4/6: 配置 .env"
 
+# 转义 sed 替换字符串中的特殊字符 (|, &, \)
+sed_escape() { printf '%s\n' "$1" | sed 's/[&|\\]/\\&/g'; }
+
 configure_env() {
   # 用 .env.example 作为基底
   if [[ ! -f "$ROOT/.env.example" ]]; then
@@ -174,14 +177,14 @@ configure_env() {
   info "飞书 App ID — 在 open.feishu.cn 创建应用后获取"
   read -rp "  FEISHU_APP_ID: " FEISHU_APP_ID
   if [[ -n "$FEISHU_APP_ID" ]]; then
-    sed -i "s|^FEISHU_APP_ID=.*|FEISHU_APP_ID=$FEISHU_APP_ID|" "$ROOT/.env"
+    sed -i "s|^FEISHU_APP_ID=.*|FEISHU_APP_ID=$(sed_escape "$FEISHU_APP_ID")|" "$ROOT/.env"
   fi
 
   # FEISHU_APP_SECRET
   info "飞书 App Secret — 与 App ID 同一页面获取"
   read -rp "  FEISHU_APP_SECRET: " FEISHU_APP_SECRET
   if [[ -n "$FEISHU_APP_SECRET" ]]; then
-    sed -i "s|^FEISHU_APP_SECRET=.*|FEISHU_APP_SECRET=$FEISHU_APP_SECRET|" "$ROOT/.env"
+    sed -i "s|^FEISHU_APP_SECRET=.*|FEISHU_APP_SECRET=$(sed_escape "$FEISHU_APP_SECRET")|" "$ROOT/.env"
   fi
 
   # 飞书权限提示
@@ -214,15 +217,15 @@ configure_env() {
   info "Anthropic API Key — 在 console.anthropic.com/settings/keys 获取"
   read -rp "  ANTHROPIC_API_KEY: " ANTHROPIC_API_KEY
   if [[ -n "$ANTHROPIC_API_KEY" ]]; then
-    sed -i "s|^ANTHROPIC_API_KEY=.*|ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY|" "$ROOT/.env"
+    sed -i "s|^ANTHROPIC_API_KEY=.*|ANTHROPIC_API_KEY=$(sed_escape "$ANTHROPIC_API_KEY")|" "$ROOT/.env"
   fi
 
   # ANTHROPIC_BASE_URL
   info "Anthropic API Base URL — 使用代理或第三方兼容端点时填写，直连官方 API 回车跳过"
   read -rp "  ANTHROPIC_BASE_URL (回车=官方地址): " ANTHROPIC_BASE_URL
   if [[ -n "$ANTHROPIC_BASE_URL" ]]; then
-    sed -i "s|^# ANTHROPIC_BASE_URL=.*|ANTHROPIC_BASE_URL=$ANTHROPIC_BASE_URL|" "$ROOT/.env"
-    sed -i "s|^# *ANTHROPIC_BASE_URL=.*|ANTHROPIC_BASE_URL=$ANTHROPIC_BASE_URL|" "$ROOT/.env"
+    sed -i "s|^# ANTHROPIC_BASE_URL=.*|ANTHROPIC_BASE_URL=$(sed_escape "$ANTHROPIC_BASE_URL")|" "$ROOT/.env"
+    sed -i "s|^# *ANTHROPIC_BASE_URL=.*|ANTHROPIC_BASE_URL=$(sed_escape "$ANTHROPIC_BASE_URL")|" "$ROOT/.env"
   fi
 
   # 可选功能
@@ -237,8 +240,8 @@ configure_env() {
     info "DashScope API Key — 在 dashscope.console.aliyun.com 获取"
     read -rp "  DASHSCOPE_API_KEY: " DASHSCOPE_API_KEY
     if [[ -n "$DASHSCOPE_API_KEY" ]]; then
-      sed -i "s|^# DASHSCOPE_API_KEY=.*|DASHSCOPE_API_KEY=$DASHSCOPE_API_KEY|" "$ROOT/.env"
-      sed -i "s|^# *DASHSCOPE_API_KEY=.*|DASHSCOPE_API_KEY=$DASHSCOPE_API_KEY|" "$ROOT/.env"
+      sed -i "s|^# DASHSCOPE_API_KEY=.*|DASHSCOPE_API_KEY=$(sed_escape "$DASHSCOPE_API_KEY")|" "$ROOT/.env"
+      sed -i "s|^# *DASHSCOPE_API_KEY=.*|DASHSCOPE_API_KEY=$(sed_escape "$DASHSCOPE_API_KEY")|" "$ROOT/.env"
     fi
   fi
 
@@ -260,7 +263,7 @@ configure_env() {
   if [[ "${ENABLE_ACL,,}" == "y" ]]; then
     read -rp "  ALLOWED_USER_IDS (逗号分隔，回车=允许所有): " ALLOWED_IDS
     if [[ -n "$ALLOWED_IDS" ]]; then
-      sed -i "s|^ALLOWED_USER_IDS=.*|ALLOWED_USER_IDS=$ALLOWED_IDS|" "$ROOT/.env"
+      sed -i "s|^ALLOWED_USER_IDS=.*|ALLOWED_USER_IDS=$(sed_escape "$ALLOWED_IDS")|" "$ROOT/.env"
     fi
     info "管理员 (OWNER_USER_ID) 无需手动配置"
     info "首次向 Bot 发消息的用户将自动成为管理员"
@@ -291,7 +294,7 @@ if [[ -f "$ROOT/.env" ]]; then
         info "飞书 App ID — 在 open.feishu.cn 创建应用后获取"
         read -rp "  FEISHU_APP_ID: " NEW_VAL
         if [[ -n "$NEW_VAL" ]]; then
-          sed -i "s|^FEISHU_APP_ID=.*|FEISHU_APP_ID=$NEW_VAL|" "$ROOT/.env"
+          sed -i "s|^FEISHU_APP_ID=.*|FEISHU_APP_ID=$(sed_escape "$NEW_VAL")|" "$ROOT/.env"
           PATCHED=$((PATCHED+1))
         fi
       fi
@@ -299,7 +302,7 @@ if [[ -f "$ROOT/.env" ]]; then
         info "飞书 App Secret"
         read -rp "  FEISHU_APP_SECRET: " NEW_VAL
         if [[ -n "$NEW_VAL" ]]; then
-          sed -i "s|^FEISHU_APP_SECRET=.*|FEISHU_APP_SECRET=$NEW_VAL|" "$ROOT/.env"
+          sed -i "s|^FEISHU_APP_SECRET=.*|FEISHU_APP_SECRET=$(sed_escape "$NEW_VAL")|" "$ROOT/.env"
           PATCHED=$((PATCHED+1))
         fi
       fi
@@ -307,7 +310,7 @@ if [[ -f "$ROOT/.env" ]]; then
         info "Anthropic API Key — 在 console.anthropic.com/settings/keys 获取"
         read -rp "  ANTHROPIC_API_KEY: " NEW_VAL
         if [[ -n "$NEW_VAL" ]]; then
-          sed -i "s|^ANTHROPIC_API_KEY=.*|ANTHROPIC_API_KEY=$NEW_VAL|" "$ROOT/.env"
+          sed -i "s|^ANTHROPIC_API_KEY=.*|ANTHROPIC_API_KEY=$(sed_escape "$NEW_VAL")|" "$ROOT/.env"
           PATCHED=$((PATCHED+1))
         fi
       fi
