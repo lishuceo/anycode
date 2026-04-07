@@ -56,7 +56,7 @@ vi.mock('../cache.js', () => ({
 
 import { execFileSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { toCanonicalUrl, scanAndSyncRegistry, updateRegistryEntry, getSourceRepoPaths } from '../registry.js';
+import { toCanonicalUrl, scanAndSyncRegistry, updateRegistryEntry } from '../registry.js';
 
 const mockExecFileSync = vi.mocked(execFileSync);
 const mockExistsSync = vi.mocked(existsSync);

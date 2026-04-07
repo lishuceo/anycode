@@ -30,7 +30,7 @@ vi.mock('../registry.js', () => ({
 }));
 
 import { existsSync, realpathSync } from 'node:fs';
-import { isInsideSourceRepo, isAutoWorkspacePath } from '../isolation.js';
+import { isInsideSourceRepo } from '../isolation.js';
 
 const mockExistsSync = vi.mocked(existsSync);
 const mockRealpathSync = vi.mocked(realpathSync);
