@@ -258,16 +258,30 @@ configure_env() {
     sed -i "s|^FEISHU_TOOLS_ENABLED=.*|FEISHU_TOOLS_ENABLED=true|" "$ROOT/.env"
   fi
 
+  # 快速确认
+  read -rp "$(echo -e "  启用${CYAN}快速确认${NC}？Direct 模式下先发一条自然短回复掩盖延迟，需要 DashScope API Key (y/N): ")" ENABLE_ACK
+  if [[ "${ENABLE_ACK,,}" == "y" ]]; then
+    sed -i "s|^# QUICK_ACK_ENABLED=.*|QUICK_ACK_ENABLED=true|" "$ROOT/.env"
+    sed -i "s|^# *QUICK_ACK_ENABLED=.*|QUICK_ACK_ENABLED=true|" "$ROOT/.env"
+    # 如果前面还没配 DASHSCOPE_API_KEY，提示一下
+    if [[ "${ENABLE_MEMORY,,}" != "y" ]]; then
+      info "快速确认依赖 DASHSCOPE_API_KEY，请确保已在记忆系统步骤中配置"
+    fi
+  fi
+
   # 访问控制
-  read -rp "$(echo -e "  配置${CYAN}用户访问控制${NC}？(y/N): ")" ENABLE_ACL
+  read -rp "$(echo -e "  配置${CYAN}用户访问控制${NC}？限制哪些用户可以使用 Bot (y/N): ")" ENABLE_ACL
   if [[ "${ENABLE_ACL,,}" == "y" ]]; then
     read -rp "  ALLOWED_USER_IDS (逗号分隔，回车=允许所有): " ALLOWED_IDS
     if [[ -n "$ALLOWED_IDS" ]]; then
       sed -i "s|^ALLOWED_USER_IDS=.*|ALLOWED_USER_IDS=$(sed_escape "$ALLOWED_IDS")|" "$ROOT/.env"
     fi
-    info "管理员 (OWNER_USER_ID) 无需手动配置"
-    info "首次向 Bot 发消息的用户将自动成为管理员"
   fi
+
+  # OWNER 提示
+  echo ""
+  info "管理员 (OWNER_USER_ID) 无需手动配置"
+  info "首次向 Bot 发消息的用户将自动成为管理员，并回写到 .env"
 
   ok ".env 已生成"
 }
