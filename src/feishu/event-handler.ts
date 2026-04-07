@@ -6,7 +6,8 @@ import { taskQueue } from '../session/queue.js';
 import { claudeExecutor } from '../claude/executor.js';
 import { DEFAULT_IMAGE_PROMPT, DEFAULT_DOCUMENT_PROMPT } from '../claude/types.js';
 import type { TurnInfo, ToolCallInfo, ImageAttachment, DocumentAttachment, ConversationTurn } from '../claude/types.js';
-import { buildResultCard, buildStatusCard, buildCancelledCard, buildPipelineCard, buildPipelineConfirmCard, buildProgressCard, buildToolProgressCard, buildTextContentCard, buildSimpleResultCard, buildWorkspaceSwitchCard } from './message-builder.js';
+import { buildResultCard, buildStatusCard, buildCancelledCard, buildPipelineCard, buildPipelineConfirmCard, buildProgressCard, buildToolProgressCard, buildTextContentCard, buildSimpleResultCard, buildWorkspaceSwitchCard, buildAskUserQuestionCard, buildAskUserAnsweredCard } from './message-builder.js';
+import type { AskUserQuestionItem } from './message-builder.js';
 import { TOTAL_PHASES } from '../pipeline/types.js';
 import { feishuClient, feishuClientContext, runWithAccountId } from './client.js';
 import { config, isMultiBotMode } from '../config.js';
@@ -82,6 +83,81 @@ export function formatConversationTrace(trace?: ConversationTurn[]): string {
   }
   const joined = parts.join('\n');
   return joined.length > MAX_TOTAL ? joined.slice(-MAX_TOTAL) : joined;
+}
+
+// ============================================================
+// AskUserQuestion 待回答存储
+// 当 Claude 调用 AskUserQuestion 时，canUseTool 拦截并发送飞书卡片，
+// 然后在此等待用户通过卡片按钮回答。
+// ============================================================
+interface PendingQuestion {
+  questions: AskUserQuestionItem[];
+  /** 已收集的答案（按 question 文本为 key） */
+  answers: Record<string, string>;
+  /** 需要回答的问题总数 */
+  totalQuestions: number;
+  /** 回答完成后 resolve */
+  resolve: (answers: Record<string, string>) => void;
+  /** 超时或异常时 reject */
+  reject: (err: Error) => void;
+  /** 卡片消息 ID（用于更新卡片） */
+  cardMessageId?: string;
+  /** 卡片所在 chatId */
+  chatId?: string;
+  /** 超时 timer */
+  timeoutTimer?: ReturnType<typeof setTimeout>;
+}
+
+/** questionId → PendingQuestion */
+const pendingQuestions = new Map<string, PendingQuestion>();
+
+/** AskUserQuestion 等待超时（5 分钟） */
+const ASK_USER_TIMEOUT_MS = 5 * 60 * 1000;
+
+/** 处理 AskUserQuestion 卡片按钮点击 */
+function handleAskUserAnswer(actionValue: Record<string, unknown>): Record<string, unknown> {
+  const questionId = actionValue.questionId as string | undefined;
+  const questionIndex = actionValue.questionIndex as number | undefined;
+  const optionLabel = actionValue.optionLabel as string | undefined;
+
+  if (!questionId || questionIndex == null || !optionLabel) return {};
+
+  const pending = pendingQuestions.get(questionId);
+  if (!pending) {
+    logger.warn({ questionId }, 'AskUserQuestion answer received but no pending question found');
+    return {
+      toast: {
+        type: 'info' as const,
+        content: '该问题已过期或已回答',
+      },
+    };
+  }
+
+  const question = pending.questions[questionIndex];
+  if (!question) return {};
+
+  // 记录答案
+  pending.answers[question.question] = optionLabel;
+
+  // 检查是否所有问题都已回答
+  if (Object.keys(pending.answers).length >= pending.totalQuestions) {
+    // 全部回答完毕
+    if (pending.timeoutTimer) clearTimeout(pending.timeoutTimer);
+    const answers = { ...pending.answers };
+    pending.resolve(answers);
+    pendingQuestions.delete(questionId);
+
+    // 返回已回答卡片（替换原卡片）
+    return buildAskUserAnsweredCard(pending.questions, answers);
+  }
+
+  // 部分回答：返回 toast 提示
+  return {
+    toast: {
+      type: 'success' as const,
+      content: `已选择: ${optionLabel}`,
+    },
+  };
 }
 
 // 消息去重缓存 (accountId:message_id → 时间戳)，防止飞书重试导致重复处理
@@ -201,6 +277,11 @@ async function handleCardAction(data: Record<string, unknown>): Promise<Record<s
   // 记忆管理卡片动作（memory_*）
   if (actionType.startsWith('memory_') && operatorId) {
     return handleMemoryCardAction(actionType, action?.value, operatorId);
+  }
+
+  // AskUserQuestion 卡片动作
+  if (actionType === 'ask_user_answer' && action?.value) {
+    return handleAskUserAnswer(action.value);
   }
 
   // 管道卡片动作需要 pipelineId
@@ -1781,6 +1862,51 @@ export async function executeClaudeTask(
     // Bot 身份上下文（多 bot 模式下告诉 agent 自己是谁、群内有哪些其他 bot）
     const botIdentityContext = buildBotIdentityContext(chatId);
 
+    // AskUserQuestion 回调：将 Claude 的提问渲染为飞书交互卡片
+    const onAskUser = async (questions: Array<{ question: string; header?: string; options: Array<{ label: string; description?: string }>; multiSelect?: boolean }>) => {
+      const questionId = `ask_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      const questionItems: AskUserQuestionItem[] = questions.map(q => ({
+        question: q.question,
+        header: q.header,
+        options: q.options.map(o => ({ label: o.label, description: o.description })),
+        multiSelect: q.multiSelect,
+      }));
+
+      const card = buildAskUserQuestionCard(questionId, questionItems);
+
+      return new Promise<Record<string, string>>((resolve, reject) => {
+        const pending: PendingQuestion = {
+          questions: questionItems,
+          answers: {},
+          totalQuestions: questions.length,
+          resolve,
+          reject,
+          chatId,
+        };
+
+        // 设置超时
+        pending.timeoutTimer = setTimeout(() => {
+          pendingQuestions.delete(questionId);
+          reject(new Error('AskUserQuestion timed out'));
+        }, ASK_USER_TIMEOUT_MS);
+
+        pendingQuestions.set(questionId, pending);
+
+        // 发送卡片（在话题内回复或直接发到群）
+        const sendCard = async () => {
+          try {
+            const msgId = threadReplyMsgId
+              ? await feishuClient.replyCardInThread(threadReplyMsgId, card)
+              : await feishuClient.sendCard(chatId, card);
+            pending.cardMessageId = msgId ?? undefined;
+          } catch (err) {
+            logger.warn({ err, questionId }, 'Failed to send AskUserQuestion card');
+          }
+        };
+        sendCard();
+      });
+    };
+
     const result = await claudeExecutor.execute({
       sessionKey,
       prompt: effectivePrompt,
@@ -1799,6 +1925,7 @@ export async function executeClaudeTask(
       onProgress,
       onWorkspaceChanged,
       onTurn,
+      onAskUser,
       historySummaries,
       memoryContext,
       images,
@@ -2239,6 +2366,49 @@ export async function executeDirectTask(
     // Bot 身份上下文（多 bot 模式下告诉 agent 自己是谁、群内有哪些其他 bot）
     const botIdentityContext = buildBotIdentityContext(chatId);
 
+    // AskUserQuestion 回调（与 executeClaudeTask 共享逻辑）
+    const onAskUserDirect = async (questions: Array<{ question: string; header?: string; options: Array<{ label: string; description?: string }>; multiSelect?: boolean }>) => {
+      const questionId = `ask_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      const questionItems: AskUserQuestionItem[] = questions.map(q => ({
+        question: q.question,
+        header: q.header,
+        options: q.options.map(o => ({ label: o.label, description: o.description })),
+        multiSelect: q.multiSelect,
+      }));
+
+      const card = buildAskUserQuestionCard(questionId, questionItems);
+
+      return new Promise<Record<string, string>>((resolve, reject) => {
+        const pending: PendingQuestion = {
+          questions: questionItems,
+          answers: {},
+          totalQuestions: questions.length,
+          resolve,
+          reject,
+          chatId,
+        };
+
+        pending.timeoutTimer = setTimeout(() => {
+          pendingQuestions.delete(questionId);
+          reject(new Error('AskUserQuestion timed out'));
+        }, ASK_USER_TIMEOUT_MS);
+
+        pendingQuestions.set(questionId, pending);
+
+        const sendCard = async () => {
+          try {
+            const msgId = threadReplyMsgId
+              ? await feishuClient.replyCardInThread(threadReplyMsgId, card)
+              : await feishuClient.sendCard(chatId, card);
+            pending.cardMessageId = msgId ?? undefined;
+          } catch (err) {
+            logger.warn({ err, questionId }, 'Failed to send AskUserQuestion card');
+          }
+        };
+        sendCard();
+      });
+    };
+
     const result = await claudeExecutor.execute({
       sessionKey,
       prompt: effectivePrompt,
@@ -2259,6 +2429,7 @@ export async function executeDirectTask(
       images,
       documents,
       agentId,
+      onAskUser: onAskUserDirect,
       // 不需要 workspace-manager 工具（Chat Agent 不切换工作区）
       disableWorkspaceTool: true,
       // 注入 discussion-tools MCP server
