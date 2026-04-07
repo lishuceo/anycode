@@ -1017,25 +1017,67 @@ async function handleSlashCommand(
 
   // /help - 帮助
   if (trimmed === '/help') {
-    const helpText = [
-      '🤖 **Coding Agent 使用帮助**',
+    const helpLines: string[] = [
+      '🤖 **Anycode 使用帮助**',
       '',
-      '直接发送文本消息即可让 Coding Agent 执行任务。',
+      '直接发送消息即可与 Agent 对话。支持文本、图片、PDF 文件。',
       '',
-      '**可用命令:**',
-      '`/project <path>` - 切换工作目录',
-      '`/workspace <url|path> [branch]` - 创建隔离工作区 (自动 clone + 创建分支)',
-      '`/edit [repo] [task]` - 原地编辑源仓库 (跳过隔离，hot-reload 即时生效，仅管理员)',
-      '`/t <text>` - 强制开话题回复，跳过 quick-ack',
-      '`/dev <task>` - 自动开发管道 (方案→审查→实现→审查→推送)',
-      '`/memory` - 查看/管理记忆',
-      '`/status` - 查看当前会话状态',
-      '`/reset` - 重置会话',
-      '`/stop` - 中断当前执行',
-      '`/help` - 显示此帮助',
+      '**── 基础命令 ──**',
+      '`/status` — 查看当前会话状态（工作目录、队列）',
+      '`/reset` — 重置会话，清除对话历史',
+      '`/stop` — 中断当前正在执行的任务',
+      '`/help` — 显示此帮助',
       '',
-      '**自动工作区:** 直接发消息包含仓库 URL，Claude 会自动创建隔离工作区。',
-    ].join('\n');
+      '**── 工作区 ──**',
+      '`/project <path>` — 切换工作目录',
+      '`/workspace <url|path> [branch]` — 创建隔离工作区（clone + 新分支）',
+      '`/edit [repo] [task]` — 原地编辑源仓库，跳过 clone 隔离 🔒',
+      '也可以直接发消息提到仓库 URL，Agent 会自动创建隔离工作区',
+      '',
+      '**── 开发流程 ──**',
+      '`/dev <task>` — 自动开发管道 🔒',
+      '  方案 → 方案审查 → 实现 → 代码审查 → 推送 → PR 修复',
+      '`/t <text>` — 强制开话题回复（适用于 direct 模式）',
+    ];
+
+    // 条件性功能
+    if (config.memory.enabled) {
+      helpLines.push(
+        '',
+        '**── 记忆系统 ──**',
+        '`/memory` — 查看所有记忆',
+        '`/memory search <关键词>` — 搜索记忆',
+        '`/memory add <内容>` — 手动添加记忆',
+        '`/memory delete <id>` — 删除记忆',
+        'Agent 也会自动从对话中提取和注入相关记忆',
+      );
+    }
+
+    if (config.cron.enabled) {
+      helpLines.push(
+        '',
+        '**── 定时任务 ──**',
+        '对话中要求 Agent 设置定时任务即可，支持 cron 表达式和自然语言时间',
+      );
+    }
+
+    if (hasCallbackUrl()) {
+      helpLines.push(
+        '',
+        '**── OAuth 授权 ──**',
+        '`/auth` — 授权飞书个人权限（任务、日历等） 🔒',
+      );
+    }
+
+    helpLines.push(
+      '',
+      '**── 说明 ──**',
+      '🔒 = 仅管理员可用',
+      '每个话题独立维护对话上下文和工作目录',
+      '发送图片或 PDF 文件，Agent 可直接查看和分析',
+    );
+
+    const helpText = helpLines.join('\n');
     if (threadReplyMsgId) {
       await feishuClient.replyTextInThread(threadReplyMsgId, helpText);
     } else {
