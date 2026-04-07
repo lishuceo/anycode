@@ -359,7 +359,7 @@ describe('MemoryDatabase', () => {
       db.insertMemory(makeRow({ id: 'mig_1', workspace_dir: '/root/dev' }));
       db.insertMemory(makeRow({ id: 'mig_2', workspace_dir: '/root/dev/' }));
       db.insertMemory(makeRow({ id: 'mig_3', workspace_dir: '/root/dev/anywhere-code' }));
-      db.insertMemory(makeRow({ id: 'mig_4', workspace_dir: 'github.com/lishuceo/anywhere-code.git' }));
+      db.insertMemory(makeRow({ id: 'mig_4', workspace_dir: 'github.com/lishuceo/anycode.git' }));
 
       // Reset user_version to force migration to run
       db.db.pragma('user_version = 0');
@@ -368,10 +368,10 @@ describe('MemoryDatabase', () => {
       // Re-open — migrations should run
       const db2 = await MemoryDatabase.create(join(tempDir, 'test.db'));
 
-      expect(db2.getMemory('mig_1')!.workspace_dir).toBe('github.com/lishuceo/anywhere-code.git');
-      expect(db2.getMemory('mig_2')!.workspace_dir).toBe('github.com/lishuceo/anywhere-code.git');
-      expect(db2.getMemory('mig_3')!.workspace_dir).toBe('github.com/lishuceo/anywhere-code.git');
-      expect(db2.getMemory('mig_4')!.workspace_dir).toBe('github.com/lishuceo/anywhere-code.git'); // unchanged
+      expect(db2.getMemory('mig_1')!.workspace_dir).toBe('github.com/lishuceo/anycode.git');
+      expect(db2.getMemory('mig_2')!.workspace_dir).toBe('github.com/lishuceo/anycode.git');
+      expect(db2.getMemory('mig_3')!.workspace_dir).toBe('github.com/lishuceo/anycode.git');
+      expect(db2.getMemory('mig_4')!.workspace_dir).toBe('github.com/lishuceo/anycode.git'); // unchanged
 
       db2.close();
     });
@@ -383,7 +383,7 @@ describe('MemoryDatabase', () => {
       db.close();
 
       const db2 = await MemoryDatabase.create(join(tempDir, 'test.db'));
-      expect(db2.getMemory('mig_ws_1')!.workspace_dir).toBe('github.com/lishuceo/anywhere-code.git');
+      expect(db2.getMemory('mig_ws_1')!.workspace_dir).toBe('github.com/lishuceo/anycode.git');
       db2.close();
     });
 

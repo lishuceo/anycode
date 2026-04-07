@@ -32,7 +32,7 @@ export function isAutoWorkspacePath(dir: string): boolean {
 }
 
 /**
- * 判断工作目录是否是 anywhere-code 服务自身的仓库（自改自场景）。
+ * 判断工作目录是否是 anycode 服务自身的仓库（自改自场景）。
  * 通过 package.json name 字段匹配，比路径对比更鲁棒（worktree clone 也能识别）。
  */
 export function isServiceOwnRepo(dir: string): boolean {
