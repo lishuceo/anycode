@@ -2247,10 +2247,11 @@ export async function executeDirectTask(
     ? `${chatId}:${userId}:${threadId}`
     : `${chatId}:${userId}`;
 
-  // 话题内消息：跳过 quick-ack，改为先添加表情回复作为即时反馈
+  // 即时表情反馈：话题内消息或主聊天未启用 quick-ack 时，先添加表情回复
   // 正式回复发出后再移除表情（在 finally 中清理）
   let pendingReactionId: string | undefined;
-  if (threadId) {
+  const useEmojiFallback = !!threadId || (!config.quickAck.enabled && !options?.skipQuickAck);
+  if (useEmojiFallback) {
     pendingReactionId = await feishuClient.addReaction(messageId, 'OnIt').catch(() => undefined);
   }
 
