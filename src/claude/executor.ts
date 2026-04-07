@@ -254,7 +254,11 @@ function buildWorkspaceSystemPrompt(workingDir?: string, options?: { isRestart?:
 
 ## 工作区管理
 
-你当前的工作目录已经由系统预先设定好。**大多数情况下直接在当前目录工作即可**。
+**重要：当用户的请求涉及特定仓库时（无论是阅读代码、修改代码还是查看结构），必须先使用 setup_workspace 切换到该仓库。**
+这样才能正确加载项目的 CLAUDE.md（架构说明、命令约定）、.claude/settings.json（工具权限）、.claude/skills/（项目技能），并让代码搜索工具在正确的范围内工作。
+不要直接在 \`${projectsDir}\` 下用绝对路径浏览源仓库 — 这样会丢失项目上下文。
+
+仅当用户的问题是通用性的（不涉及特定仓库，如"JavaScript 闭包是什么"）时，才不需要 setup_workspace。
 
 **禁止直接访问以下目录：**
 - \`${cacheDir}/\` — bare clone 缓存，仅用于定位仓库 URL
@@ -262,12 +266,12 @@ function buildWorkspaceSystemPrompt(workingDir?: string, options?: { isRestart?:
 
 ### 仓库匹配与 Registry
 
-当你需要判断用户要在哪个仓库工作时，先读取 \`${projectsDir}/.repo-registry.md\`，根据用户消息中的关键词、项目名、技术栈等信息匹配。
+当你需要判断用户要在哪个仓库工作时，先读取 \`${projectsDir}/.repo-registry.json\`，根据用户消息中的关键词、项目名、技术栈等信息匹配。
 - 如果匹配到唯一仓库，直接调用 setup_workspace（使用 registry 中的 repo URL）
 - 如果匹配到多个或无法确定，**明确询问用户是哪个仓库，不要猜测**
 - 用户澄清后，调用 update_repo_registry 记录新的关键词映射，以便下次自动匹配
 
-**重要：默认从 bare cache 创建隔离工作区。**
+**默认从 bare cache 创建隔离工作区。**
 当确定目标仓库后，优先使用 setup_workspace({ repo_url: "..." }) 从 bare cache clone。
 仅当用户明确说"直接在 XXX 目录改"时，才使用 setup_workspace({ local_path: "..." })。
 对于 registry 中标记为 local-only（cachePath 为 null）的仓库，使用 setup_workspace({ local_path: "..." })。
@@ -286,9 +290,7 @@ function buildWorkspaceSystemPrompt(workingDir?: string, options?: { isRestart?:
 
 **重要：\`${cacheDir}\` 下的是 bare clone（无文件树），仅用于定位仓库 URL。不要在 bare repo 中直接工作（\`git show\`/\`git grep\` 等）。** 找到仓库后，如果项目不在 \`${projectsDir}\` 下，必须调用 setup_workspace 创建完整工作区，这样才能正确加载 CLAUDE.md、使用搜索工具、获得完整的代码上下文。
 
-**绝对不要用 setup_workspace 来切换当前工作区的模式（如从 readonly 切换到 writable）。** 当前工作区已经配置好了正确的权限，直接在当前目录工作即可。
-
-调用 setup_workspace 时使用 mode="writable"。
+**绝对不要用 setup_workspace 来切换当前工作区。** 当前工作区已经配置好了正确的权限，直接在当前目录工作即可。
 
 **重要：调用 setup_workspace 后，系统将自动重启以加载项目配置（CLAUDE.md 等）。
 请在调用后仅输出简短确认（如"工作区已就绪，正在重新加载项目配置..."），不要继续执行后续任务。**`;

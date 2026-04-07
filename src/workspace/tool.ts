@@ -2,7 +2,7 @@ import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 import { setupWorkspace } from './manager.js';
 import { logger } from '../utils/logger.js';
-import { toCanonicalUrl, updateRegistryEntry } from './registry.js';
+import { toCanonicalUrl, updateRegistryEntry, extractRepoMeta } from './registry.js';
 import { sanitizeRepoUrl } from './cache.js';
 
 // ============================================================
@@ -41,7 +41,7 @@ export function createWorkspaceMcpServer(onWorkspaceChanged?: SessionUpdater) {
           '- 用户澄清了某个仓库的用途后，记录关键词以便下次自动匹配',
           '- 例如用户说"推荐系统是 rec-engine"，给 rec-engine 添加关键词"推荐系统"',
           '',
-          '注意：repo_url 必须是 registry 中已有的 canonical URL（见 .repo-registry.md 中的 ID 字段）。',
+          '注意：repo_url 必须是 registry 中已有的 canonical URL（见 .repo-registry.json 中的键名）。',
         ].join('\n'),
         {
           repo_url: z.string().describe('仓库的 canonical URL（registry 中的 ID）'),
@@ -54,7 +54,7 @@ export function createWorkspaceMcpServer(onWorkspaceChanged?: SessionUpdater) {
             updateRegistryEntry(args.repo_url, {
               description: args.description,
               keywords: args.keywords,
-            });
+            }, undefined, true);
             return {
               content: [{
                 type: 'text' as const,
@@ -98,25 +98,22 @@ export function createWorkspaceMcpServer(onWorkspaceChanged?: SessionUpdater) {
           '不要在以下情况使用：',
           '- 用户的问题是通用的，不指向特定仓库',
           '- 当前工作目录已经是正确的仓库',
-          '- 不要用此工具切换当前工作区的模式（readonly/writable）',
           '',
-          '通常使用 mode="writable" 创建可修改的隔离工作区和 feature 分支。',
           '调用后仅输出简短确认，不要继续执行后续任务（系统会自动重启）。',
         ].join('\n'),
         {
           repo_url: z.string().optional().describe('远程仓库 URL (如 https://github.com/user/repo)'),
           local_path: z.string().optional().describe('本地仓库绝对路径'),
-          mode: z.enum(['readonly', 'writable']).describe('访问模式: readonly 只读分析, writable 修改代码'),
           source_branch: z.string().optional().describe('源分支名 (默认使用仓库默认分支)'),
-          feature_branch: z.string().optional().describe('自定义 feature 分支名 (默认自动生成, 仅 writable 模式)'),
+          feature_branch: z.string().optional().describe('自定义 feature 分支名 (默认自动生成)'),
         },
         async (args) => {
-          logger.info({ args: { repo_url: args.repo_url, local_path: args.local_path, mode: args.mode } }, 'setup_workspace tool invoked');
+          logger.info({ args: { repo_url: args.repo_url, local_path: args.local_path } }, 'setup_workspace tool invoked');
           try {
             const result = setupWorkspace({
               repoUrl: args.repo_url,
               localPath: args.local_path,
-              mode: args.mode,
+              mode: 'writable',
               sourceBranch: args.source_branch,
               featureBranch: args.feature_branch,
             });
@@ -132,14 +129,19 @@ export function createWorkspaceMcpServer(onWorkspaceChanged?: SessionUpdater) {
               logger.warn('No session updater set, workingDir not updated');
             }
 
-            // 增量更新 registry（如果该仓库不在 registry 中，自动追加）
+            // 增量更新 registry：追加新条目 + 按需从工作区提取 description/techStack
             try {
               const repoUrl = args.repo_url || args.local_path;
               if (repoUrl) {
                 const canonical = args.repo_url
                   ? toCanonicalUrl(sanitizeRepoUrl(args.repo_url))
                   : `local://${args.local_path}`;
-                updateRegistryEntry(canonical, {});
+                // 从新创建的工作区提取 meta（仅当 registry 条目缺少信息时有效）
+                const meta = extractRepoMeta(result.workspacePath);
+                updateRegistryEntry(canonical, {
+                  description: meta.description,
+                  techStack: meta.techStack,
+                });
               }
             } catch (registryErr) {
               logger.debug({ err: registryErr }, 'Registry update after setup_workspace failed (non-blocking)');

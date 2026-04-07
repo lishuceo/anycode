@@ -13,8 +13,7 @@ import { repoUrlToCachePath, sanitizeRepoUrl, ensureBareCache } from './cache.js
 // 仓库 Registry
 //
 // 维护 DEFAULT_WORK_DIR 下所有仓库的索引文件。
-// - JSON (.repo-registry.json) 作为 source of truth
-// - Markdown (.repo-registry.md) 自动生成，供 LLM 阅读
+// - JSON (.repo-registry.json) 作为唯一数据源（LLM 直接读 JSON）
 // - 使用 canonical repo URL 作为主键
 // - 内存缓存源仓库路径集合，供 isInsideSourceRepo 快速匹配
 // ============================================================
@@ -98,10 +97,6 @@ function registryJsonPath(): string {
   return join(config.claude.defaultWorkDir, '.repo-registry.json');
 }
 
-function registryMdPath(): string {
-  return join(config.claude.defaultWorkDir, '.repo-registry.md');
-}
-
 /** 读取现有 registry JSON，不存在则返回空 */
 function readRegistry(): RegistryData {
   const path = registryJsonPath();
@@ -125,41 +120,113 @@ function writeRegistry(data: RegistryData): void {
   renameSync(tmpPath, path);
 }
 
-/** 从 JSON 生成 Markdown 渲染文件 */
-function renderMarkdown(data: RegistryData): void {
-  const lines: string[] = [
-    '# Repo Registry',
-    '<!-- 由系统自动生成，请勿手动编辑。修改 .repo-registry.json 后会自动重新生成 -->',
-    '<!-- 主键: canonical repo URL，确保跨目录/缓存的唯一标识 -->',
-    '',
-  ];
-
-  const entries = Object.entries(data.repos).filter(([, e]) => !e.removed);
-  if (entries.length === 0) {
-    lines.push('(暂无仓库)');
-  }
-  for (const [url, entry] of entries) {
-    lines.push(`## ${entry.name}`);
-    lines.push(`- **ID**: ${url}`);
-    lines.push(`- **路径**: ${entry.localPath ?? '(仅在缓存中)'}`);
-    lines.push(`- **缓存**: ${entry.cachePath ?? '(本地仓库，无 remote)'}`);
-    lines.push(`- **描述**: ${entry.description ?? '(待补充)'}`);
-    lines.push(`- **关键词**: ${entry.keywords.length > 0 ? entry.keywords.join(', ') : '(待补充)'}`);
-    if (entry.techStack.length > 0) {
-      lines.push(`- **技术栈**: ${entry.techStack.join(', ')}`);
-    }
-    lines.push('');
-  }
-
-  const mdPath = registryMdPath();
-  const tmpPath = `${mdPath}.tmp-${randomBytes(4).toString('hex')}`;
-  writeFileSync(tmpPath, lines.join('\n'), 'utf-8');
-  renameSync(tmpPath, mdPath);
-}
-
 // ============================================================
 // Git 工具
 // ============================================================
+
+/** 从本地仓库提取基本信息（description, techStack）用于按需填充 registry */
+export function extractRepoMeta(repoDir: string): { description?: string; techStack?: string[] } {
+  const result: { description?: string; techStack?: string[] } = {};
+  try {
+    const pkgPath = join(repoDir, 'package.json');
+    if (existsSync(pkgPath)) {
+      const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'));
+      if (pkg.description && typeof pkg.description === 'string') {
+        result.description = pkg.description;
+      }
+      // 从 dependencies + devDependencies 提取主要技术栈
+      const deps = { ...pkg.dependencies, ...pkg.devDependencies };
+      const techStack: string[] = [];
+      if (deps.typescript || deps['ts-node'] || deps.tsx) techStack.push('TypeScript');
+      if (deps.react || deps['react-dom']) techStack.push('React');
+      if (deps.vue) techStack.push('Vue');
+      if (deps.next) techStack.push('Next.js');
+      if (deps.express) techStack.push('Express');
+      if (deps.fastify) techStack.push('Fastify');
+      if (deps.prisma || deps['@prisma/client']) techStack.push('Prisma');
+      if (deps.vite) techStack.push('Vite');
+      if (deps.webpack) techStack.push('Webpack');
+      if (techStack.length > 0) result.techStack = techStack;
+      return result;
+    }
+    // Python 项目
+    if (existsSync(join(repoDir, 'pyproject.toml')) || existsSync(join(repoDir, 'setup.py'))) {
+      result.techStack = ['Python'];
+      return result;
+    }
+    // Go 项目
+    if (existsSync(join(repoDir, 'go.mod'))) {
+      result.techStack = ['Go'];
+      return result;
+    }
+    // Rust 项目
+    if (existsSync(join(repoDir, 'Cargo.toml'))) {
+      result.techStack = ['Rust'];
+      return result;
+    }
+    // C/C++ 项目（CMakeLists.txt 可能在子目录）
+    const hasCMake = existsSync(join(repoDir, 'CMakeLists.txt'))
+      || readdirSync(repoDir, { withFileTypes: true })
+        .filter(d => d.isDirectory() && !d.name.startsWith('.'))
+        .some(d => existsSync(join(repoDir, d.name, 'CMakeLists.txt')));
+    if (hasCMake) {
+      result.techStack = ['C++'];
+    }
+  } catch {
+    // best-effort
+  }
+  // Fallback: 从 README.md 提取描述（如果还没有）
+  if (!result.description) {
+    try {
+      const readmePath = join(repoDir, 'README.md');
+      if (existsSync(readmePath)) {
+        // 只读前 3KB，避免大文件
+        const raw = readFileSync(readmePath, 'utf-8').slice(0, 3000);
+        const lines = raw.split('\n');
+        const contentLines: string[] = [];
+        let foundContent = false;
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          // 跳过装饰性行
+          if (!trimmed || trimmed.startsWith('<') || trimmed.startsWith('[') ||
+              trimmed.startsWith('>') || trimmed.startsWith('http') ||
+              trimmed.startsWith('!') || trimmed.startsWith('---') ||
+              trimmed.startsWith('```') || trimmed.startsWith('|')) continue;
+
+          if (trimmed.startsWith('#')) {
+            // 标题行：提取标题文本
+            const title = trimmed.replace(/^#+\s*/, '').replace(/\*\*/g, '').trim();
+            if (title.length >= 3) {
+              contentLines.push(title);
+              foundContent = true;
+            }
+            continue;
+          }
+
+          // 正文内容行：去掉 markdown 格式
+          const clean = trimmed.replace(/\*\*/g, '').replace(/`/g, '').trim();
+          if (clean.length >= 5) {
+            contentLines.push(clean);
+            foundContent = true;
+          }
+
+          // 收集到足够信息后停止（标题 + 2-3 段描述，约 300 字符）
+          const totalLen = contentLines.join(' ').length;
+          if (foundContent && totalLen >= 200) break;
+        }
+
+        if (contentLines.length > 0) {
+          const desc = contentLines.join(' — ');
+          result.description = desc.length > 500 ? desc.slice(0, 497) + '...' : desc;
+        }
+      }
+    } catch {
+      // best-effort
+    }
+  }
+  return result;
+}
 
 /** 获取本地仓库的 origin remote URL，无 remote 则返回 null */
 function getOriginUrl(repoDir: string): string | null {
@@ -265,7 +332,7 @@ export async function scanAndSyncRegistry(): Promise<void> {
     // 已 removed 且仍不存在 → 不再保留
   }
 
-  // 追加新发现的仓库
+  // 追加新发现的仓库（仅结构信息，description/techStack 在 setup_workspace 后按需填充）
   for (const [url, disc] of discovered) {
     merged[url] = {
       name: disc.name || basename(url),
@@ -279,7 +346,6 @@ export async function scanAndSyncRegistry(): Promise<void> {
 
   const registryData: RegistryData = { repos: merged };
   writeRegistry(registryData);
-  renderMarkdown(registryData);
 
   // 4. 更新内存缓存
   refreshSourceRepoCache(registryData);
@@ -378,12 +444,15 @@ export function updateRegistryEntry(
   canonicalUrl: string,
   updates: RegistryUpdate,
   newCachePath?: string,
+  /** force=true 时覆盖已有 description（用于 LLM 主动更新）。默认 false 仅填充空值 */
+  force = false,
 ): void {
   const data = readRegistry();
   const entry = data.repos[canonicalUrl];
 
   if (entry) {
-    if (updates.description !== undefined) entry.description = updates.description;
+    // description: 默认仅填充空值；force=true 时允许覆盖（LLM 主动更新）
+    if (updates.description !== undefined && (force || !entry.description)) entry.description = updates.description;
     if (updates.keywords?.length) {
       // 追加关键词，去重
       const combined = new Set([...entry.keywords, ...updates.keywords]);
@@ -408,6 +477,5 @@ export function updateRegistryEntry(
   }
 
   writeRegistry(data);
-  renderMarkdown(data);
   refreshSourceRepoCache(data);
 }
