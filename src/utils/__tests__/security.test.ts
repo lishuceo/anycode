@@ -4,6 +4,7 @@ vi.mock('../../config.js', () => ({
   config: {
     security: {
       allowedUserIds: [] as string[],
+      ownerUserId: '',
     },
   },
 }));
@@ -11,11 +12,71 @@ vi.mock('../../config.js', () => ({
 vi.mock('../logger.js', () => ({
   logger: {
     warn: vi.fn(),
+    info: vi.fn(),
   },
 }));
 
-import { isUserAllowed, containsDangerousCommand } from '../security.js';
+vi.mock('node:fs', () => ({
+  readFileSync: vi.fn(() => 'OWNER_USER_ID=\n'),
+  writeFileSync: vi.fn(),
+}));
+
+import { isUserAllowed, containsDangerousCommand, isOwner, autoDetectOwner } from '../security.js';
 import { config } from '../../config.js';
+
+describe('isOwner', () => {
+  beforeEach(() => {
+    config.security.ownerUserId = '';
+  });
+
+  it('should return true when ownerUserId is unset (backward compat)', () => {
+    expect(isOwner('anyone')).toBe(true);
+  });
+
+  it('should return true for matching userId', () => {
+    config.security.ownerUserId = 'ou_owner123';
+    expect(isOwner('ou_owner123')).toBe(true);
+  });
+
+  it('should return false for non-matching userId', () => {
+    config.security.ownerUserId = 'ou_owner123';
+    expect(isOwner('ou_other456')).toBe(false);
+  });
+});
+
+describe('autoDetectOwner', () => {
+  beforeEach(() => {
+    config.security.ownerUserId = '';
+    // Reset the settingOwner guard by re-importing would be complex,
+    // so we test what we can: the config.security.ownerUserId state
+  });
+
+  it('should return false when owner is already configured', () => {
+    config.security.ownerUserId = 'ou_existing';
+    expect(autoDetectOwner('ou_new_user')).toBe(false);
+    expect(config.security.ownerUserId).toBe('ou_existing');
+  });
+
+  it('should reject invalid userId format', () => {
+    expect(autoDetectOwner('user\nINJECTED=bad')).toBe(false);
+    expect(config.security.ownerUserId).toBe('');
+  });
+
+  it('should reject userId with special characters', () => {
+    expect(autoDetectOwner('user;rm -rf /')).toBe(false);
+    expect(config.security.ownerUserId).toBe('');
+  });
+
+  it('should set owner for valid userId and return true, then reject subsequent calls', () => {
+    const result = autoDetectOwner('ou_first_user');
+    expect(result).toBe(true);
+    expect(config.security.ownerUserId).toBe('ou_first_user');
+
+    // Second call returns false — owner already set
+    expect(autoDetectOwner('ou_second_user')).toBe(false);
+    expect(config.security.ownerUserId).toBe('ou_first_user');
+  });
+});
 
 describe('isUserAllowed', () => {
   beforeEach(() => {
