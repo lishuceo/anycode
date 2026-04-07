@@ -235,12 +235,19 @@ function ghExec(args: string[]): Promise<string> {
 
 export async function initGitHubOrgCache(): Promise<void> {
   try {
-    const [orgsOutput, login] = await Promise.all([
+    const [orgsResult, loginResult] = await Promise.allSettled([
       ghExec(['api', 'user/orgs', '--jq', '.[].login']),
       ghExec(['api', 'user', '--jq', '.login']),
     ]);
-    const orgs = orgsOutput.split('\n').filter(Boolean);
+    const orgs = orgsResult.status === 'fulfilled'
+      ? orgsResult.value.split('\n').filter(Boolean)
+      : [];
+    const login = loginResult.status === 'fulfilled' ? loginResult.value : '';
     if (login) orgs.push(login);
+    if (orgs.length === 0) {
+      logger.warn('GitHub org cache: no orgs or login discovered');
+      return;
+    }
     cachedGitHubOrgs = [...new Set(orgs)].map(o => `github.com/${o}`);
     logger.info({ orgs: cachedGitHubOrgs }, 'GitHub org cache initialized');
   } catch (err) {

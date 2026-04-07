@@ -1,6 +1,6 @@
 // @ts-nocheck — test file, vitest uses esbuild transform
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, rmdirSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -89,10 +89,10 @@ describe('GitHub org auto-discovery', () => {
     it('should fetch orgs and user login via gh CLI', async () => {
       // Mock two execFile calls: user/orgs and user
       mockExecFile
-        .mockImplementationOnce((_cmd: string, _args: string[], _opts: unknown, cb: Function) => {
+        .mockImplementationOnce((_cmd: string, _args: string[], _opts: unknown, cb: (...a: unknown[]) => void) => {
           cb(null, 'taptap\nEpicGames\n');
         })
-        .mockImplementationOnce((_cmd: string, _args: string[], _opts: unknown, cb: Function) => {
+        .mockImplementationOnce((_cmd: string, _args: string[], _opts: unknown, cb: (...a: unknown[]) => void) => {
           cb(null, 'lishuceo\n');
         });
 
@@ -120,10 +120,10 @@ describe('GitHub org auto-discovery', () => {
 
     it('should deduplicate when user login is also in orgs', async () => {
       mockExecFile
-        .mockImplementationOnce((_cmd: string, _args: string[], _opts: unknown, cb: Function) => {
+        .mockImplementationOnce((_cmd: string, _args: string[], _opts: unknown, cb: (...a: unknown[]) => void) => {
           cb(null, 'myorg\nmyuser\n');
         })
-        .mockImplementationOnce((_cmd: string, _args: string[], _opts: unknown, cb: Function) => {
+        .mockImplementationOnce((_cmd: string, _args: string[], _opts: unknown, cb: (...a: unknown[]) => void) => {
           cb(null, 'myuser\n');
         });
 
@@ -134,8 +134,23 @@ describe('GitHub org auto-discovery', () => {
       expect(myuserCount).toBe(1);
     });
 
-    it('should not crash when gh CLI fails', async () => {
-      mockExecFile.mockImplementation((_cmd: string, _args: string[], _opts: unknown, cb: Function) => {
+    it('should preserve login when orgs API fails (partial failure)', async () => {
+      mockExecFile
+        .mockImplementationOnce((_cmd: string, _args: string[], _opts: unknown, cb: (...a: unknown[]) => void) => {
+          cb(new Error('403 Forbidden'));
+        })
+        .mockImplementationOnce((_cmd: string, _args: string[], _opts: unknown, cb: (...a: unknown[]) => void) => {
+          cb(null, 'lishuceo\n');
+        });
+
+      await initGitHubOrgCache();
+
+      const orgs = listKnownOrgs('/nonexistent');
+      expect(orgs).toContain('github.com/lishuceo');
+    });
+
+    it('should not crash when gh CLI fails completely', async () => {
+      mockExecFile.mockImplementation((_cmd: string, _args: string[], _opts: unknown, cb: (...a: unknown[]) => void) => {
         cb(new Error('gh not found'));
       });
 
