@@ -10,7 +10,6 @@ import { buildResultCard, buildStatusCard, buildCancelledCard, buildPipelineCard
 import { TOTAL_PHASES } from '../pipeline/types.js';
 import { feishuClient, feishuClientContext, runWithAccountId } from './client.js';
 import { config, isMultiBotMode } from '../config.js';
-import { setupWorkspace } from '../workspace/manager.js';
 import { checkAndRequestApproval, handleApprovalTextCommand, handleApprovalCardAction, setOnApproved } from './approval.js';
 import { resolveThreadContext } from './thread-context.js';
 import { ensureThread } from './thread-utils.js';
@@ -734,46 +733,6 @@ async function handleSlashCommand(
   // 不 fallback 到 session 的 threadRootMessageId，避免群主界面的命令被发到旧话题
   const threadReplyMsgId = effectiveThreadId ? rootId : undefined;
 
-  // /project <path> - 切换工作目录
-  if (trimmed.startsWith('/project ')) {
-    const dir = trimmed.slice('/project '.length).trim();
-    // 安全校验：路径必须在允许的基目录下（用 realpathSync 跟踪 symlink）
-    const { resolve } = await import('node:path');
-    const { existsSync, realpathSync } = await import('node:fs');
-    const resolved = resolve(dir);
-    if (!existsSync(resolved)) {
-      const reply = `⚠️ 路径不存在: ${dir}`;
-      if (threadReplyMsgId) {
-        await feishuClient.replyTextInThread(threadReplyMsgId, reply);
-      } else {
-        await feishuClient.replyText(messageId, reply);
-      }
-      return true;
-    }
-    const realResolved = realpathSync(resolved);
-    const allowedBase = existsSync(resolve(config.claude.defaultWorkDir))
-      ? realpathSync(resolve(config.claude.defaultWorkDir))
-      : resolve(config.claude.defaultWorkDir);
-    if (!realResolved.startsWith(allowedBase + '/') && realResolved !== allowedBase) {
-      const reply = `⚠️ 路径不在允许的目录范围内 (允许: ${allowedBase})`;
-      if (threadReplyMsgId) {
-        await feishuClient.replyTextInThread(threadReplyMsgId, reply);
-      } else {
-        await feishuClient.replyText(messageId, reply);
-      }
-      return true;
-    }
-    sessionManager.getOrCreate(chatId, userId);
-    sessionManager.setWorkingDir(chatId, userId, realResolved);
-    const reply = `📂 工作目录已切换到: ${realResolved}`;
-    if (threadReplyMsgId) {
-      await feishuClient.replyTextInThread(threadReplyMsgId, reply);
-    } else {
-      await feishuClient.replyText(messageId, reply);
-    }
-    return true;
-  }
-
   // /status - 查看状态
   if (trimmed === '/status') {
     const session = sessionManager.getOrCreate(chatId, userId);
@@ -824,55 +783,6 @@ async function handleSlashCommand(
       await feishuClient.replyTextInThread(threadReplyMsgId, reply);
     } else {
       await feishuClient.replyText(messageId, reply);
-    }
-    return true;
-  }
-
-  // /workspace <url-or-path> [branch] - 创建隔离工作区
-  if (trimmed.startsWith('/workspace ')) {
-    const args = trimmed.slice('/workspace '.length).trim().split(/\s+/);
-    const source = args[0];
-    const sourceBranch = args[1];
-
-    if (!source) {
-      const reply = '⚠️ 用法: `/workspace <repo-url-or-local-path> [branch]`';
-      if (threadReplyMsgId) {
-        await feishuClient.replyTextInThread(threadReplyMsgId, reply);
-      } else {
-        await feishuClient.replyText(messageId, reply);
-      }
-      return true;
-    }
-
-    try {
-      const isUrl = /^(https?:\/\/|git@|ssh:\/\/)/.test(source);
-      const result = setupWorkspace({
-        ...(isUrl ? { repoUrl: source } : { localPath: source }),
-        sourceBranch,
-      });
-
-      sessionManager.getOrCreate(chatId, userId);
-      sessionManager.setWorkingDir(chatId, userId, result.workspacePath);
-
-      const reply = [
-        '📂 工作区已创建',
-        `路径: ${result.workspacePath}`,
-        `分支: ${result.branch}`,
-        `仓库: ${result.repoName}`,
-      ].join('\n');
-      if (threadReplyMsgId) {
-        await feishuClient.replyTextInThread(threadReplyMsgId, reply);
-      } else {
-        await feishuClient.replyText(messageId, reply);
-      }
-    } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : String(err);
-      const reply = `❌ 工作区创建失败: ${errorMsg}`;
-      if (threadReplyMsgId) {
-        await feishuClient.replyTextInThread(threadReplyMsgId, reply);
-      } else {
-        await feishuClient.replyText(messageId, reply);
-      }
     }
     return true;
   }
@@ -1029,10 +939,8 @@ async function handleSlashCommand(
       '`/help` — 显示此帮助',
       '',
       '**── 工作区 ──**',
-      '`/project <path>` — 切换工作目录',
-      '`/workspace <url|path> [branch]` — 创建隔离工作区（clone + 新分支）',
       '`/edit [repo] [task]` — 原地编辑源仓库，跳过 clone 隔离 🔒',
-      '也可以直接发消息提到仓库 URL，Agent 会自动创建隔离工作区',
+      '提到仓库 URL 或名称时，Agent 会自动创建隔离工作区',
       '',
       '**── 开发流程 ──**',
       '`/dev <task>` — 自动开发管道 🔒',
