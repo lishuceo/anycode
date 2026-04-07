@@ -2,6 +2,7 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 import type { Query, SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import { mkdirSync, existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { execFile as execFileCb } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { config } from '../config.js';
 import { logger } from '../utils/logger.js';
@@ -219,20 +220,68 @@ function listAvailableProjects(projectsDir: string): string[] {
   }
 }
 
-/** 从缓存目录提取常用 GitHub org（best-effort） */
-function listKnownOrgs(cacheDir: string): string[] {
+/** gh CLI 自动发现的用户组织缓存 */
+let cachedGitHubOrgs: string[] | null = null;
+
+/** 通过 gh CLI 获取当前用户所属的 GitHub 组织 + 用户名 */
+function ghExec(args: string[]): Promise<string> {
+  return new Promise((resolve, reject) => {
+    execFileCb('gh', args, { timeout: 10_000 }, (err, stdout) => {
+      if (err) reject(err);
+      else resolve(stdout.trim());
+    });
+  });
+}
+
+export async function initGitHubOrgCache(): Promise<void> {
+  try {
+    const [orgsResult, loginResult] = await Promise.allSettled([
+      ghExec(['api', 'user/orgs', '--jq', '.[].login']),
+      ghExec(['api', 'user', '--jq', '.login']),
+    ]);
+    const orgs = orgsResult.status === 'fulfilled'
+      ? orgsResult.value.split('\n').filter(Boolean)
+      : [];
+    const login = loginResult.status === 'fulfilled' ? loginResult.value : '';
+    if (login) orgs.push(login);
+    if (orgs.length === 0) {
+      logger.warn('GitHub org cache: no orgs or login discovered');
+      return;
+    }
+    cachedGitHubOrgs = [...new Set(orgs)].map(o => `github.com/${o}`);
+    logger.info({ orgs: cachedGitHubOrgs }, 'GitHub org cache initialized');
+  } catch (err) {
+    logger.warn({ err }, 'Failed to fetch GitHub orgs (gh CLI may not be configured)');
+  }
+}
+
+/** 测试辅助：重置 GitHub org 缓存 */
+export function _resetGitHubOrgCache(orgs?: string[] | null): void {
+  cachedGitHubOrgs = orgs ?? null;
+}
+
+/** 从缓存目录 + GitHub API 提取已知 org（best-effort） */
+export function listKnownOrgs(cacheDir: string): string[] {
+  const orgSet = new Set<string>();
+
+  // 1. GitHub API 发现的组织（优先）
+  if (cachedGitHubOrgs) {
+    for (const org of cachedGitHubOrgs) orgSet.add(org);
+  }
+
+  // 2. 从 .repo-cache 目录结构提取
   try {
     const hosts = readdirSync(cacheDir, { withFileTypes: true }).filter(d => d.isDirectory() && !d.name.startsWith('.'));
-    const orgSet = new Set<string>();
     for (const host of hosts) {
       if (!host.name.includes('.')) continue;
       const orgs = readdirSync(join(cacheDir, host.name), { withFileTypes: true }).filter(d => d.isDirectory());
       for (const org of orgs) orgSet.add(`${host.name}/${org.name}`);
     }
-    return [...orgSet].slice(0, 10);
   } catch {
-    return [];
+    // cache dir may not exist yet
   }
+
+  return [...orgSet].slice(0, 20);
 }
 
 /** 构建工作区管理系统提示词（注入实际目录路径 + 可用项目列表） */
