@@ -7,7 +7,6 @@ import { isAutoWorkspacePath } from '../workspace/isolation.js';
 import { consumePreApproved } from './approval.js';
 import { ensureThread } from './thread-utils.js';
 import { feishuClient } from './client.js';
-import { buildGreetingCardReady } from './message-builder.js';
 import type { ThreadSession } from '../session/types.js';
 
 // ============================================================
@@ -114,15 +113,8 @@ export async function resolveThreadContext(params: ResolveParams): Promise<Resol
     return { status: 'stale' };
   }
 
-  // 5. 更新问候卡片
-  if (greetingMsgId && threadId) {
-    feishuClient.updateCard(
-      greetingMsgId,
-      buildGreetingCardReady(threadId, workingDir),
-    ).catch((err) => {
-      logger.warn({ err }, 'Failed to update greeting card');
-    });
-  }
+  // 5. 问候卡片不再显示 threadId/workingDir（默认工作目录不是有效信息）
+  // 工作区切换后会由 event-handler 发送专门的工作区卡片
 
   return {
     status: 'resolved',

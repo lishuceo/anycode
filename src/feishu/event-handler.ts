@@ -6,7 +6,7 @@ import { taskQueue } from '../session/queue.js';
 import { claudeExecutor } from '../claude/executor.js';
 import { DEFAULT_IMAGE_PROMPT, DEFAULT_DOCUMENT_PROMPT } from '../claude/types.js';
 import type { TurnInfo, ToolCallInfo, ImageAttachment, DocumentAttachment, ConversationTurn } from '../claude/types.js';
-import { buildResultCard, buildStatusCard, buildCancelledCard, buildPipelineCard, buildPipelineConfirmCard, buildProgressCard, buildToolProgressCard, buildTextContentCard, buildSimpleResultCard } from './message-builder.js';
+import { buildResultCard, buildStatusCard, buildCancelledCard, buildPipelineCard, buildPipelineConfirmCard, buildProgressCard, buildToolProgressCard, buildTextContentCard, buildSimpleResultCard, buildWorkspaceSwitchCard } from './message-builder.js';
 import { TOTAL_PHASES } from '../pipeline/types.js';
 import { feishuClient, feishuClientContext, runWithAccountId } from './client.js';
 import { config, isMultiBotMode } from '../config.js';
@@ -1533,7 +1533,7 @@ export async function executeClaudeTask(
 
   if (resolved.status !== 'resolved') return;
 
-  const { threadReplyMsgId, workingDir, threadId, threadSession, prompt } = resolved.ctx;
+  const { threadReplyMsgId, greetingMsgId, workingDir, threadId, threadSession, prompt } = resolved.ctx;
   const session = sessionManager.getOrCreate(chatId, userId, agentId);
 
   // sessionKey 包含 threadId，per-thread 并行时各 query 有独立的 key
@@ -1792,6 +1792,35 @@ export async function executeClaudeTask(
         sessionManager.setThreadWorkingDir(threadId, result.newWorkingDir, agentId);
       }
       sessionManager.setConversationId(chatId, userId, '', undefined, agentId);
+
+      // 发送工作区切换卡片（更新 greeting 卡片或独立发送）
+      {
+        const { basename } = await import('node:path');
+        const dirName = basename(result.newWorkingDir);
+        // 从目录名解析仓库名和分支（格式: repoName-writable-shortId）
+        const parts = dirName.split('-');
+        const shortId = parts.pop(); // shortId
+        parts.pop(); // writable/readonly
+        const repoName = parts.join('-') || dirName;
+        let branch: string | undefined;
+        try {
+          const { execFileSync } = await import('node:child_process');
+          branch = execFileSync('git', ['-C', result.newWorkingDir, 'branch', '--show-current'], { encoding: 'utf-8', timeout: 3000 }).trim() || undefined;
+        } catch { /* best-effort */ }
+
+        const switchCard = buildWorkspaceSwitchCard(repoName, result.newWorkingDir, branch);
+        if (greetingMsgId) {
+          // 更新 greeting 卡片为工作区切换信息
+          feishuClient.updateCard(greetingMsgId, switchCard).catch(err => {
+            logger.warn({ err }, 'Failed to update greeting card with workspace switch');
+          });
+        } else if (threadReplyMsgId) {
+          // 没有 greeting 卡片时，在话题中独立发送
+          feishuClient.replyCardInThread(threadReplyMsgId, switchCard).catch(err => {
+            logger.warn({ err }, 'Failed to send workspace switch card');
+          });
+        }
+      }
 
       // 第二次 query：以新 cwd 执行，CLAUDE.md 正确加载
       // - 不传 resumeSessionId（Agent SDK 不支持跨 cwd resume，会 exit code 1）

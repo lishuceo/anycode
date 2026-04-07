@@ -9,7 +9,6 @@ import {
   buildPipelineConfirmCard,
   buildPipelineCard,
   buildInterruptedCard,
-  buildGreetingCardReady,
 } from '../feishu/message-builder.js';
 import { ensureThread } from '../feishu/thread-utils.js';
 
@@ -54,17 +53,7 @@ export async function createPendingPipeline(params: CreatePipelineParams): Promi
     const threadResult = await ensureThread(chatId, userId, messageId, rootId, params.threadId);
     threadReplyMsgId = threadResult.threadReplyMsgId;
 
-    // 更新问候卡片：显示话题 ID 和工作目录
-    const session = sessionManager.getOrCreate(chatId, userId);
-    const threadId = session.threadId;
-    if (threadResult.greetingMsgId && threadId) {
-      feishuClient.updateCard(
-        threadResult.greetingMsgId,
-        buildGreetingCardReady(threadId, workingDir),
-      ).catch((err) => {
-        logger.warn({ err }, 'Failed to update greeting card in pipeline');
-      });
-    }
+    // 问候卡片不再显示 threadId/workingDir（工作区切换后由 event-handler 发送专门卡片）
   }
 
   // 发送确认卡片
