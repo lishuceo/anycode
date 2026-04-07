@@ -975,10 +975,11 @@ async function handleSlashCommand(
       }
     }
 
-    // fallback: 使用当前 session 的 workingDir
+    // fallback: 使用默认工作目录，不用全局 session.workingDir
+    // 全局 session 可能被上一个话题的 setup_workspace 污染（如切到 sce-tools），
+    // 导致无关的 /edit 命令意外进入错误仓库
     if (!targetDir) {
-      const session = sessionManager.getOrCreate(chatId, userId, agentId);
-      targetDir = session.workingDir;
+      targetDir = config.claude.defaultWorkDir;
     }
 
     // 验证目标路径存在
