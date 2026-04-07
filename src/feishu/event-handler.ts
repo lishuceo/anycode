@@ -1032,17 +1032,17 @@ async function handleSlashCommand(
       if (targetDir === process.cwd()) {
         const cfgInfo = getAgentConfigInfo(agentId);
         if (cfgInfo) {
-          const lines = [
+          editPrompt = [
             '<agent-config-info>',
-            '你正在编辑的是 anycode 服务仓库本身。以下是你的 agent 配置文件路径：',
-            `- Agent 配置: ${cfgInfo.configFile}`,
-          ];
-          if (cfgInfo.personaFile) lines.push(`- 人设文件: ${cfgInfo.personaFile}`);
-          if (cfgInfo.knowledgeFiles.length > 0) lines.push(`- 知识文件: ${cfgInfo.knowledgeFiles.map(f => f).join(', ')}`);
-          lines.push('', '这些文件支持热加载，修改后下次查询自动生效，无需重启。');
-          lines.push('注意: .example.md 文件是模板/示例，不要编辑它们。只编辑不带 .example 的正式文件。');
-          lines.push('</agent-config-info>', '');
-          editPrompt = lines.join('\n') + task;
+            '你正在编辑的是 anycode 服务仓库。',
+            `你当前的 agent id 是 "${agentId}"，所有 agent 的配置（persona、knowledge 路径等）定义在: ${cfgInfo.configFile}`,
+            '先读取该文件了解配置结构，再修改对应的文件。',
+            '.example.md 是模板，不要编辑。只编辑不带 .example 的正式文件。',
+            '配置文件支持热加载，修改后下次查询自动生效。',
+            '</agent-config-info>',
+            '',
+            task,
+          ].join('\n');
         }
       }
       const queueKey = editThreadId
