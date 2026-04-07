@@ -20,8 +20,8 @@
         "allow": ["Skill", "Bash"]
       },
       "bashAllowPatterns": ["^(ls|cat|head|tail|wc|find|grep|git (log|status|diff|show|branch))"],
-      "persona": "./personas/pm.example.md",
-      "knowledge": ["team.example.md"]
+      "persona": "./personas/pm.md",
+      "knowledge": ["team.md"]
     },
     {
       "id": "dev",
@@ -32,7 +32,7 @@
       "maxBudgetUsd": 50,
       "maxTurns": 500,
       "requiresApproval": true,
-      "knowledge": ["team.example.md"]
+      "knowledge": ["team.md"]
     }
   ]
 }
