@@ -975,11 +975,10 @@ async function handleSlashCommand(
       }
     }
 
-    // fallback: 使用默认工作目录，不用全局 session.workingDir
-    // 全局 session 可能被上一个话题的 setup_workspace 污染（如切到 sce-tools），
-    // 导致无关的 /edit 命令意外进入错误仓库
+    // fallback: 使用 anycode 服务仓库本身（process.cwd()）
+    // /edit 不指定仓库时，用户大概率是想改服务配置（知识、人设、agents.json）
     if (!targetDir) {
-      targetDir = config.claude.defaultWorkDir;
+      targetDir = process.cwd();
     }
 
     // 验证目标路径存在
