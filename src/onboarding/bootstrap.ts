@@ -98,14 +98,15 @@ export function getBootstrapPrompt(): string {
 引导用户在 open.feishu.cn 创建企业自建应用（或使用已有应用）：
 1. 先问 FEISHU_APP_ID（告知在哪里找），用户给出后写入 .env
 2. 再问 FEISHU_APP_SECRET，用户给出后写入 .env
-3. 告知需要开通的权限（列出清单，让用户确认已开通，不需要用户回传内容）：
+3. 告知需要开通的**权限**（开发者后台 → 权限管理），列出清单让用户确认：
    - 必须：im:message, im:message:send_as_bot, im:chat:readonly, contact:contact.base:readonly
    - 推荐：im:resource, im:chat
-4. 告知需要订阅的事件（同上，列出让用户确认）：
-   - im.message.receive_v1 — 接收消息
-   - card.action.trigger — 卡片按钮交互
+4. 告知需要添加的**事件订阅**（开发者后台 → 事件与回调 → 添加事件），这是单独的一步：
+   - im.message.receive_v1 — 接收消息（必须）
+   - card.action.trigger — 卡片按钮交互回调（必须，否则 AskUser 等卡片按钮不生效）
    - p2p_chat_create — 用户首次私聊 Bot
    - im.chat.member.bot.added_v1 — Bot 被拉入群
+5. 提醒用户：配置完权限和事件后需要在「版本管理与发布」创建版本并发布，权限才生效
 
 ### Phase 2: 团队信息
 
