@@ -53,6 +53,7 @@ while (round < MAX_ROUNDS) {
   round++;
 
   try {
+    console.log(`${DIM}[启动 Agent SDK query, round ${round}...]${RESET}`);
     const q = query({
       prompt: userMessage,
       options: {
@@ -64,6 +65,11 @@ while (round < MAX_ROUNDS) {
         maxBudgetUsd: 5,
         // 传递环境变量给 Claude Code 子进程（ANTHROPIC_API_KEY、ANTHROPIC_BASE_URL 等）
         env: process.env as Record<string, string>,
+        // 捕获子进程 stderr 输出（调试用）
+        stderr: (data: string) => {
+          const trimmed = data.trim();
+          if (trimmed) console.error(`${DIM}[stderr] ${trimmed}${RESET}`);
+        },
         ...(sessionId ? { resume: sessionId } : {}),
         canUseTool: async (_toolName: string, inputObj: Record<string, unknown>) => {
           return { behavior: 'allow' as const, updatedInput: inputObj };
