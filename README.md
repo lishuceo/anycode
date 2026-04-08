@@ -2,13 +2,19 @@
 
 Multi-agent development system with Feishu (Lark) as collaboration UI, powered by Claude's [Agent SDK](https://docs.anthropic.com/en/docs/agent-sdk/overview).
 
-Users send messages in Feishu chats, and the server executes Claude Code queries against working directories on the host machine. Multiple agents with different roles (chat assistant, developer, etc.) can coexist in the same group chat.
+Deploy once, serve your entire team. Everyone talks to the same bot in Feishu — each conversation automatically gets an isolated workspace, so multiple people can work on the same repo concurrently without stepping on each other.
+
+## Why Anycode
+
+- **Team-wide, single deployment** — One server handles all users. No per-person setup, no seat management. Add someone to the Feishu group and they're ready to go.
+- **True workspace isolation via bare clone cache** — Each conversation gets its own full clone from a shared bare cache. Unlike worktree-based solutions, there's no branch locking — ten people can all work on `main` simultaneously, each in a completely independent workspace. New workspaces are created from local cache in seconds, not re-cloned from remote.
+- **Multi-agent collaboration** — Multiple agents with different roles coexist in the same group chat. A read-only chat assistant and a full-access dev bot can work side by side, each with its own model, permissions, and persona.
 
 ## Features
 
-- **Multi-agent architecture** — Define multiple agents with different models, permissions, and personas in a single config file (`config/agents.json`)
-- **Multi-bot routing** — Each agent binds to its own Feishu bot app; messages are routed to the correct agent automatically
-- **Workspace isolation** — Each conversation gets an isolated git worktree; source repos are write-protected
+- **Multi-agent architecture** — Define agents with different models, permissions, and personas in a single config file
+- **Multi-bot routing** — Each agent binds to its own Feishu bot app; messages are routed automatically
+- **Bare clone workspace isolation** — Each conversation gets an independent clone from a shared bare cache; source repos are write-protected
 - **Session management** — SQLite-backed sessions with conversation resumption across restarts
 - **Interactive cards** — Real-time progress cards in Feishu, updated as Claude works
 - **Feishu tools (MCP)** — Agents can read/write Feishu docs, wikis, bitables, calendars, tasks, and contacts
