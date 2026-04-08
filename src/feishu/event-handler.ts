@@ -1248,12 +1248,12 @@ const MAX_TOTAL_DOCUMENT_BYTES = 20 * 1024 * 1024;
  * 按 fileName 去重 + 总大小截断，防止重复文档撑爆 API 30MB 限制。
  * 优先保留靠前的文档（当前消息 > 历史消息）。
  */
-function deduplicateDocuments(docs: DocumentAttachment[]): DocumentAttachment[] {
+export function deduplicateDocuments(docs: DocumentAttachment[]): DocumentAttachment[] {
   const seen = new Set<string>();
   const result: DocumentAttachment[] = [];
   let totalBytes = 0;
   for (const doc of docs) {
-    const key = doc.fileName ?? doc.data.slice(0, 64); // fallback to data prefix
+    const key = doc.fileName;
     if (seen.has(key)) {
       logger.info({ fileName: doc.fileName }, 'Skipping duplicate document');
       continue;

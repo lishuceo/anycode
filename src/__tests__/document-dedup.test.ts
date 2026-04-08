@@ -9,36 +9,9 @@
  * PDF could be included 8+ times, pushing the payload to 36MB and triggering
  * "message size exceeds 30.000MB limit" error.
  */
-// @ts-nocheck — test file
 import { describe, it, expect } from 'vitest';
-
-// ============================================================
-// Replicate production deduplicateDocuments logic for testability
-// ============================================================
-
-interface DocumentAttachment {
-  data: string;
-  mediaType: 'application/pdf';
-  fileName: string;
-}
-
-const MAX_TOTAL_DOCUMENT_BYTES = 20 * 1024 * 1024;
-
-function deduplicateDocuments(docs: DocumentAttachment[]): DocumentAttachment[] {
-  const seen = new Set<string>();
-  const result: DocumentAttachment[] = [];
-  let totalBytes = 0;
-  for (const doc of docs) {
-    const key = doc.fileName ?? doc.data.slice(0, 64);
-    if (seen.has(key)) continue;
-    const docBytes = doc.data.length;
-    if (totalBytes + docBytes > MAX_TOTAL_DOCUMENT_BYTES) continue;
-    seen.add(key);
-    result.push(doc);
-    totalBytes += docBytes;
-  }
-  return result;
-}
+import { deduplicateDocuments } from '../feishu/event-handler.js';
+import type { DocumentAttachment } from '../claude/types.js';
 
 // ============================================================
 // Helpers
