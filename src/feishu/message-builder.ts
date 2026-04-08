@@ -34,6 +34,7 @@ export function buildWorkspaceSwitchCard(
   repoName: string,
   workingDir: string,
   branch?: string,
+  title: string = '📂 工作区已切换',
 ): Record<string, unknown> {
   const fields: Record<string, unknown>[] = [
     {
@@ -49,7 +50,7 @@ export function buildWorkspaceSwitchCard(
   return {
     config: { wide_screen_mode: true },
     header: {
-      title: { tag: 'plain_text', content: `📂 工作区已切换` },
+      title: { tag: 'plain_text', content: title },
       template: 'green',
     },
     elements: [
