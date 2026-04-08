@@ -28,6 +28,7 @@ export class TaskQueue {
     documents?: import('../claude/types.js').DocumentAttachment[],
     createTime?: string,
     forceThread?: boolean,
+    messageType?: string,
   ): Promise<string> {
     return new Promise((resolve, reject) => {
       const task: QueueTask = {
@@ -40,6 +41,7 @@ export class TaskQueue {
         threadId,
         images,
         documents,
+        messageType,
         createTime,
         forceThread,
         resolve,

@@ -493,8 +493,8 @@ function processQueue(queueKey: string, agentId: AgentId = 'dev'): void {
   const useDirectMode = agentCfg?.replyMode === 'direct';
 
   const executeFn = useDirectMode
-    ? executeDirectTask(task.message, task.chatId, task.userId, task.messageId, task.images, task.documents, agentId, task.threadId, task.rootId, task.createTime, { forceThread: task.forceThread })
-    : executeClaudeTask(task.message, task.chatId, task.userId, task.messageId, task.rootId, task.threadId, task.images, task.documents, agentId, task.createTime);
+    ? executeDirectTask(task.message, task.chatId, task.userId, task.messageId, task.images, task.documents, agentId, task.threadId, task.rootId, task.createTime, { forceThread: task.forceThread }, task.messageType)
+    : executeClaudeTask(task.message, task.chatId, task.userId, task.messageId, task.rootId, task.threadId, task.images, task.documents, agentId, task.createTime, task.messageType);
 
   // 注册 task promise：graceful shutdown 时等待结果卡片发送完成
   claudeExecutor.registerTask(executeFn);
@@ -625,6 +625,8 @@ interface ParsedMessage {
   images?: ImageAttachment[];
   /** 文档附件列表 (用户发送 PDF 等文件时) */
   documents?: DocumentAttachment[];
+  /** 原始消息类型（text/image/file 等），用于区分"新文件上传"与"引用父消息文件" */
+  messageType?: string;
   /** 发送者类型: 'user' = 人类用户, 'app' = 应用/机器人 */
   senderType?: string;
   /** 消息创建时间（毫秒级时间戳字符串，来自飞书 message.create_time） */
@@ -678,7 +680,7 @@ async function handleMessageEvent(data: MessageEventData, accountId: string = 'd
   const parsed = await parseMessage(data);
   if (!parsed) return;
 
-  const { text, messageId, userId, chatId, chatType, mentionedBot, rootId, threadId, images, documents, mentions, createTime } = parsed;
+  const { text, messageId, userId, chatId, chatType, mentionedBot, rootId, threadId, images, documents, messageType, mentions, createTime } = parsed;
 
   logger.info({ userId, chatId, chatType, rootId, threadId, accountId, text: text.slice(0, 100), hasImages: !!images?.length }, 'Received message');
 
@@ -858,7 +860,7 @@ async function handleMessageEvent(data: MessageEventData, accountId: string = 'd
   const queueKey = perMessageParallel
     ? makeQueueKey(chatId, undefined, agentId, messageId)
     : makeQueueKey(chatId, effectiveThreadId, agentId, isDirectMode ? userId : undefined);
-  taskQueue.enqueue(queueKey, chatId, userId, effectiveText, messageId, rootId, effectiveThreadId, images, documents, createTime, forceThread).catch(() => {});
+  taskQueue.enqueue(queueKey, chatId, userId, effectiveText, messageId, rootId, effectiveThreadId, images, documents, createTime, forceThread, messageType).catch(() => {});
   processQueue(queueKey, agentId);
 }
 
@@ -1781,6 +1783,7 @@ export async function executeClaudeTask(
   documents?: DocumentAttachment[],
   agentId: AgentId = 'dev',
   createTime?: string,
+  messageType?: string,
 ): Promise<void> {
   // 1. 解析话题上下文（thread + workingDir + greeting）
   const resolved = await resolveThreadContext({
@@ -1896,16 +1899,36 @@ export async function executeClaudeTask(
     if (history.newestMsgId) {
       _historyDedup.set(sessionKey, history.newestMsgId);
     }
-    // 合并历史消息中的图片
-    if (history.images && history.images.length > 0) {
-      images = [...(history.images), ...(images ?? [])];
+    // Resume 时跳过历史文件附件：SDK 会重放所有前序 turn，文件已在对话中，
+    // 重复附加会导致 payload 累积膨胀（N turns × PDF size → 超 30MB 限制）
+    if (activeConversationId) {
+      if (history.images?.length || history.documents?.length) {
+        logger.info(
+          { historyImages: history.images?.length ?? 0, historyDocs: history.documents?.length ?? 0 },
+          'Skipping history file attachments on resume — already in conversation',
+        );
+      }
+      // 当前消息非文件上传时，documents 来自引用父消息，resume 时同样已在对话中
+      if (documents?.length && messageType !== 'file') {
+        logger.info(
+          { docCount: documents.length, fileNames: documents.map(d => d.fileName) },
+          'Clearing quoted-parent documents on resume — already sent in previous turn',
+        );
+        documents = undefined;
+      }
+    } else {
+      // 非 resume：正常合并历史文件
+      // 合并历史消息中的图片
+      if (history.images && history.images.length > 0) {
+        images = [...(history.images), ...(images ?? [])];
+      }
+      // 合并历史消息中的文档（PDF），按 fileName 去重 + 大小截断
+      if (history.documents && history.documents.length > 0) {
+        // 当前消息的文档优先（放前面），历史文档补充
+        documents = deduplicateDocuments([...(documents ?? []), ...(history.documents)]);
+      }
     }
-    // 合并历史消息中的文档（PDF），按 fileName 去重 + 大小截断
-    if (history.documents && history.documents.length > 0) {
-      // 当前消息的文档优先（放前面），历史文档补充
-      documents = deduplicateDocuments([...(documents ?? []), ...(history.documents)]);
-    }
-    // 合并历史消息中的文本文件内容到 prompt
+    // 合并历史消息中的文本文件内容到 prompt（文本内容不占多模态空间，始终注入）
     if (history.fileTexts && history.fileTexts.length > 0) {
       effectivePrompt = history.fileTexts.join('\n\n') + '\n\n---\n\n' + effectivePrompt;
     }
@@ -2324,6 +2347,7 @@ export async function executeDirectTask(
   rootId?: string,
   createTime?: string,
   options?: { skipQuickAck?: boolean; forceThread?: boolean },
+  messageType?: string,
 ): Promise<void> {
   const agentCfg = agentRegistry.getOrThrow(agentId);
   const session = sessionManager.getOrCreate(chatId, userId, agentId);
@@ -2438,15 +2462,35 @@ export async function executeDirectTask(
     if (history.newestMsgId) {
       _historyDedup.set(sessionKey, history.newestMsgId);
     }
-    // 合并历史消息中的图片
-    if (history.images && history.images.length > 0) {
-      images = [...(history.images), ...(images ?? [])];
+    // Resume 时跳过历史文件附件：SDK 会重放所有前序 turn，文件已在对话中，
+    // 重复附加会导致 payload 累积膨胀（N turns × PDF size → 超 30MB 限制）
+    if (canResume) {
+      if (history.images?.length || history.documents?.length) {
+        logger.info(
+          { historyImages: history.images?.length ?? 0, historyDocs: history.documents?.length ?? 0 },
+          'Skipping history file attachments on resume — already in conversation',
+        );
+      }
+      // 当前消息非文件上传时，documents 来自引用父消息，resume 时同样已在对话中
+      if (documents?.length && messageType !== 'file') {
+        logger.info(
+          { docCount: documents.length, fileNames: documents.map(d => d.fileName) },
+          'Clearing quoted-parent documents on resume — already sent in previous turn',
+        );
+        documents = undefined;
+      }
+    } else {
+      // 非 resume：正常合并历史文件
+      // 合并历史消息中的图片
+      if (history.images && history.images.length > 0) {
+        images = [...(history.images), ...(images ?? [])];
+      }
+      // 合并历史消息中的文档（PDF），按 fileName 去重 + 大小截断
+      if (history.documents && history.documents.length > 0) {
+        documents = deduplicateDocuments([...(documents ?? []), ...(history.documents)]);
+      }
     }
-    // 合并历史消息中的文档（PDF），按 fileName 去重 + 大小截断
-    if (history.documents && history.documents.length > 0) {
-      documents = deduplicateDocuments([...(documents ?? []), ...(history.documents)]);
-    }
-    // 合并历史消息中的文本文件内容到 prompt
+    // 合并历史消息中的文本文件内容到 prompt（文本内容不占多模态空间，始终注入）
     if (history.fileTexts && history.fileTexts.length > 0) {
       effectivePrompt = history.fileTexts.join('\n\n') + '\n\n---\n\n' + effectivePrompt;
     }
@@ -3248,6 +3292,7 @@ async function parseMessage(data: MessageEventData): Promise<ParsedMessage | nul
     threadId: message.thread_id || undefined,
     images,
     documents,
+    messageType: message.message_type,
     senderType: sender.sender_type,
     createTime: message.create_time || undefined,
   };

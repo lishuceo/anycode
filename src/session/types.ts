@@ -96,6 +96,8 @@ export interface QueueTask {
   images?: import('../claude/types.js').ImageAttachment[];
   /** 文档附件列表 (用户发送 PDF 等文件时) */
   documents?: import('../claude/types.js').DocumentAttachment[];
+  /** 原始消息类型（text/image/file 等），用于 resume 时区分"新文件上传"与"引用父消息文件" */
+  messageType?: string;
   /** 消息创建时间（毫秒级时间戳字符串，来自飞书 message.create_time） */
   createTime?: string;
   /** 强制使用话题模式（/t 命令触发） */
