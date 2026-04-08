@@ -23,6 +23,24 @@ const BOLD = '\x1b[1m';
 const DIM = '\x1b[2m';
 const RESET = '\x1b[0m';
 
+// Spinner — 等待 agent 回复时显示
+const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+let spinnerTimer: ReturnType<typeof setInterval> | undefined;
+function startSpinner(label = '思考中') {
+  let i = 0;
+  spinnerTimer = setInterval(() => {
+    process.stdout.write(`\r${DIM}${SPINNER_FRAMES[i % SPINNER_FRAMES.length]} ${label}...${RESET}  `);
+    i++;
+  }, 80);
+}
+function stopSpinner() {
+  if (spinnerTimer) {
+    clearInterval(spinnerTimer);
+    spinnerTimer = undefined;
+    process.stdout.write('\r\x1b[K'); // 清除 spinner 行
+  }
+}
+
 const rl = readline.createInterface({
   input: process.stdin,
   output: process.stdout,
@@ -53,9 +71,7 @@ while (round < MAX_ROUNDS) {
   round++;
 
   try {
-    if (round === 1) {
-      console.log(`${DIM}正在连接 AI 服务... (首次可能需要 10-20 秒)${RESET}`);
-    }
+    startSpinner(round === 1 ? '正在连接 AI 服务' : '思考中');
     const q = query({
       prompt: userMessage,
       options: {
@@ -100,6 +116,7 @@ while (round < MAX_ROUNDS) {
           break;
 
         case 'assistant':
+          stopSpinner();
           if (msg.message?.content) {
             for (const block of msg.message.content) {
               if ('text' in block && block.text) {
@@ -143,6 +160,7 @@ while (round < MAX_ROUNDS) {
     userMessage = input;
 
   } catch (err) {
+    stopSpinner();
     const msg = err instanceof Error ? err.message : String(err);
     console.error(`\n${YELLOW}出错: ${msg}${RESET}`);
 
