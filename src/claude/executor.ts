@@ -1,7 +1,7 @@
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import type { Query, SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import { mkdirSync, existsSync, readdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { execFile as execFileCb } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { config } from '../config.js';
@@ -142,6 +142,38 @@ function checkSourceRepoProtection(
   return null;
 }
 
+/**
+ * 检查文件路径是否匹配 editablePathPatterns 中的某个模式。
+ * 模式相对于 cwd 解析为绝对路径，支持末尾 `*` 通配符：
+ *   "config/personas/*" → 匹配 /cwd/config/personas/ 下的所有文件
+ *   "config/agents.json" → 精确匹配
+ */
+export function matchesEditablePattern(filePath: string, patterns: string[], cwd: string): boolean {
+  const absFile = filePath.startsWith('/') ? filePath : resolve(cwd, filePath);
+  for (const pattern of patterns) {
+    const absPattern = pattern.startsWith('/') ? pattern : resolve(cwd, pattern);
+    if (absPattern.endsWith('/*')) {
+      // 目录通配：匹配目录前缀
+      const dir = absPattern.slice(0, -2); // remove /*
+      if (absFile.startsWith(dir + '/') && !absFile.slice(dir.length + 1).includes('/')) {
+        return true;
+      }
+    } else if (absPattern.endsWith('/**')) {
+      // 递归通配：匹配目录及所有子目录
+      const dir = absPattern.slice(0, -3);
+      if (absFile.startsWith(dir + '/')) {
+        return true;
+      }
+    } else {
+      // 精确匹配
+      if (absFile === absPattern) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 /** 工具名匹配（支持 glob 前缀：'mcp__*' 匹配所有 MCP 工具） */
 function matchToolPattern(toolName: string, pattern: string): boolean {
   if (pattern.endsWith('*')) {
@@ -183,6 +215,8 @@ export interface ExecuteInput extends ExecuteOptions {
   toolDeny?: string[];
   /** Bash 命令白名单正则（readOnly + toolAllow 含 Bash 时生效，仅匹配的命令被放行） */
   bashAllowPatterns?: string[];
+  /** 即使 readOnly 也允许 Edit/Write 的路径 glob 列表（相对于 cwd） */
+  editablePathPatterns?: string[];
   /** 知识文件内容（注入到 system prompt 最前层，优先于 persona/workspace prompt） */
   knowledgeContent?: string;
   /** 上次保存的 system prompt hash（用于自动失效检测，hash 不匹配时跳过 resume） */
@@ -802,6 +836,14 @@ export class ClaudeExecutor {
               } else {
                 logger.info({ toolName }, 'canUseTool allowed — agent toolAllow list');
               }
+              return { behavior: 'allow' as const, updatedInput: inputObj };
+            }
+          }
+          // readOnly 模式下，editablePathPatterns 匹配的路径允许 Edit/Write
+          if (readOnly && (toolName === 'Edit' || toolName === 'Write') && input.editablePathPatterns?.length) {
+            const filePath = String(inputObj.file_path || '');
+            if (filePath && matchesEditablePattern(filePath, input.editablePathPatterns, workingDir ?? process.cwd())) {
+              logger.info({ toolName, filePath: filePath.slice(0, 200) }, 'canUseTool allowed — readOnly but path matches editablePathPatterns');
               return { behavior: 'allow' as const, updatedInput: inputObj };
             }
           }

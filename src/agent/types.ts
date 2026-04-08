@@ -63,6 +63,8 @@ export interface AgentConfig {
   toolDeny?: string[];
   /** Bash 命令白名单正则（readOnly + toolAllow 含 Bash 时生效，仅匹配的命令被放行） */
   bashAllowPatterns?: string[];
+  /** 即使 readOnly 也允许 Edit/Write 的路径 glob 列表（相对于 cwd，如 "config/personas/*"） */
+  editablePathPatterns?: string[];
 }
 
 // ─── Binding 路由 ────────────────────────────────────────
