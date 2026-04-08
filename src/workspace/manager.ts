@@ -202,3 +202,24 @@ export function setupWorkspace(options: SetupWorkspaceOptions): SetupWorkspaceRe
   const warning = fetchFailed ? '仓库缓存更新失败，代码可能不是最新版本' : undefined;
   return { workspacePath, branch: sourceBranch || 'default', repoName, warning };
 }
+
+/**
+ * 从工作区目录名解析仓库名
+ *
+ * 目录名格式: {repoName}-{suffix}-{shortId}
+ * suffix = branchPrefix.replace(/\//g, '-') (writable) 或 'readonly'
+ * shortId = 6 位 hex
+ */
+export function parseRepoNameFromWorkspaceDir(dirName: string): string {
+  // 尝试匹配已知后缀模式: -{suffix}-{6位hex}
+  const branchSuffix = config.workspace.branchPrefix.replace(/\//g, '-');
+  for (const suffix of [branchSuffix, 'readonly']) {
+    const tail = `-${suffix}-`;
+    const idx = dirName.lastIndexOf(tail);
+    if (idx > 0) {
+      return dirName.slice(0, idx);
+    }
+  }
+  // fallback: 原始目录名
+  return dirName;
+}

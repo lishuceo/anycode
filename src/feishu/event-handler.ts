@@ -36,6 +36,7 @@ import { injectMemories } from '../memory/injector.js';
 import { extractMemories } from '../memory/extractor.js';
 import { handleMemoryCommand, handleMemoryCardAction } from '../memory/commands.js';
 import { getRepoIdentity } from '../workspace/identity.js';
+import { parseRepoNameFromWorkspaceDir } from '../workspace/manager.js';
 import { generateQuickAck } from '../utils/quick-ack.js';
 import { checkThreadRelevance } from '../utils/thread-relevance.js';
 import { compressImage, compressImageForHistory } from '../utils/image-compress.js';
@@ -1830,6 +1831,7 @@ export async function executeClaudeTask(
   // 后续 setup_workspace 触发 restart 时会再次覆盖为新工作区信息
   if (greetingMsgId) {
     const { basename: bn } = await import('node:path');
+    const repoName = parseRepoNameFromWorkspaceDir(bn(workingDir));
     let greetingBranch: string | undefined;
     try {
       const { execFileSync } = await import('node:child_process');
@@ -1838,7 +1840,7 @@ export async function executeClaudeTask(
     } catch { /* best-effort */ }
     feishuClient.updateCard(
       greetingMsgId,
-      buildWorkspaceSwitchCard(bn(workingDir), workingDir, greetingBranch, '📂 工作区'),
+      buildWorkspaceSwitchCard(repoName, workingDir, greetingBranch, '📂 工作区'),
     ).catch(err => {
       logger.warn({ err }, 'Failed to update greeting card');
     });
@@ -2115,12 +2117,7 @@ export async function executeClaudeTask(
       // 发送工作区切换卡片（更新 greeting 卡片或独立发送）
       {
         const { basename } = await import('node:path');
-        const dirName = basename(result.newWorkingDir);
-        // 从目录名解析仓库名和分支（格式: repoName-writable-shortId）
-        const parts = dirName.split('-');
-        parts.pop(); // shortId
-        parts.pop(); // writable/readonly
-        const repoName = parts.join('-') || dirName;
+        const repoName = parseRepoNameFromWorkspaceDir(basename(result.newWorkingDir));
         let branch: string | undefined;
         try {
           const { execFileSync } = await import('node:child_process');
