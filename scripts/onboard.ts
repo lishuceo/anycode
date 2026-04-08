@@ -63,8 +63,18 @@ while (round < MAX_ROUNDS) {
         model: process.env.CLAUDE_MODEL || 'claude-sonnet-4-6',
         maxTurns: 50,
         maxBudgetUsd: 5,
-        // 传递环境变量给 Claude Code 子进程（ANTHROPIC_API_KEY、ANTHROPIC_BASE_URL 等）
-        env: process.env as Record<string, string>,
+        // 只传递必要的环境变量给 Claude Code 子进程
+        // 避免 .env 中的其他变量（如 OWNER_USER_ID）干扰 SDK 认证
+        env: (() => {
+          const e: Record<string, string> = {};
+          // 继承系统 PATH 等基础环境
+          for (const [k, v] of Object.entries(process.env)) {
+            if (v != null) e[k] = v;
+          }
+          // 确保清除可能干扰 Claude CLI 的嵌套检测变量
+          delete e.CLAUDECODE;
+          return e;
+        })(),
         // 捕获子进程 stderr 输出（调试用）
         stderr: (data: string) => {
           const trimmed = data.trim();
