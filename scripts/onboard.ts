@@ -10,6 +10,7 @@
  *
  * 用法: npm run onboard 或 npx tsx scripts/onboard.ts
  */
+import 'dotenv/config';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import * as readline from 'node:readline/promises';
 import { getBootstrapPrompt, isOnboardingCompleted } from '../src/onboarding/bootstrap.js';
@@ -61,6 +62,8 @@ while (round < MAX_ROUNDS) {
         model: process.env.CLAUDE_MODEL || 'claude-sonnet-4-6',
         maxTurns: 50,
         maxBudgetUsd: 5,
+        // 传递环境变量给 Claude Code 子进程（ANTHROPIC_API_KEY、ANTHROPIC_BASE_URL 等）
+        env: process.env as Record<string, string>,
         ...(sessionId ? { resume: sessionId } : {}),
         canUseTool: async (_toolName: string, inputObj: Record<string, unknown>) => {
           return { behavior: 'allow' as const, updatedInput: inputObj };
