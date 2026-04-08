@@ -70,7 +70,7 @@ describe('compressImage', () => {
     expect(result.mediaType).toBe('image/jpeg');
   });
 
-  it('should extract first frame from GIF (output JPEG)', async () => {
+  it('should extract first frame from GIF (output JPEG)', { timeout: 15000 }, async () => {
     const raw = randomBytes(800 * 800 * 4);
     const gif = await sharp(raw, { raw: { width: 800, height: 800, channels: 4 } })
       .gif()

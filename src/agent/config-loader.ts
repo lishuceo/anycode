@@ -94,6 +94,7 @@ function mergeAgentConfig(input: AgentConfigInput, defaults: AgentDefaults): Age
     toolAllow,
     toolDeny,
     bashAllowPatterns: input.bashAllowPatterns,
+    editablePathPatterns: input.editablePathPatterns ?? defaults.editablePathPatterns,
   };
 }
 

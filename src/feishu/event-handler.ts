@@ -1095,6 +1095,68 @@ async function handleSlashCommand(
     return true;
   }
 
+  // /config - 查看当前 agent 配置
+  if (trimmed === '/config') {
+    if (!isOwner(userId)) {
+      const reply = '⚠️ 只有管理员可以使用 /config 命令';
+      if (threadReplyMsgId) {
+        await feishuClient.replyTextInThread(threadReplyMsgId, reply);
+      } else {
+        await feishuClient.replyText(messageId, reply);
+      }
+      return true;
+    }
+
+    const agentCfg = agentRegistry.get(agentId);
+    const cfgInfo = getAgentConfigInfo(agentId);
+    const personaContent = readPersonaFile(agentId);
+    const knowledgeContent = loadKnowledgeContent(agentId);
+
+    const lines: string[] = [
+      `🔧 **Agent 配置 — ${agentId}**`,
+      '',
+      `**显示名称**: ${agentCfg?.displayName ?? '(未配置)'}`,
+      `**飞书 Bot 名**: ${feishuClient.botName ?? '(未获取)'}`,
+      `**模型**: ${agentCfg?.model ?? '(默认)'}`,
+      `**工具策略**: ${agentCfg?.toolPolicy ?? '(默认)'}`,
+      `**回复模式**: ${agentCfg?.replyMode ?? '(默认)'}`,
+      `**需要审批**: ${agentCfg?.requiresApproval ? '是' : '否'}`,
+      `**预算**: $${agentCfg?.maxBudgetUsd ?? '?'} / ${agentCfg?.maxTurns ?? '?'} turns`,
+    ];
+
+    if (agentCfg?.editablePathPatterns?.length) {
+      lines.push(`**可编辑路径**: ${agentCfg.editablePathPatterns.join(', ')}`);
+    }
+
+    lines.push('');
+    if (cfgInfo) {
+      lines.push(`**配置文件**: ${cfgInfo.configFile}`);
+      if (cfgInfo.personaFile) lines.push(`**人设文件**: ${cfgInfo.personaFile}`);
+      if (cfgInfo.knowledgeDir) lines.push(`**知识目录**: ${cfgInfo.knowledgeDir}`);
+      if (cfgInfo.knowledgeFiles.length > 0) {
+        lines.push(`**知识文件**: ${cfgInfo.knowledgeFiles.join(', ')}`);
+      }
+    }
+
+    if (personaContent) {
+      const preview = personaContent.length > 200 ? personaContent.slice(0, 200) + '...' : personaContent;
+      lines.push('', '**── 人设内容 ──**', preview);
+    }
+
+    if (knowledgeContent) {
+      const preview = knowledgeContent.length > 200 ? knowledgeContent.slice(0, 200) + '...' : knowledgeContent;
+      lines.push('', '**── 知识内容 ──**', preview);
+    }
+
+    const reply = lines.join('\n');
+    if (threadReplyMsgId) {
+      await feishuClient.replyTextInThread(threadReplyMsgId, reply);
+    } else {
+      await feishuClient.replyText(messageId, reply);
+    }
+    return true;
+  }
+
   // /help - 帮助
   if (trimmed === '/help') {
     const helpLines: string[] = [
@@ -1106,6 +1168,7 @@ async function handleSlashCommand(
       '`/status` — 查看当前会话状态（工作目录、队列）',
       '`/reset` — 重置会话，清除对话历史',
       '`/stop` — 中断当前正在执行的任务',
+      '`/config` — 查看当前 Agent 配置和人设 🔒',
       '`/help` — 显示此帮助',
       '',
       '**── 工作区 ──**',
@@ -1704,8 +1767,23 @@ async function injectQuotedMessage(
  * 2. 群内其他 bot 的名称（可通过 @名称 与其交互）
  * 3. 与其他 bot 交互的正确方式（在回复中 @，而非 send_to_chat）
  */
-export function buildBotIdentityContext(chatId: string): string | undefined {
-  if (!isMultiBotMode()) return undefined;
+export function buildBotIdentityContext(chatId: string, agentId?: string): string | undefined {
+  if (!isMultiBotMode()) {
+    // 单 bot 模式：从飞书 API 获取的 botName + agent displayName 构建身份
+    const botName = feishuClient.botName;
+    const agentCfg = agentId ? agentRegistry.get(agentId) : undefined;
+    const displayName = agentCfg?.displayName;
+    // 至少有一个名字才注入
+    const name = displayName || botName;
+    if (!name) return undefined;
+    const lines = [`## 你的身份`];
+    if (displayName && botName && displayName !== botName) {
+      lines.push(`你的名字是"${displayName}"，在飞书中显示为"${botName}"。`);
+    } else {
+      lines.push(`你的名字是"${name}"。`);
+    }
+    return lines.join('\n');
+  }
 
   const accountId = feishuClientContext.getStore();
   if (!accountId) return undefined;
@@ -2043,7 +2121,7 @@ export async function executeClaudeTask(
       : '';
 
     // Bot 身份上下文（多 bot 模式下告诉 agent 自己是谁、群内有哪些其他 bot）
-    const botIdentityContext = buildBotIdentityContext(chatId);
+    const botIdentityContext = buildBotIdentityContext(chatId, agentId);
 
     // AskUserQuestion 回调：将 Claude 的提问渲染为飞书交互卡片
     const onAskUser = createAskUserHandler(chatId, () => threadReplyMsgId);
@@ -2060,6 +2138,7 @@ export async function executeClaudeTask(
       toolAllow: agentCfg?.toolAllow,
       toolDeny: agentCfg?.toolDeny,
       bashAllowPatterns: agentCfg?.bashAllowPatterns,
+      editablePathPatterns: agentCfg?.editablePathPatterns,
       resumeSessionId: canResume ? activeConversationId : undefined,
       storedSystemPromptHash: activePromptHash,
       botIdentityContext,
@@ -2154,6 +2233,7 @@ export async function executeClaudeTask(
         settingSources: agentCfg?.settingSources,
         toolAllow: agentCfg?.toolAllow,
         toolDeny: agentCfg?.toolDeny,
+        editablePathPatterns: agentCfg?.editablePathPatterns,
         onProgress,
         onTurn,
         historySummaries,
@@ -2527,7 +2607,7 @@ export async function executeDirectTask(
       : '';
 
     // Bot 身份上下文（多 bot 模式下告诉 agent 自己是谁、群内有哪些其他 bot）
-    const botIdentityContext = buildBotIdentityContext(chatId);
+    const botIdentityContext = buildBotIdentityContext(chatId, agentId);
 
     // AskUserQuestion 回调（与 executeClaudeTask 共享逻辑）
     const onAskUserDirect = createAskUserHandler(chatId, () => threadReplyMsgId);
@@ -2542,6 +2622,7 @@ export async function executeDirectTask(
       maxBudgetUsd: agentCfg.maxBudgetUsd,
       toolAllow: agentCfg.toolAllow,
       toolDeny: agentCfg.toolDeny,
+      editablePathPatterns: agentCfg.editablePathPatterns,
       settingSources: agentCfg.settingSources,
       knowledgeContent: loadKnowledgeContent(agentId),
       memoryContext,

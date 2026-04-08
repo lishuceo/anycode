@@ -7,12 +7,13 @@
     "maxBudgetUsd": 5,
     "maxTurns": 100,
     "requiresApproval": false,
-    "settingSources": ["user", "project"]
+    "settingSources": ["user", "project"],
+    "editablePathPatterns": ["config/personas/*", "config/knowledge/*"]
   },
   "agents": [
     {
       "id": "pm",
-      "displayName": "PM Bot",
+      "displayName": "<onboarding 中设定>",
       "model": "claude-opus-4-6",
       "replyMode": "direct",
       "toolPolicy": {
@@ -20,12 +21,12 @@
         "allow": ["Skill", "Bash"]
       },
       "bashAllowPatterns": ["^(ls|cat|head|tail|wc|find|grep|git (log|status|diff|show|branch))"],
-      "persona": "./personas/pm.md",
+      "persona": "./personas/assistant.md",
       "knowledge": ["team.md"]
     },
     {
       "id": "dev",
-      "displayName": "DevBot",
+      "displayName": "<onboarding 中设定>",
       "model": "claude-opus-4-6",
       "toolPolicy": "all",
       "replyMode": "thread",
