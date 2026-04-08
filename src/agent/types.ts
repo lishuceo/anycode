@@ -65,6 +65,8 @@ export interface AgentConfig {
   bashAllowPatterns?: string[];
   /** 即使 readOnly 也允许 Edit/Write 的路径 glob 列表（相对于 cwd，如 "config/personas/*"） */
   editablePathPatterns?: string[];
+  /** 飞书应用凭证（从 agents.json 加载） */
+  feishu?: { appId: string; appSecret: string };
 }
 
 // ─── Binding 路由 ────────────────────────────────────────

@@ -1,5 +1,5 @@
 import fs from 'node:fs';
-import { config, validateConfig, isMultiBotMode } from './config.js';
+import { config, validateConfig, isMultiBotMode, setMultiBotMode } from './config.js';
 import { logger } from './utils/logger.js';
 import { startServer, closeServer } from './server.js';
 import { sessionManager } from './session/manager.js';
@@ -8,11 +8,11 @@ import { cleanupTmpDirs, cleanupExpiredCaches } from './workspace/cache.js';
 import { pipelineStore } from './pipeline/store.js';
 import { recoverInterruptedPipelines } from './pipeline/runner.js';
 import { killOrphanedClaudeProcesses } from './utils/process-cleanup.js';
-import { feishuClient, runWithAccountId } from './feishu/client.js';
+import { feishuClient, initDefaultClient, runWithAccountId } from './feishu/client.js';
 import { cleanupExpiredApprovals } from './feishu/approval.js';
 import { accountManager } from './feishu/multi-account.js';
 import { validateBindings } from './agent/router.js';
-import { loadAgentConfig, startConfigWatcher, stopConfigWatcher, reloadAgentConfig } from './agent/config-loader.js';
+import { loadAgentConfig, startConfigWatcher, stopConfigWatcher, reloadAgentConfig, deriveBotAccounts, deriveBindings, getExplicitBindings } from './agent/config-loader.js';
 import { chatBotRegistry } from './feishu/bot-registry.js';
 import { initializeMemory, closeMemory, runMemoryMaintenance } from './memory/init.js';
 import { warmup as warmupQuickAck } from './utils/quick-ack.js';
@@ -28,29 +28,42 @@ const INTERRUPTED_SESSIONS_FILE = '/tmp/anycode-interrupted.json';
 async function main(): Promise<void> {
   logger.info('Starting Feishu Claude Code Bridge...');
 
-  // 检查配置
+  // 检查基础配置
   const errors = validateConfig();
   if (errors.length > 0) {
     for (const err of errors) {
       logger.error(err);
     }
-    logger.error('Please check your .env configuration');
     process.exit(1);
   }
+
+  // 加载 agent 配置文件（含飞书凭证）
+  const agentConfigResult = loadAgentConfig();
+  if (!agentConfigResult.loaded) {
+    logger.error({ error: agentConfigResult.error }, 'Failed to load agents.json — cannot start without agent config');
+    logger.error('Run "npm run onboard" to create config/agents.json, or copy from config/agents.example.json');
+    process.exit(1);
+  }
+
+  // 从 agent 配置推导 bot 账号
+  const botAccounts = deriveBotAccounts();
+  if (botAccounts.length === 0) {
+    logger.error('No feishu credentials found in agents.json — each agent needs a "feishu" field with appId and appSecret');
+    process.exit(1);
+  }
+
+  const multiBotMode = botAccounts.length > 1;
+  setMultiBotMode(multiBotMode);
+
+  // 合并 bindings：显式配置 > 自动推导
+  const allBindings = [...getExplicitBindings(), ...deriveBindings()];
 
   logger.info({
     defaultWorkDir: config.claude.defaultWorkDir,
     timeoutSeconds: config.claude.timeoutSeconds,
-    multiBotMode: isMultiBotMode(),
+    multiBotMode,
+    botAccounts: botAccounts.map(a => a.accountId),
   }, 'Configuration loaded');
-
-  // 加载 agent 配置文件（热重载支持）
-  const agentConfigResult = loadAgentConfig();
-  if (agentConfigResult.error && config.agent.configPath) {
-    // 显式配置了 AGENT_CONFIG_PATH 但加载失败 → 致命错误
-    logger.error({ error: agentConfigResult.error }, 'Failed to load AGENT_CONFIG_PATH');
-    process.exit(1);
-  }
 
   // 启动配置文件监听（热重载）
   startConfigWatcher();
@@ -131,24 +144,26 @@ async function main(): Promise<void> {
   // 预热 quick-ack client（避免首次调用冷启动）
   warmupQuickAck();
 
-  // 初始化 bot 账号
-  if (isMultiBotMode()) {
+  // 初始化 bot 账号（从 agents.json 的 feishu 字段推导）
+  if (multiBotMode) {
     // 多 bot 模式：初始化所有账号
-    await accountManager.initialize(config.agent.botAccounts);
+    await accountManager.initialize(botAccounts);
 
     // 校验 binding 配置
-    const bindingWarnings = validateBindings(config.agent.bindings);
+    const bindingWarnings = validateBindings(allBindings);
     for (const w of bindingWarnings) {
       logger.warn({ warning: w }, 'Agent binding configuration warning');
     }
 
     logger.info({
-      accounts: config.agent.botAccounts.map((a) => a.accountId),
-      bindings: config.agent.bindings.length,
+      accounts: botAccounts.map((a) => a.accountId),
+      bindings: allBindings.length,
     }, 'Multi-bot mode initialized');
   } else {
-    // 单 bot 模式：向后兼容
-    accountManager.initializeSingleBot(config.feishu.appId, config.feishu.appSecret);
+    // 单 bot 模式
+    const bot = botAccounts[0];
+    initDefaultClient(bot.appId, bot.appSecret);
+    accountManager.initializeSingleBot(bot.appId, bot.appSecret, bot.botName);
 
     // 获取机器人信息（用于精确 @mention 检测）
     await feishuClient.fetchBotInfo().catch((err) => {
@@ -157,7 +172,7 @@ async function main(): Promise<void> {
   }
 
   // 启动 HTTP 服务
-  startServer();
+  startServer(multiBotMode ? undefined : { appId: botAccounts[0].appId, appSecret: botAccounts[0].appSecret });
 
   // 恢复被中断的管道（服务重启后通知用户）
   recoverInterruptedPipelines().catch((err) => {

@@ -15,7 +15,7 @@ import { logger } from '../utils/logger.js';
 import { agentRegistry } from './registry.js';
 import { AgentConfigFileSchema } from './config-schema.js';
 import type { AgentDefaults, AgentConfigInput, ToolPolicyValue } from './config-schema.js';
-import type { AgentConfig, ToolPolicy } from './types.js';
+import type { AgentConfig, ToolPolicy, BotAccountConfig, AgentBinding } from './types.js';
 
 // ─── 内置默认值（无配置文件时的 fallback） ───────────────────
 
@@ -37,6 +37,8 @@ let configFilePath: string | undefined;
 let configFileDir: string | undefined;
 /** 知识文件根目录（resolved absolute path） */
 let knowledgeDirPath: string | undefined;
+/** 配置文件中的显式 bindings */
+let explicitBindings: AgentBinding[] = [];
 /** 文件监听是否活跃 */
 let watcherActive = false;
 /** 重载防抖定时器 */
@@ -95,6 +97,7 @@ function mergeAgentConfig(input: AgentConfigInput, defaults: AgentDefaults): Age
     toolDeny,
     bashAllowPatterns: input.bashAllowPatterns,
     editablePathPatterns: input.editablePathPatterns ?? defaults.editablePathPatterns,
+    feishu: input.feishu,
   };
 }
 
@@ -179,6 +182,12 @@ export function reloadAgentConfig(): LoadResult {
     } else {
       knowledgeDirPath = undefined;
     }
+
+    // 保存显式 bindings
+    explicitBindings = (configFile.bindings ?? []).map(b => ({
+      agentId: b.agentId,
+      match: b.match,
+    }));
 
     // 合并每个 agent
     const agents = configFile.agents.map(input => mergeAgentConfig(input, defaults));
@@ -280,6 +289,73 @@ export function loadKnowledgeContent(agentId: string): string | undefined {
   }
 
   return parts.length > 0 ? parts.join('\n\n') : undefined;
+}
+
+// ─── 飞书凭证推导 ─────────────────────────────────────────
+
+/**
+ * 从 agents.json 的 feishu 字段推导 bot 账号列表。
+ * 按 appId 去重，多个 agent 共享同一 appId 时只创建一个 bot 账号。
+ * 返回空数组表示没有配置飞书凭证。
+ */
+export function deriveBotAccounts(): BotAccountConfig[] {
+  const agents = agentRegistry.list();
+  const seen = new Map<string, BotAccountConfig>();
+
+  for (const agent of agents) {
+    if (!agent.feishu) continue;
+    const { appId, appSecret } = agent.feishu;
+    if (seen.has(appId)) continue;
+
+    seen.set(appId, {
+      accountId: agent.id, // 用第一个使用此 appId 的 agent id 作为 accountId
+      appId,
+      appSecret,
+      botName: agent.displayName,
+    });
+  }
+
+  return [...seen.values()];
+}
+
+/**
+ * 从 agents.json 的 feishu 字段自动推导 bindings。
+ * 仅在多 bot 模式（多个不同 appId）时生成。
+ * 单 bot 模式返回空数组，使用默认路由逻辑。
+ */
+export function deriveBindings(): AgentBinding[] {
+  const agents = agentRegistry.list();
+  const appIdToAccountId = new Map<string, string>();
+  const bindings: AgentBinding[] = [];
+
+  // 先建立 appId → accountId 映射
+  for (const agent of agents) {
+    if (!agent.feishu) continue;
+    if (!appIdToAccountId.has(agent.feishu.appId)) {
+      appIdToAccountId.set(agent.feishu.appId, agent.id);
+    }
+  }
+
+  // 只有一个唯一 appId → 单 bot，不需要自动 binding
+  if (appIdToAccountId.size <= 1) return [];
+
+  // 多 bot：每个 agent 绑定到其 appId 对应的 accountId
+  for (const agent of agents) {
+    if (!agent.feishu) continue;
+    const accountId = appIdToAccountId.get(agent.feishu.appId);
+    if (!accountId) continue;
+    bindings.push({
+      agentId: agent.id,
+      match: { accountId },
+    });
+  }
+
+  return bindings;
+}
+
+/** 获取配置文件中用户显式配置的 bindings */
+export function getExplicitBindings(): AgentBinding[] {
+  return explicitBindings;
 }
 
 // ─── 热重载 Watcher ────────────────────────────────────────

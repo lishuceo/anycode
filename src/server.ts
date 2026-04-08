@@ -25,16 +25,18 @@ let httpServer: Server | undefined;
  *      - 不需要公网 IP，不需要配置回调地址
  *      - 适合开发调试、没有公网 IP 的场景
  */
-export function startServer(): void {
+export function startServer(primaryBot?: { appId: string; appSecret: string }): void {
   const { port } = config.server;
   const eventDispatcher = createEventDispatcher();
 
   if (isMultiBotMode()) {
     startMultiBotWebSocketMode(eventDispatcher, port);
   } else if (config.feishu.eventMode === 'websocket') {
-    startWebSocketMode(eventDispatcher, port);
+    if (!primaryBot) throw new Error('primaryBot is required for single-bot WebSocket mode');
+    startWebSocketMode(eventDispatcher, port, primaryBot);
   } else {
-    startWebhookMode(eventDispatcher, port);
+    if (!primaryBot) throw new Error('primaryBot is required for single-bot webhook mode');
+    startWebhookMode(eventDispatcher, port, primaryBot);
   }
 }
 
@@ -66,7 +68,7 @@ function registerOAuthRoute(app: express.Express): void {
 // 模式一: HTTP Webhook (需要公网)
 // ============================================================
 
-function startWebhookMode(eventDispatcher: lark.EventDispatcher, port: number): void {
+function startWebhookMode(eventDispatcher: lark.EventDispatcher, port: number, _bot: { appId: string; appSecret: string }): void {
   const app = express();
   app.use(express.json());
   registerOAuthRoute(app);
@@ -101,11 +103,11 @@ function startWebhookMode(eventDispatcher: lark.EventDispatcher, port: number): 
 // 模式二: WebSocket 长连接 (无需公网)
 // ============================================================
 
-function startWebSocketMode(eventDispatcher: lark.EventDispatcher, port: number): void {
+function startWebSocketMode(eventDispatcher: lark.EventDispatcher, port: number, bot: { appId: string; appSecret: string }): void {
   // WSClient 主动连接飞书，通过 WebSocket 接收事件
   const wsClient = new lark.WSClient({
-    appId: config.feishu.appId,
-    appSecret: config.feishu.appSecret,
+    appId: bot.appId,
+    appSecret: bot.appSecret,
   });
 
   // 将 EventDispatcher 传给 WSClient

@@ -14,6 +14,10 @@
     {
       "id": "pm",
       "displayName": "<onboarding 中设定>",
+      "feishu": {
+        "appId": "<飞书应用 App ID>",
+        "appSecret": "<飞书应用 App Secret>"
+      },
       "model": "claude-opus-4-6",
       "replyMode": "direct",
       "toolPolicy": {
@@ -27,6 +31,10 @@
     {
       "id": "dev",
       "displayName": "<onboarding 中设定>",
+      "feishu": {
+        "appId": "<同上，共享同一个飞书应用>",
+        "appSecret": "<同上>"
+      },
       "model": "claude-opus-4-6",
       "toolPolicy": "all",
       "replyMode": "thread",

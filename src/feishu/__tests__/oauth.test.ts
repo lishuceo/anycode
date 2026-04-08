@@ -9,11 +9,16 @@ vi.mock('../../utils/logger.js', () => ({
 vi.mock('../../config.js', () => ({
   config: {
     feishu: {
-      appId: 'cli_test_app_id',
-      appSecret: 'test_app_secret_32bytes_long_xxx',
       oauth: { redirectUri: 'https://example.com/feishu/oauth/callback', scopes: 'task:task:read task:task:write' },
     },
   },
+}));
+
+// Mock config-loader (deriveBotAccounts returns test credentials)
+vi.mock('../../agent/config-loader.js', () => ({
+  deriveBotAccounts: () => [
+    { accountId: 'test', appId: 'cli_test_app_id', appSecret: 'test_app_secret_32bytes_long_xxx', botName: 'TestBot' },
+  ],
 }));
 
 // Mock feishuClient + feishuClientContext
