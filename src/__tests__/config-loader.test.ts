@@ -43,7 +43,7 @@ describe('AgentConfigFileSchema', () => {
         maxTurns: 100,
       },
       agents: [
-        { id: 'pm', displayName: '土豆儿', replyMode: 'direct' },
+        { id: 'pm', displayName: 'Alice', replyMode: 'direct' },
         { id: 'dev', displayName: 'DevBot', model: 'claude-opus-4-6', toolPolicy: 'all', maxBudgetUsd: 50 },
       ],
     });
@@ -126,7 +126,7 @@ describe('AgentRegistry.replaceAll', () => {
     const { agentRegistry } = await import('../agent/registry.js');
     // Seed agents (registry starts empty)
     agentRegistry.replaceAll([
-      { id: 'pm', displayName: '土豆儿', model: 'claude-sonnet-4-6', toolPolicy: 'readonly', readOnly: true, settingSources: ['user', 'project'], maxBudgetUsd: 5, maxTurns: 100, requiresApproval: false, replyMode: 'direct' },
+      { id: 'pm', displayName: 'Alice', model: 'claude-sonnet-4-6', toolPolicy: 'readonly', readOnly: true, settingSources: ['user', 'project'], maxBudgetUsd: 5, maxTurns: 100, requiresApproval: false, replyMode: 'direct' },
       { id: 'dev', displayName: 'DevBot', model: 'claude-opus-4-6', toolPolicy: 'all', readOnly: false, settingSources: ['user', 'project'], maxBudgetUsd: 50, maxTurns: 500, requiresApproval: true, replyMode: 'thread' },
     ]);
     expect(agentRegistry.get('pm')).toBeDefined();
@@ -161,7 +161,7 @@ describe('AgentRegistry.replaceAll', () => {
     agentRegistry.replaceAll([
       {
         id: 'pm',
-        displayName: '土豆儿',
+        displayName: 'Alice',
         model: 'claude-sonnet-4-6',
         toolPolicy: 'readonly',
         readOnly: true,
@@ -197,7 +197,7 @@ describe('AgentRegistry.replaceAll', () => {
 
     // Restore
     agentRegistry.replaceAll([
-      { id: 'pm', displayName: '土豆儿', model: 'claude-sonnet-4-6', toolPolicy: 'readonly', readOnly: true, settingSources: ['user', 'project'], maxBudgetUsd: 5, maxTurns: 100, requiresApproval: false, replyMode: 'direct' },
+      { id: 'pm', displayName: 'Alice', model: 'claude-sonnet-4-6', toolPolicy: 'readonly', readOnly: true, settingSources: ['user', 'project'], maxBudgetUsd: 5, maxTurns: 100, requiresApproval: false, replyMode: 'direct' },
       { id: 'dev', displayName: 'DevBot', model: 'claude-opus-4-6', toolPolicy: 'all', readOnly: false, settingSources: ['user', 'project'], maxBudgetUsd: 50, maxTurns: 500, requiresApproval: true, replyMode: 'thread' },
     ]);
   });
@@ -214,7 +214,7 @@ describe('AgentRegistry.replaceAll', () => {
 
     // Restore
     agentRegistry.replaceAll([
-      { id: 'pm', displayName: '土豆儿', model: 'claude-sonnet-4-6', toolPolicy: 'readonly', readOnly: true, settingSources: ['user', 'project'], maxBudgetUsd: 5, maxTurns: 100, requiresApproval: false, replyMode: 'direct' },
+      { id: 'pm', displayName: 'Alice', model: 'claude-sonnet-4-6', toolPolicy: 'readonly', readOnly: true, settingSources: ['user', 'project'], maxBudgetUsd: 5, maxTurns: 100, requiresApproval: false, replyMode: 'direct' },
       { id: 'dev', displayName: 'DevBot', model: 'claude-opus-4-6', toolPolicy: 'all', readOnly: false, settingSources: ['user', 'project'], maxBudgetUsd: 50, maxTurns: 500, requiresApproval: true, replyMode: 'thread' },
     ]);
   });
@@ -286,7 +286,7 @@ describe('config-loader', () => {
 
       // Restore
       agentRegistry.replaceAll([
-        { id: 'pm', displayName: '土豆儿', model: 'claude-sonnet-4-6', toolPolicy: 'readonly', readOnly: true, settingSources: ['user', 'project'], maxBudgetUsd: 5, maxTurns: 100, requiresApproval: false, replyMode: 'direct' },
+        { id: 'pm', displayName: 'Alice', model: 'claude-sonnet-4-6', toolPolicy: 'readonly', readOnly: true, settingSources: ['user', 'project'], maxBudgetUsd: 5, maxTurns: 100, requiresApproval: false, replyMode: 'direct' },
         { id: 'dev', displayName: 'DevBot', model: 'claude-opus-4-6', toolPolicy: 'all', readOnly: false, settingSources: ['user', 'project'], maxBudgetUsd: 50, maxTurns: 500, requiresApproval: true, replyMode: 'thread' },
       ]);
     });
@@ -318,7 +318,7 @@ describe('config-loader', () => {
       // Restore
       const { agentRegistry } = await import('../agent/registry.js');
       agentRegistry.replaceAll([
-        { id: 'pm', displayName: '土豆儿', model: 'claude-sonnet-4-6', toolPolicy: 'readonly', readOnly: true, settingSources: ['user', 'project'], maxBudgetUsd: 5, maxTurns: 100, requiresApproval: false, replyMode: 'direct' },
+        { id: 'pm', displayName: 'Alice', model: 'claude-sonnet-4-6', toolPolicy: 'readonly', readOnly: true, settingSources: ['user', 'project'], maxBudgetUsd: 5, maxTurns: 100, requiresApproval: false, replyMode: 'direct' },
         { id: 'dev', displayName: 'DevBot', model: 'claude-opus-4-6', toolPolicy: 'all', readOnly: false, settingSources: ['user', 'project'], maxBudgetUsd: 50, maxTurns: 500, requiresApproval: true, replyMode: 'thread' },
       ]);
     });
@@ -412,7 +412,7 @@ describe('merge logic (via schema + registry)', () => {
     // Cleanup
     rmSync(tmpDir2, { recursive: true, force: true });
     agentRegistry.replaceAll([
-      { id: 'pm', displayName: '土豆儿', model: 'claude-sonnet-4-6', toolPolicy: 'readonly', readOnly: true, settingSources: ['user', 'project'], maxBudgetUsd: 5, maxTurns: 100, requiresApproval: false, replyMode: 'direct' },
+      { id: 'pm', displayName: 'Alice', model: 'claude-sonnet-4-6', toolPolicy: 'readonly', readOnly: true, settingSources: ['user', 'project'], maxBudgetUsd: 5, maxTurns: 100, requiresApproval: false, replyMode: 'direct' },
       { id: 'dev', displayName: 'DevBot', model: 'claude-opus-4-6', toolPolicy: 'all', readOnly: false, settingSources: ['user', 'project'], maxBudgetUsd: 50, maxTurns: 500, requiresApproval: true, replyMode: 'thread' },
     ]);
   });

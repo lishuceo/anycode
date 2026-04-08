@@ -138,10 +138,10 @@ describe('resolveMentions', () => {
       { memberId: 'ou_user1', name: '张三', memberIdType: 'open_id' },
     ]);
     mockGetBots.mockReturnValue([
-      { openId: 'ou_bot1', name: '土豆儿', source: 'message_sender', discoveredAt: Date.now() },
+      { openId: 'ou_bot1', name: 'Alice', source: 'message_sender', discoveredAt: Date.now() },
     ]);
 
-    const result = await resolveMentions('@土豆儿 帮我看看', 'chat_123');
+    const result = await resolveMentions('@Alice 帮我看看', 'chat_123');
     expect(result).toEqual([
       [
         { tag: 'at', user_id: 'ou_bot1' },
@@ -155,10 +155,10 @@ describe('resolveMentions', () => {
       { memberId: 'ou_user1', name: '张三', memberIdType: 'open_id' },
     ]);
     mockGetBots.mockReturnValue([
-      { openId: 'ou_bot1', name: '土豆儿', source: 'message_sender', discoveredAt: Date.now() },
+      { openId: 'ou_bot1', name: 'Alice', source: 'message_sender', discoveredAt: Date.now() },
     ]);
 
-    const result = await resolveMentions('@张三 @土豆儿 你们看看', 'chat_123');
+    const result = await resolveMentions('@张三 @Alice 你们看看', 'chat_123');
     expect(result).toEqual([
       [
         { tag: 'at', user_id: 'ou_user1' },

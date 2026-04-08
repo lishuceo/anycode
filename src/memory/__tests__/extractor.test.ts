@@ -613,7 +613,7 @@ describe('entity-orphan guard — real incident reproduction', () => {
 
     // Conversation is about 袁满, NOT 罗文锋
     const conversation = [
-      '[杨志]: @土豆儿 分析一下这份简历',
+      '[杨志]: @Alice 分析一下这份简历',
       '[助手]: 我来分析袁满的简历。袁满拥有7年游戏开发经验...',
     ].join('\n');
 

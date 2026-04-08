@@ -81,7 +81,7 @@ describe('checkThreadRelevance', () => {
       choices: [{ message: { content: '{"respond": true}' } }],
     });
 
-    const result = await checkThreadRelevance('帮我查一下这个bug', '土豆儿');
+    const result = await checkThreadRelevance('帮我查一下这个bug', 'Alice');
     expect(result).toBe(true);
   });
 
@@ -90,7 +90,7 @@ describe('checkThreadRelevance', () => {
       choices: [{ message: { content: '{"respond": false}' } }],
     });
 
-    const result = await checkThreadRelevance('@赵天一 这个项目不典型了', '土豆儿');
+    const result = await checkThreadRelevance('@赵天一 这个项目不典型了', 'Alice');
     expect(result).toBe(false);
   });
 

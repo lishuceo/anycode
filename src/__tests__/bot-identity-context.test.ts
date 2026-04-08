@@ -174,17 +174,17 @@ describe('buildBotIdentityContext', () => {
     mockGetStore.mockReturnValue('dev');
     mockGetAccount.mockReturnValue({
       accountId: 'dev',
-      botName: '张全栈',
+      botName: 'Bob',
       botOpenId: 'ou_dev',
     });
     mockGetAllBotOpenIds.mockReturnValue(new Set(['ou_dev']));
     mockGetBots.mockReturnValue([]);
     mockAllAccounts.mockReturnValue([
-      { accountId: 'dev', botName: '张全栈', botOpenId: 'ou_dev' },
+      { accountId: 'dev', botName: 'Bob', botOpenId: 'ou_dev' },
     ]);
 
     const result = buildBotIdentityContext('chat1');
-    expect(result).toContain('张全栈');
+    expect(result).toContain('Bob');
     expect(result).toContain('你的身份');
   });
 
@@ -193,23 +193,23 @@ describe('buildBotIdentityContext', () => {
     mockGetStore.mockReturnValue('dev');
     mockGetAccount.mockReturnValue({
       accountId: 'dev',
-      botName: '张全栈',
+      botName: 'Bob',
       botOpenId: 'ou_dev',
     });
     mockGetAllBotOpenIds.mockReturnValue(new Set(['ou_dev', 'ou_pm']));
     mockGetBots.mockReturnValue([
-      { openId: 'ou_pm_cross', name: '土豆儿', source: 'message_sender', discoveredAt: Date.now() },
+      { openId: 'ou_pm_cross', name: 'Alice', source: 'message_sender', discoveredAt: Date.now() },
     ]);
     mockAllAccounts.mockReturnValue([
-      { accountId: 'dev', botName: '张全栈', botOpenId: 'ou_dev' },
-      { accountId: 'pm', botName: '土豆儿', botOpenId: 'ou_pm' },
+      { accountId: 'dev', botName: 'Bob', botOpenId: 'ou_dev' },
+      { accountId: 'pm', botName: 'Alice', botOpenId: 'ou_pm' },
     ]);
 
     const result = buildBotIdentityContext('chat1');
-    expect(result).toContain('张全栈');
-    expect(result).toContain('土豆儿');
+    expect(result).toContain('Bob');
+    expect(result).toContain('Alice');
     expect(result).toContain('群内其他机器人');
-    expect(result).toContain('@土豆儿');
+    expect(result).toContain('@Alice');
     expect(result).toContain('不要使用 feishu_send_to_chat');
   });
 
@@ -218,28 +218,28 @@ describe('buildBotIdentityContext', () => {
     mockGetStore.mockReturnValue('dev');
     mockGetAccount.mockReturnValue({
       accountId: 'dev',
-      botName: '张全栈',
+      botName: 'Bob',
       botOpenId: 'ou_dev',
     });
     mockGetAllBotOpenIds.mockReturnValue(new Set(['ou_dev', 'ou_pm']));
-    // Registry already has 土豆儿
+    // Registry already has Alice
     mockGetBots.mockReturnValue([
-      { openId: 'ou_pm_cross', name: '土豆儿', source: 'message_sender', discoveredAt: Date.now() },
+      { openId: 'ou_pm_cross', name: 'Alice', source: 'message_sender', discoveredAt: Date.now() },
     ]);
-    // Managed accounts also has 土豆儿
+    // Managed accounts also has Alice
     mockAllAccounts.mockReturnValue([
-      { accountId: 'dev', botName: '张全栈', botOpenId: 'ou_dev' },
-      { accountId: 'pm', botName: '土豆儿', botOpenId: 'ou_pm' },
+      { accountId: 'dev', botName: 'Bob', botOpenId: 'ou_dev' },
+      { accountId: 'pm', botName: 'Alice', botOpenId: 'ou_pm' },
     ]);
 
     const result = buildBotIdentityContext('chat1')!;
-    // 土豆儿 should appear exactly once in the bot list
-    const matches = result.match(/土豆儿/g);
+    // Alice should appear exactly once in the bot list
+    const matches = result.match(/Alice/g);
     // 3 occurrences: once in the list, once in the @example, and it's deduplicated from managed
-    // Actually: "- 土豆儿" in list + "@土豆儿" in instruction = at least 2
+    // Actually: "- Alice" in list + "@Alice" in instruction = at least 2
     expect(matches).toBeTruthy();
-    // No duplicate "- 土豆儿" entries
-    const listEntries = result.match(/^- 土豆儿$/gm);
+    // No duplicate "- Alice" entries
+    const listEntries = result.match(/^- Alice$/gm);
     expect(listEntries).toHaveLength(1);
   });
 
@@ -248,24 +248,24 @@ describe('buildBotIdentityContext', () => {
     mockGetStore.mockReturnValue('dev');
     mockGetAccount.mockReturnValue({
       accountId: 'dev',
-      botName: '张全栈',
+      botName: 'Bob',
       botOpenId: 'ou_dev',
     });
     mockGetAllBotOpenIds.mockReturnValue(new Set(['ou_dev']));
     // Registry has self bot (cross-app perspective might use different open_id)
     mockGetBots.mockReturnValue([
-      { openId: 'ou_dev', name: '张全栈', source: 'message_sender', discoveredAt: Date.now() },
+      { openId: 'ou_dev', name: 'Bob', source: 'message_sender', discoveredAt: Date.now() },
       { openId: 'ou_other', name: '大师', source: 'event_added', discoveredAt: Date.now() },
     ]);
     mockAllAccounts.mockReturnValue([
-      { accountId: 'dev', botName: '张全栈', botOpenId: 'ou_dev' },
+      { accountId: 'dev', botName: 'Bob', botOpenId: 'ou_dev' },
     ]);
 
     const result = buildBotIdentityContext('chat1')!;
     expect(result).toContain('大师');
-    // 张全栈 appears in self identity but not in other bots list
+    // Bob appears in self identity but not in other bots list
     const otherBotSection = result.split('群内其他机器人')[1];
-    expect(otherBotSection).not.toContain('- 张全栈');
+    expect(otherBotSection).not.toContain('- Bob');
   });
 
   it('omits other bots section when no other bots exist', () => {
@@ -273,17 +273,17 @@ describe('buildBotIdentityContext', () => {
     mockGetStore.mockReturnValue('dev');
     mockGetAccount.mockReturnValue({
       accountId: 'dev',
-      botName: '张全栈',
+      botName: 'Bob',
       botOpenId: 'ou_dev',
     });
     mockGetAllBotOpenIds.mockReturnValue(new Set(['ou_dev']));
     mockGetBots.mockReturnValue([]);
     mockAllAccounts.mockReturnValue([
-      { accountId: 'dev', botName: '张全栈', botOpenId: 'ou_dev' },
+      { accountId: 'dev', botName: 'Bob', botOpenId: 'ou_dev' },
     ]);
 
     const result = buildBotIdentityContext('chat1')!;
-    expect(result).toContain('张全栈');
+    expect(result).toContain('Bob');
     expect(result).not.toContain('群内其他机器人');
     expect(result).not.toContain('feishu_send_to_chat');
   });
