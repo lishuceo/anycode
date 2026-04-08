@@ -1239,6 +1239,41 @@ function isTextFile(fileName: string): boolean {
 const MAX_HISTORY_FILES = 3;
 
 /**
+ * 文档 payload 大小上限（base64 字节数）。
+ * Anthropic API 的 message size 上限为 30MB，预留 10MB 给 system prompt + 对话历史 + 图片等。
+ */
+const MAX_TOTAL_DOCUMENT_BYTES = 20 * 1024 * 1024;
+
+/**
+ * 按 fileName 去重 + 总大小截断，防止重复文档撑爆 API 30MB 限制。
+ * 优先保留靠前的文档（当前消息 > 历史消息）。
+ */
+export function deduplicateDocuments(docs: DocumentAttachment[]): DocumentAttachment[] {
+  const seen = new Set<string>();
+  const result: DocumentAttachment[] = [];
+  let totalBytes = 0;
+  for (const doc of docs) {
+    const key = doc.fileName;
+    if (seen.has(key)) {
+      logger.info({ fileName: doc.fileName }, 'Skipping duplicate document');
+      continue;
+    }
+    const docBytes = doc.data.length; // base64 string length ≈ bytes
+    if (totalBytes + docBytes > MAX_TOTAL_DOCUMENT_BYTES) {
+      logger.warn({ fileName: doc.fileName, totalBytes, docBytes, limit: MAX_TOTAL_DOCUMENT_BYTES }, 'Document payload size limit reached, skipping');
+      continue;
+    }
+    seen.add(key);
+    result.push(doc);
+    totalBytes += docBytes;
+  }
+  if (result.length < docs.length) {
+    logger.info({ original: docs.length, deduplicated: result.length, totalBytes }, 'Documents deduplicated');
+  }
+  return result;
+}
+
+/**
  * 从历史消息中下载文件附件（PDF → DocumentAttachment, 文本类 → 嵌入文本）
  *
  * @returns { documents, fileTexts } — documents 供多模态传入, fileTexts 拼入 prompt
@@ -1256,7 +1291,15 @@ async function downloadHistoryFiles(
   }
   if (refs.length === 0) return { documents: [], fileTexts: [] };
 
-  const toDownload = refs.slice(-MAX_HISTORY_FILES);
+  // 按 fileKey 去重（同一文件可能在多条历史消息中出现，如话题内引用同一文件）
+  const seenKeys = new Set<string>();
+  const uniqueRefs = refs.filter(ref => {
+    if (seenKeys.has(ref.fileKey)) return false;
+    seenKeys.add(ref.fileKey);
+    return true;
+  });
+
+  const toDownload = uniqueRefs.slice(-MAX_HISTORY_FILES);
   const MAX_PDF_SIZE = 30 * 1024 * 1024;
   const MAX_TEXT_SIZE = 1 * 1024 * 1024;
 
@@ -1839,9 +1882,10 @@ export async function executeClaudeTask(
     if (history.images && history.images.length > 0) {
       images = [...(history.images), ...(images ?? [])];
     }
-    // 合并历史消息中的文档（PDF）
+    // 合并历史消息中的文档（PDF），按 fileName 去重 + 大小截断
     if (history.documents && history.documents.length > 0) {
-      documents = [...(history.documents), ...(documents ?? [])];
+      // 当前消息的文档优先（放前面），历史文档补充
+      documents = deduplicateDocuments([...(documents ?? []), ...(history.documents)]);
     }
     // 合并历史消息中的文本文件内容到 prompt
     if (history.fileTexts && history.fileTexts.length > 0) {
@@ -2380,9 +2424,9 @@ export async function executeDirectTask(
     if (history.images && history.images.length > 0) {
       images = [...(history.images), ...(images ?? [])];
     }
-    // 合并历史消息中的文档（PDF）
+    // 合并历史消息中的文档（PDF），按 fileName 去重 + 大小截断
     if (history.documents && history.documents.length > 0) {
-      documents = [...(history.documents), ...(documents ?? [])];
+      documents = deduplicateDocuments([...(documents ?? []), ...(history.documents)]);
     }
     // 合并历史消息中的文本文件内容到 prompt
     if (history.fileTexts && history.fileTexts.length > 0) {
