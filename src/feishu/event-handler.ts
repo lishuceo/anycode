@@ -1823,6 +1823,24 @@ export async function executeClaudeTask(
     await feishuClient.replyText(messageId, '🤖 处理中...');
   }
 
+  // 更新问候卡片：从"正在启动"切换为工作区信息（fire-and-forget）
+  // 后续 setup_workspace 触发 restart 时会再次覆盖为新工作区信息
+  if (greetingMsgId) {
+    const { basename: bn } = await import('node:path');
+    let greetingBranch: string | undefined;
+    try {
+      const { execFileSync } = await import('node:child_process');
+      greetingBranch = execFileSync('git', ['-C', workingDir, 'branch', '--show-current'],
+        { encoding: 'utf-8', timeout: 3000 }).trim() || undefined;
+    } catch { /* best-effort */ }
+    feishuClient.updateCard(
+      greetingMsgId,
+      buildWorkspaceSwitchCard(bn(workingDir), workingDir, greetingBranch, '📂 工作区'),
+    ).catch(err => {
+      logger.warn({ err }, 'Failed to update greeting card');
+    });
+  }
+
   // 标记会话为忙碌
   sessionManager.setStatus(chatId, userId, 'busy', agentId);
 
