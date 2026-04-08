@@ -25,7 +25,6 @@ const mockGetThreadSession = vi.fn();
 const mockUpsertThreadSession = vi.fn();
 const mockSetThreadConversationId = vi.fn();
 const mockSetThreadWorkingDir = vi.fn();
-const mockSetThreadRoutingState = vi.fn();
 const mockGetRecentSummaries = vi.fn(() => []);
 const mockSaveSummary = vi.fn();
 
@@ -41,7 +40,6 @@ vi.mock('../../session/manager.js', () => ({
     upsertThreadSession: (...args: unknown[]) => mockUpsertThreadSession(...args),
     setThreadConversationId: (...args: unknown[]) => mockSetThreadConversationId(...args),
     setThreadWorkingDir: (...args: unknown[]) => mockSetThreadWorkingDir(...args),
-    setThreadRoutingState: (...args: unknown[]) => mockSetThreadRoutingState(...args),
     getRecentSummaries: (...args: unknown[]) => mockGetRecentSummaries(...args),
     saveSummary: (...args: unknown[]) => mockSaveSummary(...args),
     reset: vi.fn(),
@@ -808,260 +806,58 @@ describe('ensureIsolatedWorkspace', () => {
 });
 
 // ============================================================
-// executePipelineTask routing + isolation 测试
-//
-// 验证 /dev 管道命令的路由+隔离流程：
-// - 创建话题 → 发路由反馈 → 路由决策 → 隔离工作区 → 创建管道
+// formatConversationTrace 测试
 // ============================================================
 
-/**
- * 模拟 executePipelineTask 的核心逻辑
- * (从 event-handler.ts 提取的路由+隔离逻辑，用于可测试性)
- */
-async function simulateExecutePipelineTask(
-  prompt: string,
-  chatId: string,
-  userId: string,
-  messageId: string,
-  rootId: string | undefined,
-  deps: {
-    ensureThread: (chatId: string, userId: string, messageId: string, rootId?: string) => Promise<{ threadReplyMsgId?: string; greetingMsgId?: string }>;
-    routeWorkspace: (prompt: string, chatId: string, userId: string, rootId?: string) => Promise<{ decision: string; workdir?: string; mode?: string; question?: string }>;
-  },
-) {
-  const { sessionManager } = await import('../../session/manager.js');
-  const { feishuClient } = await import('../client.js');
+// Import the real exported function
+const { formatConversationTrace } = await import('../event-handler.js');
 
-  let threadReplyMsgId: string | undefined;
-
-  try {
-    // 1. ensureThread
-    const threadResult = await deps.ensureThread(chatId, userId, messageId, rootId);
-    threadReplyMsgId = threadResult.threadReplyMsgId;
-
-    // 2. Routing feedback
-    if (threadReplyMsgId) {
-      await feishuClient.replyTextInThread(threadReplyMsgId, '🔍 正在分析工作目录...');
-    }
-
-    // 3. Route workspace
-    const decision = await deps.routeWorkspace(prompt, chatId, userId, rootId);
-
-    // 4. Handle need_clarification — save routing state for follow-up
-    if (decision.decision === 'need_clarification') {
-      const question = decision.question || '请提供更多信息，我需要知道你想要操作哪个仓库或项目。';
-      if (threadReplyMsgId) {
-        if (!sessionManager.getThreadSession(threadReplyMsgId)) {
-          sessionManager.upsertThreadSession(threadReplyMsgId, chatId, userId, '/tmp/work');
-        }
-        sessionManager.setThreadRoutingState(threadReplyMsgId, {
-          status: 'pending_clarification',
-          originalPrompt: prompt,
-          question,
-          retryCount: 0,
-        });
-        await feishuClient.replyTextInThread(threadReplyMsgId, question);
-      } else {
-        await feishuClient.replyText(messageId, question);
-      }
-      return { aborted: true, reason: 'need_clarification' as const };
-    }
-
-    let workingDir = decision.workdir || '/tmp/work';
-
-    // 5. Ensure isolated workspace
-    try {
-      const isolated = ensureIsolatedWorkspace(workingDir, (decision.mode as 'readonly' | 'writable') || 'writable');
-      workingDir = isolated.workingDir;
-    } catch (err) {
-      const errorMsg = `❌ 无法创建隔离工作区: ${(err as Error).message}`;
-      if (threadReplyMsgId) {
-        await feishuClient.replyTextInThread(threadReplyMsgId, errorMsg);
-      } else {
-        await feishuClient.replyText(messageId, errorMsg);
-      }
-      return { aborted: true, reason: 'isolation_failed' as const };
-    }
-
-    // 6. Return pipeline params (would be passed to createPendingPipeline)
-    return {
-      aborted: false as const,
-      pipelineParams: {
-        chatId, userId, messageId, rootId, prompt, workingDir, threadReplyMsgId,
+describe('formatConversationTrace', () => {
+  it('should format conversation trace with text and tool calls', () => {
+    const trace = [
+      {
+        text: '用户想在 repo-X 工作',
+        toolCalls: [
+          { id: 'tc1', name: 'Bash', input: { command: 'ls /projects' }, result: 'repo-X/\nrepo-Y/' },
+          { id: 'tc2', name: 'Read', input: { file_path: '/projects/repo-X/package.json' }, result: '{"name": "repo-x"}' },
+        ],
       },
-    };
-  } catch (err) {
-    return { aborted: true, reason: 'error' as const, error: (err as Error).message };
-  }
-}
+      {
+        text: '确认是 repo-X',
+        toolCalls: [],
+      },
+    ];
 
-describe('executePipelineTask routing + isolation', () => {
-  const mockEnsureThread = vi.fn();
-  const mockRouteWs = vi.fn();
+    const result = formatConversationTrace(trace);
 
-  beforeEach(() => {
-    vi.clearAllMocks();
-    mockExistsSync.mockReturnValue(true);
-    mockSessionGetOrCreate.mockReturnValue({
-      chatId: 'chat1', userId: 'user1', workingDir: '/tmp/work', status: 'idle',
-      threadId: 'thread-1',
-    });
-    mockEnsureThread.mockResolvedValue({ threadReplyMsgId: 'root-msg-1', greetingMsgId: 'greeting-1' });
+    expect(result).toContain('用户想在 repo-X 工作');
+    expect(result).toContain('[Bash] ls /projects');
+    expect(result).toContain('repo-X/');
+    expect(result).toContain('[Read] /projects/repo-X/package.json');
+    expect(result).toContain('"name": "repo-x"');
+    expect(result).toContain('确认是 repo-X');
   });
 
-  it('should send routing feedback before routing', async () => {
-    mockRouteWs.mockResolvedValue({ decision: 'use_default', workdir: '/tmp/work' });
-    mockExistsSync.mockReturnValue(false); // no .git → skip isolation clone
-
-    await simulateExecutePipelineTask(
-      'build feature', 'chat1', 'user1', 'msg1', undefined,
-      { ensureThread: mockEnsureThread, routeWorkspace: mockRouteWs },
-    );
-
-    // Routing feedback should be sent
-    expect(mockReplyTextInThread).toHaveBeenCalledWith('root-msg-1', '🔍 正在分析工作目录...');
-    // And routing should have been called
-    expect(mockRouteWs).toHaveBeenCalledWith('build feature', 'chat1', 'user1', undefined);
+  it('should return empty string for empty trace', () => {
+    expect(formatConversationTrace([])).toBe('');
+    expect(formatConversationTrace(undefined)).toBe('');
   });
 
-  it('should handle need_clarification by saving routing state and replying', async () => {
-    mockRouteWs.mockResolvedValue({
-      decision: 'need_clarification',
-      question: '你想操作哪个仓库？',
-    });
-
-    const result = await simulateExecutePipelineTask(
-      'build something', 'chat1', 'user1', 'msg1', undefined,
-      { ensureThread: mockEnsureThread, routeWorkspace: mockRouteWs },
-    );
-
-    expect(result.aborted).toBe(true);
-    expect(result.reason).toBe('need_clarification');
-    expect(mockReplyTextInThread).toHaveBeenCalledWith('root-msg-1', '你想操作哪个仓库？');
-    // Should save routing state for follow-up messages
-    expect(mockUpsertThreadSession).toHaveBeenCalledWith('root-msg-1', 'chat1', 'user1', '/tmp/work');
-    expect(mockSetThreadRoutingState).toHaveBeenCalledWith('root-msg-1', {
-      status: 'pending_clarification',
-      originalPrompt: 'build something',
-      question: '你想操作哪个仓库？',
-      retryCount: 0,
-    });
+  it('should truncate total output to 15KB', () => {
+    const longResult = 'x'.repeat(20000);
+    const trace = [
+      { text: '', toolCalls: [{ id: 'tc1', name: 'Bash', input: { command: 'cat big' }, result: longResult }] },
+    ];
+    const result = formatConversationTrace(trace);
+    expect(result.length).toBeLessThanOrEqual(15000);
   });
 
-  it('should use default question when need_clarification has no question', async () => {
-    mockRouteWs.mockResolvedValue({ decision: 'need_clarification' });
-
-    const result = await simulateExecutePipelineTask(
-      'do something', 'chat1', 'user1', 'msg1', undefined,
-      { ensureThread: mockEnsureThread, routeWorkspace: mockRouteWs },
-    );
-
-    expect(result.aborted).toBe(true);
-    expect(mockReplyTextInThread).toHaveBeenCalledWith(
-      'root-msg-1',
-      '请提供更多信息，我需要知道你想要操作哪个仓库或项目。',
-    );
-  });
-
-  it('should use routing result workdir and ensure isolation', async () => {
-    mockRouteWs.mockResolvedValue({
-      decision: 'use_existing',
-      workdir: '/tmp/work/my-repo',
-      mode: 'writable',
-    });
-    (setupWorkspaceMock as ReturnType<typeof vi.fn>).mockReturnValue({
-      workspacePath: '/tmp/workspaces/my-repo-abc',
-      branch: 'feat/abc',
-      repoName: 'my-repo',
-    });
-
-    const result = await simulateExecutePipelineTask(
-      'fix bug in my-repo', 'chat1', 'user1', 'msg1', undefined,
-      { ensureThread: mockEnsureThread, routeWorkspace: mockRouteWs },
-    );
-
-    expect(result.aborted).toBe(false);
-    expect(result.pipelineParams.workingDir).toBe('/tmp/workspaces/my-repo-abc');
-    expect(result.pipelineParams.threadReplyMsgId).toBe('root-msg-1');
-  });
-
-  it('should handle isolation failure gracefully', async () => {
-    mockRouteWs.mockResolvedValue({
-      decision: 'use_existing',
-      workdir: '/tmp/work/my-repo',
-      mode: 'writable',
-    });
-    (setupWorkspaceMock as ReturnType<typeof vi.fn>).mockImplementation(() => {
-      throw new Error('disk full');
-    });
-
-    const result = await simulateExecutePipelineTask(
-      'fix bug', 'chat1', 'user1', 'msg1', undefined,
-      { ensureThread: mockEnsureThread, routeWorkspace: mockRouteWs },
-    );
-
-    expect(result.aborted).toBe(true);
-    expect(result.reason).toBe('isolation_failed');
-    expect(mockReplyTextInThread).toHaveBeenCalledWith(
-      'root-msg-1',
-      expect.stringContaining('无法创建隔离工作区'),
-    );
-  });
-
-  it('should pass threadReplyMsgId through to pipeline params', async () => {
-    mockRouteWs.mockResolvedValue({ decision: 'use_default', workdir: '/tmp/work' });
-    mockExistsSync.mockReturnValue(false);
-
-    const result = await simulateExecutePipelineTask(
-      'task', 'chat1', 'user1', 'msg1', 'existing-root',
-      { ensureThread: mockEnsureThread, routeWorkspace: mockRouteWs },
-    );
-
-    expect(result.aborted).toBe(false);
-    expect(result.pipelineParams.threadReplyMsgId).toBe('root-msg-1');
-  });
-
-  it('should use default workdir when routing returns no workdir', async () => {
-    mockRouteWs.mockResolvedValue({ decision: 'use_default' });
-    mockExistsSync.mockReturnValue(false);
-
-    const result = await simulateExecutePipelineTask(
-      'general task', 'chat1', 'user1', 'msg1', undefined,
-      { ensureThread: mockEnsureThread, routeWorkspace: mockRouteWs },
-    );
-
-    expect(result.aborted).toBe(false);
-    expect(result.pipelineParams.workingDir).toBe('/tmp/work');
-  });
-
-  it('should reply via replyText when no threadReplyMsgId on need_clarification', async () => {
-    mockEnsureThread.mockResolvedValue({ threadReplyMsgId: undefined });
-    mockRouteWs.mockResolvedValue({
-      decision: 'need_clarification',
-      question: '哪个仓库？',
-    });
-
-    await simulateExecutePipelineTask(
-      'task', 'chat1', 'user1', 'msg1', undefined,
-      { ensureThread: mockEnsureThread, routeWorkspace: mockRouteWs },
-    );
-
-    expect(mockReplyTextInThread).not.toHaveBeenCalledWith(expect.anything(), '哪个仓库？');
-    expect(mockReplyText).toHaveBeenCalledWith('msg1', '哪个仓库？');
-    // Should NOT save routing state when no thread
-    expect(mockSetThreadRoutingState).not.toHaveBeenCalled();
-  });
-
-  it('should catch and report errors from createPendingPipeline failures', async () => {
-    mockRouteWs.mockRejectedValue(new Error('routing crashed'));
-
-    const result = await simulateExecutePipelineTask(
-      'task', 'chat1', 'user1', 'msg1', undefined,
-      { ensureThread: mockEnsureThread, routeWorkspace: mockRouteWs },
-    );
-
-    expect(result.aborted).toBe(true);
-    expect(result.reason).toBe('error');
+  it('should handle Grep tool input format', () => {
+    const trace = [
+      { text: '', toolCalls: [{ id: 'tc1', name: 'Grep', input: { pattern: 'TODO', path: '/src' }, result: 'match1' }] },
+    ];
+    const result = formatConversationTrace(trace);
+    expect(result).toContain('[Grep] TODO in /src');
   });
 });
 

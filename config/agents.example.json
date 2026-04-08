@@ -1,0 +1,38 @@
+{
+  "knowledgeDir": "./knowledge/",
+  "defaults": {
+    "model": "claude-sonnet-4-6",
+    "toolPolicy": "readonly",
+    "replyMode": "direct",
+    "maxBudgetUsd": 5,
+    "maxTurns": 100,
+    "requiresApproval": false,
+    "settingSources": ["user", "project"]
+  },
+  "agents": [
+    {
+      "id": "pm",
+      "displayName": "PM Bot",
+      "model": "claude-opus-4-6",
+      "replyMode": "direct",
+      "toolPolicy": {
+        "profile": "readonly",
+        "allow": ["Skill", "Bash"]
+      },
+      "bashAllowPatterns": ["^(ls|cat|head|tail|wc|find|grep|git (log|status|diff|show|branch))"],
+      "persona": "./personas/pm.md",
+      "knowledge": ["team.md"]
+    },
+    {
+      "id": "dev",
+      "displayName": "DevBot",
+      "model": "claude-opus-4-6",
+      "toolPolicy": "all",
+      "replyMode": "thread",
+      "maxBudgetUsd": 50,
+      "maxTurns": 500,
+      "requiresApproval": true,
+      "knowledge": ["team.md"]
+    }
+  ]
+}

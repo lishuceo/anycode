@@ -2,7 +2,7 @@
 summary: "Agent 记忆系统：跨会话持久化记忆 + 自动提取注入"
 status: in_progress
 owner: lishuceo
-last_updated: "2026-03-01"
+last_updated: "2026-04-02"
 read_when:
   - 修改记忆存储、搜索、提取逻辑
   - 开发记忆相关 MCP 工具

@@ -27,6 +27,8 @@ interface ExtractedMemory {
   tags: string[];
   ttl: string | null;
   metadata: Record<string, unknown>;
+  /** Key entities referenced in this memory (for validation against source text) */
+  entities?: string[];
 }
 
 const VALID_TYPES = new Set<string>(['fact', 'preference', 'state', 'decision', 'relation']);
@@ -69,8 +71,11 @@ const EXTRACTION_PROMPT = `你是一个记忆提取器。从以下对话中提�
   "confidence": 0.0~1.0,
   "tags": ["tag1", "tag2"],
   "ttl": "ISO 8601 日期" | null,
-  "metadata": {}
+  "metadata": {},
+  "entities": ["实体1", "实体2"]
 }
+
+entities 字段：列出 content 中引用的关键人名/项目名/组织名。系统会校验这些实体是否在对话中出现。
 
 ## 提取规则
 - 只提取明确的、有长期价值的信息
@@ -107,6 +112,12 @@ const EXTRACTION_PROMPT = `你是一个记忆提取器。从以下对话中提�
 - 对话中方括号标注的名字 (如 [姜黎]) 是说话者/评估者，不是被讨论的对象
 - 严格区分"谁在说"和"说的是谁"，不要把说话者误认为被评估/被讨论的人
 - 记忆中引用人名时，必须准确标注其角色 (评估者/候选人/负责人等)
+
+## 实体溯源规则（重要）
+- content 中提到的每个人名、项目名等关键实体，必须能在对话原文中找到明确出处
+- 如果一个事实涉及特定人名但该人名在对话中没有直接出现，**放弃提取该记忆**
+- 宁可少提取，也不能存入无法溯源的事实——错误的记忆比没有记忆危害更大
+- 不要从上下文推断或拼凑不确定的事实关联
 
 ## 覆盖规则
 当对话中出现事实更新或决策变更时 (如 "从 X 迁移到 Y"、"不再用 X 改用 Y"):
@@ -162,7 +173,11 @@ export async function extractMemories(
     const memories = parseExtractionResponse(rawContent);
     if (memories.length === 0) return;
 
-    const capped = memories.slice(0, MAX_MEMORIES_PER_EXTRACTION);
+    // Entity-orphan guard: reject memories whose entities can't be found in conversation
+    const grounded = filterUngroundedMemories(memories, conversation);
+    if (grounded.length === 0) return;
+
+    const capped = grounded.slice(0, MAX_MEMORIES_PER_EXTRACTION);
 
     for (const mem of capped) {
       await processExtractedMemory(mem, context, store);
@@ -234,6 +249,9 @@ function validateMemories(arr: unknown[]): ExtractedMemory[] {
       metadata: typeof obj.metadata === 'object' && obj.metadata !== null
         ? obj.metadata as Record<string, unknown>
         : {},
+      entities: Array.isArray(obj.entities)
+        ? (obj.entities as unknown[]).filter((e): e is string => typeof e === 'string' && e.length > 0)
+        : undefined,
     }))
     .filter((mem) => {
       // Reject too-short content
@@ -246,6 +264,42 @@ function validateMemories(arr: unknown[]): ExtractedMemory[] {
       }
       return true;
     });
+}
+
+/**
+ * Entity-orphan guard: reject memories whose declared entities
+ * cannot be found in the source conversation text.
+ *
+ * This prevents the extraction LLM from storing hallucinated facts
+ * about people/projects that weren't actually discussed.
+ */
+export function filterUngroundedMemories(
+  memories: ExtractedMemory[],
+  conversation: string,
+): ExtractedMemory[] {
+  return memories.filter((mem) => {
+    // Only validate entity-bearing types (fact, relation, decision)
+    // Preferences and states are about the user, not external entities
+    if (mem.type !== 'fact' && mem.type !== 'relation' && mem.type !== 'decision') {
+      return true;
+    }
+
+    const entities = mem.entities;
+    // If LLM didn't provide entities, allow the memory through
+    // (backwards compatible; prompt asks for entities but older models may omit)
+    if (!entities || entities.length === 0) return true;
+
+    // Every declared entity must appear somewhere in the conversation
+    const missing = entities.filter((entity) => !conversation.includes(entity));
+    if (missing.length > 0) {
+      logger.info(
+        { content: mem.content.slice(0, 80), missing, type: mem.type },
+        'Memory rejected: entities not found in conversation (entity-orphan guard)',
+      );
+      return false;
+    }
+    return true;
+  });
 }
 
 async function processExtractedMemory(

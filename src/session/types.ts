@@ -64,6 +64,8 @@ export interface ThreadSession {
   pipelineContext?: PipelineContext;
   /** 该 thread 是否已被 owner 审批通过（非 owner 用户需要审批） */
   approved?: boolean;
+  /** 该 thread 是否为原地编辑模式（/edit 命令触发，跳过源仓库保护） */
+  inplaceEdit?: boolean;
   /** 创建时间 */
   createdAt: Date;
   /** 最后更新时间 */
@@ -94,8 +96,12 @@ export interface QueueTask {
   images?: import('../claude/types.js').ImageAttachment[];
   /** 文档附件列表 (用户发送 PDF 等文件时) */
   documents?: import('../claude/types.js').DocumentAttachment[];
+  /** 原始消息类型（text/image/file 等），用于 resume 时区分"新文件上传"与"引用父消息文件" */
+  messageType?: string;
   /** 消息创建时间（毫秒级时间戳字符串，来自飞书 message.create_time） */
   createTime?: string;
+  /** 强制使用话题模式（/t 命令触发） */
+  forceThread?: boolean;
   resolve: (result: string) => void;
   reject: (error: Error) => void;
   createdAt: Date;

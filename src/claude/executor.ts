@@ -1,6 +1,8 @@
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import type { Query, SDKMessage } from '@anthropic-ai/claude-agent-sdk';
-import { mkdirSync, existsSync } from 'node:fs';
+import { mkdirSync, existsSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
+import { execFile as execFileCb } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { config } from '../config.js';
 import { logger } from '../utils/logger.js';
@@ -11,8 +13,8 @@ import { getMemoryStore, getHybridSearch, isMemoryEnabled } from '../memory/init
 import { createCronMcpServer } from '../cron/tool.js';
 import { getCronScheduler } from '../cron/init.js';
 import { feishuClientContext } from '../feishu/client.js';
-import { isAutoWorkspacePath, isServiceOwnRepo } from '../workspace/isolation.js';
-import type { ClaudeResult, ExecuteOptions, ProgressCallback, TurnInfo, ToolCallInfo, ImageAttachment, DocumentAttachment, MultimodalContentBlock } from './types.js';
+import { isAutoWorkspacePath, isServiceOwnRepo, isInsideSourceRepo } from '../workspace/isolation.js';
+import type { ClaudeResult, ExecuteOptions, ProgressCallback, TurnInfo, ToolCallInfo, ImageAttachment, DocumentAttachment, MultimodalContentBlock, ConversationTurn, ToolCallTrace } from './types.js';
 
 // ============================================================
 // Claude Agent SDK 执行器
@@ -85,6 +87,61 @@ const WRITE_TOOLS = new Set([
   'Edit', 'Write', 'NotebookEdit', 'Bash', 'Skill',
 ]);
 
+/** 源仓库保护拦截提示 */
+const SOURCE_REPO_DENY_MSG = '源仓库保护：目标位于 DEFAULT_WORK_DIR 下的源仓库，禁止直接修改。请使用 setup_workspace 工具创建隔离工作区后再修改。';
+
+/** shell 元字符 + 换行 + 重定向（阻止链式执行和文件重定向） */
+const SHELL_META_RE = /[;|&`$\n>]|\$\(/;
+
+/** 写入类 Bash 命令 denylist（使用 m flag 支持多行命令逐行匹配） */
+const BASH_WRITE_DENY = /^\s*(git\s+(commit|push|reset|rebase|merge|cherry-pick|am|apply|checkout\s+--|add\s|clean\s|branch\s+-[dD]|stash\s+(drop|clear|pop))|rm\s|rmdir\s|mv\s|cp\s|mkdir\s|touch\s|chmod\s|chown\s|ln\s|sed\s+-i|tee\s|dd\s|truncate\s)/m;
+
+/**
+ * 源仓库保护检查（系统安全机制，优先级高于 toolAllow）。
+ * 阻止 agent 直接修改 DEFAULT_WORK_DIR 下的源仓库文件。
+ * workspace-manager MCP 工具始终放行。
+ *
+ * @returns deny 结果，或 null 表示放行
+ */
+function checkSourceRepoProtection(
+  toolName: string,
+  inputObj: Record<string, unknown>,
+  workingDir?: string,
+  inplaceEdit?: boolean,
+): { behavior: 'deny'; message: string } | null {
+  // /edit 原地编辑模式：OWNER 主动 opt-in，跳过源仓库保护
+  if (inplaceEdit) return null;
+
+  // workspace-manager MCP 工具始终放行（setup_workspace / update_repo_registry）
+  if (toolName.startsWith('mcp__workspace-manager__')) return null;
+
+  // Edit/Write/NotebookEdit: 无条件检查 file_path（不管 cwd 在哪）
+  if ((toolName === 'Edit' || toolName === 'Write' || toolName === 'NotebookEdit') && inputObj.file_path) {
+    const targetPath = String(inputObj.file_path);
+    if (isInsideSourceRepo(targetPath)) {
+      logger.info({ toolName, filePath: targetPath }, 'canUseTool denied — source repo protection (file_path)');
+      return { behavior: 'deny' as const, message: SOURCE_REPO_DENY_MSG };
+    }
+  }
+
+  // Bash: 当 cwd 在源仓库内时检查命令内容
+  if (toolName === 'Bash' && workingDir && isInsideSourceRepo(workingDir)) {
+    const cmd = String(inputObj.command || '');
+    // 1. 拒绝含 shell 元字符/换行/重定向的命令
+    if (SHELL_META_RE.test(cmd)) {
+      logger.info({ toolName, cmd: cmd.slice(0, 100) }, 'canUseTool denied — source repo Bash meta-characters');
+      return { behavior: 'deny' as const, message: '源仓库保护：不允许包含 shell 管道/链式执行/重定向的命令。请使用 setup_workspace 创建隔离工作区。' };
+    }
+    // 2. Denylist: 拦截写入类命令（m flag 逐行匹配）
+    if (BASH_WRITE_DENY.test(cmd)) {
+      logger.info({ toolName, cmd: cmd.slice(0, 100) }, 'canUseTool denied — source repo Bash write command');
+      return { behavior: 'deny' as const, message: SOURCE_REPO_DENY_MSG };
+    }
+  }
+
+  return null;
+}
+
 /** 工具名匹配（支持 glob 前缀：'mcp__*' 匹配所有 MCP 工具） */
 function matchToolPattern(toolName: string, pattern: string): boolean {
   if (pattern.endsWith('*')) {
@@ -140,35 +197,164 @@ export interface ExecuteInput extends ExecuteOptions {
   threadId?: string;
   /** 当前话题的根消息 ID（用于 cron MCP 绑定话题） */
   threadRootMessageId?: string;
+  /** 前次 query 的对话轨迹（restart 时注入，帮助新 query 了解之前的分析） */
+  priorContext?: string;
+  /** workspace 切换后的 restart query 标志。控制 system prompt 精简（去掉仓库探索指引） */
+  isRestart?: boolean;
+  /** 原地编辑模式（/edit 命令触发），跳过源仓库写入保护 */
+  inplaceEdit?: boolean;
+  /** AskUserQuestion 回调：拦截 AskUserQuestion 工具调用，由上层实现交互式卡片 */
+  onAskUser?: (questions: Array<{ question: string; header?: string; options: Array<{ label: string; description?: string }>; multiSelect?: boolean }>) => Promise<Record<string, string>>;
 }
 
-/** 构建工作区管理系统提示词（注入实际目录路径） */
-function buildWorkspaceSystemPrompt(workingDir?: string): string {
+/** 扫描 defaultWorkDir 下的 git 项目名列表（best-effort） */
+function listAvailableProjects(projectsDir: string): string[] {
+  try {
+    return readdirSync(projectsDir, { withFileTypes: true })
+      .filter(d => d.isDirectory() && !d.name.startsWith('.'))
+      .filter(d => existsSync(join(projectsDir, d.name, '.git')))
+      .map(d => d.name)
+      .slice(0, 30);
+  } catch {
+    return [];
+  }
+}
+
+/** gh CLI 自动发现的用户组织缓存 */
+let cachedGitHubOrgs: string[] | null = null;
+
+/** 通过 gh CLI 获取当前用户所属的 GitHub 组织 + 用户名 */
+function ghExec(args: string[]): Promise<string> {
+  return new Promise((resolve, reject) => {
+    execFileCb('gh', args, { timeout: 10_000 }, (err, stdout) => {
+      if (err) reject(err);
+      else resolve(stdout.trim());
+    });
+  });
+}
+
+export async function initGitHubOrgCache(): Promise<void> {
+  try {
+    const [orgsResult, loginResult] = await Promise.allSettled([
+      ghExec(['api', 'user/orgs', '--jq', '.[].login']),
+      ghExec(['api', 'user', '--jq', '.login']),
+    ]);
+    const orgs = orgsResult.status === 'fulfilled'
+      ? orgsResult.value.split('\n').filter(Boolean)
+      : [];
+    const login = loginResult.status === 'fulfilled' ? loginResult.value : '';
+    if (login) orgs.push(login);
+    if (orgs.length === 0) {
+      logger.warn('GitHub org cache: no orgs or login discovered');
+      return;
+    }
+    cachedGitHubOrgs = [...new Set(orgs)].map(o => `github.com/${o}`);
+    logger.info({ orgs: cachedGitHubOrgs }, 'GitHub org cache initialized');
+  } catch (err) {
+    logger.warn({ err }, 'Failed to fetch GitHub orgs (gh CLI may not be configured)');
+  }
+}
+
+/** 测试辅助：重置 GitHub org 缓存 */
+export function _resetGitHubOrgCache(orgs?: string[] | null): void {
+  cachedGitHubOrgs = orgs ?? null;
+}
+
+/** 从缓存目录 + GitHub API 提取已知 org（best-effort） */
+export function listKnownOrgs(cacheDir: string): string[] {
+  const orgSet = new Set<string>();
+
+  // 1. GitHub API 发现的组织（优先）
+  if (cachedGitHubOrgs) {
+    for (const org of cachedGitHubOrgs) orgSet.add(org);
+  }
+
+  // 2. 从 .repo-cache 目录结构提取
+  try {
+    const hosts = readdirSync(cacheDir, { withFileTypes: true }).filter(d => d.isDirectory() && !d.name.startsWith('.'));
+    for (const host of hosts) {
+      if (!host.name.includes('.')) continue;
+      const orgs = readdirSync(join(cacheDir, host.name), { withFileTypes: true }).filter(d => d.isDirectory());
+      for (const org of orgs) orgSet.add(`${host.name}/${org.name}`);
+    }
+  } catch {
+    // cache dir may not exist yet
+  }
+
+  return [...orgSet].slice(0, 20);
+}
+
+/** 构建工作区管理系统提示词（注入实际目录路径 + 可用项目列表） */
+function buildWorkspaceSystemPrompt(workingDir?: string, options?: { isRestart?: boolean }): string {
   const projectsDir = config.claude.defaultWorkDir;
   const cacheDir = config.repoCache.dir;
   const workspacesDir = config.workspace.baseDir;
+  const isRestart = options?.isRestart ?? false;
 
-  const basePrompt = `你正在通过飞书消息与用户交互。请保持回复简洁，适合在聊天消息中阅读。
+  // restart 后不需要仓库探索相关内容，只保留当前工作区上下文
+  let explorationSection = '';
 
+  if (!isRestart) {
+    const projectList = listAvailableProjects(projectsDir);
+    const projectListSection = projectList.length > 0
+      ? `\n\n## 可用项目\n\n以下项目在 \`${projectsDir}\` 下可用：\n${projectList.map(p => `- ${p}`).join('\n')}`
+      : '';
+    const knownOrgs = listKnownOrgs(cacheDir);
+
+    explorationSection = `
 ## 目录结构
 
 你需要知道以下几个关键目录：
 - **项目目录**: \`${projectsDir}\` — 用户手动 clone 的项目都在这里
-- **仓库缓存目录**: \`${cacheDir}\` — setup_workspace 自动缓存的 bare clone
-- **可写工作区目录**: \`${workspacesDir}\` — setup_workspace 创建的隔离工作区
+- **仓库缓存目录**: \`${cacheDir}\` — setup_workspace 自动缓存的 bare clone（禁止直接读取或工作）
+- **可写工作区目录**: \`${workspacesDir}\` — setup_workspace 创建的隔离工作区（每个工作区属于特定用户/话题，禁止跨话题使用）${projectListSection}
 
 ## 工作区管理
 
-你当前的工作目录已经由系统预先设定好。**大多数情况下直接在当前目录工作即可**。
+**重要：当用户的请求涉及特定仓库时（无论是阅读代码、修改代码还是查看结构），必须先使用 setup_workspace 切换到该仓库。**
+这样才能正确加载项目的 CLAUDE.md（架构说明、命令约定）、.claude/settings.json（工具权限）、.claude/skills/（项目技能），并让代码搜索工具在正确的范围内工作。
+不要直接在 \`${projectsDir}\` 下用绝对路径浏览源仓库 — 这样会丢失项目上下文。
 
-你有一个 setup_workspace 工具可用，但**仅在用户明确要求切换到另一个仓库或提供新的仓库 URL 时使用**。
+仅当用户的问题是通用性的（不涉及特定仓库，如"JavaScript 闭包是什么"）时，才不需要 setup_workspace。
 
-**绝对不要用 setup_workspace 来切换当前工作区的模式（如从 readonly 切换到 writable）。** 当前工作区已经配置好了正确的权限，直接在当前目录工作即可。
+**禁止直接访问以下目录：**
+- \`${cacheDir}/\` — bare clone 缓存，仅用于定位仓库 URL
+- \`${workspacesDir}/\` — 其他话题创建的隔离工作区，每个工作区属于特定上下文，直接使用会破坏隔离性
 
-调用 setup_workspace 时使用 mode="writable"。
+### 仓库匹配与 Registry
+
+当你需要判断用户要在哪个仓库工作时，先读取 \`${projectsDir}/.repo-registry.json\`，根据用户消息中的关键词、项目名、技术栈等信息匹配。
+- 如果匹配到唯一仓库，直接调用 setup_workspace（使用 registry 中的 repo URL）
+- 如果匹配到多个或无法确定，**明确询问用户是哪个仓库，不要猜测**
+- 用户澄清后，调用 update_repo_registry 记录新的关键词映射，以便下次自动匹配
+
+**默认从 bare cache 创建隔离工作区。**
+当确定目标仓库后，优先使用 setup_workspace({ repo_url: "..." }) 从 bare cache clone。
+仅当用户明确说"直接在 XXX 目录改"时，才使用 setup_workspace({ local_path: "..." })。
+对于 registry 中标记为 local-only（cachePath 为 null）的仓库，使用 setup_workspace({ local_path: "..." })。
+**不要直接 cd 到源仓库中开始编辑 — 源仓库受写保护，会被拦截。**
+
+### 查找仓库的顺序
+
+当 registry 中没有匹配结果时，按以下顺序查找：
+
+1. **检查可用项目列表**（见上方）和本地目录 \`ls ${projectsDir}\`
+2. **搜索本地缓存** — \`find ${cacheDir} -maxdepth 3 -name "*.git" -type d\` 查找匹配的 bare clone，从路径推导 URL（如 \`${cacheDir}/github.com/org/repo.git\` → \`https://github.com/org/repo\`）
+3. **GitHub 搜索** — 优先在团队组织内搜索：${knownOrgs.length > 0 ? knownOrgs.filter(o => o.startsWith('github.com/')).map(o => `\`gh search repos <关键词> --owner=${o.replace('github.com/', '')} --json fullName,url --limit 10\``).join('，然后 ') + '。' : ''} 如果组织内没找到，再全局搜索 \`gh search repos <关键词> --json fullName,url --limit 10\`
+4. 都找不到 → 向用户询问仓库 URL
+
+**不要跳过搜索步骤直接问用户要 URL。** 先尝试自己找到仓库。
+
+**重要：\`${cacheDir}\` 下的是 bare clone（无文件树），仅用于定位仓库 URL。不要在 bare repo 中直接工作（\`git show\`/\`git grep\` 等）。** 找到仓库后，如果项目不在 \`${projectsDir}\` 下，必须调用 setup_workspace 创建完整工作区，这样才能正确加载 CLAUDE.md、使用搜索工具、获得完整的代码上下文。
+
+**绝对不要用 setup_workspace 来切换当前工作区。** 当前工作区已经配置好了正确的权限，直接在当前目录工作即可。
 
 **重要：调用 setup_workspace 后，系统将自动重启以加载项目配置（CLAUDE.md 等）。
-请在调用后仅输出简短确认（如"工作区已就绪，正在重新加载项目配置..."），不要继续执行后续任务。**
+请在调用后仅输出简短确认（如"工作区已就绪，正在重新加载项目配置..."），不要继续执行后续任务。**`;
+  }
+
+  const basePrompt = `你正在通过飞书消息与用户交互。请保持回复简洁，适合在聊天消息中阅读。
+${explorationSection}
 
 ## 自动开发流程
 
@@ -229,20 +415,20 @@ cd /some/other/dir && gh pr view 123
 
 ## 服务运行时信息（自改自模式）
 
-**你就是 anywhere-code (feishu-claude-bridge) 服务本身。** 用户正在通过飞书与你对话，你的回复由当前正在运行的这个服务进程处理并发送。当用户要求你修改"这个项目"、"你自己的代码"或未指定具体仓库时，指的就是这个服务的源码仓库。
+**你就是 anycode 服务本身。** 用户正在通过飞书与你对话，你的回复由当前正在运行的这个服务进程处理并发送。当用户要求你修改"这个项目"、"你自己的代码"或未指定具体仓库时，指的就是这个服务的源码仓库。
 
 ### 运行中的服务实例
-- **PM2 进程名**: \`feishu-claude\`
+- **PM2 进程名**: \`anycode\`
 - **服务部署目录**: \`${process.cwd()}\`
 
 ### 常用命令
-- 查看最近日志: \`pm2 logs feishu-claude --lines 200 --nostream\`
-- 仅看错误日志: \`pm2 logs feishu-claude --err --lines 100 --nostream\`
-- 进程状态: \`pm2 show feishu-claude\`
-- 实时日志（谨慎，会持续输出）: \`pm2 logs feishu-claude --lines 50\`（需 Ctrl+C 中断）
+- 查看最近日志: \`pm2 logs anycode --lines 200 --nostream\`
+- 仅看错误日志: \`pm2 logs anycode --err --lines 100 --nostream\`
+- 进程状态: \`pm2 show anycode\`
+- 实时日志（谨慎，会持续输出）: \`pm2 logs anycode --lines 50\`（需 Ctrl+C 中断）
 
 ### 注意事项
-- **严禁执行 \`pm2 restart feishu-claude\`** — 你是这个进程的子进程，restart 会杀掉你自己的父进程，导致对话中断和级联重启。代码部署后 CI/CD 会自动 restart
+- **严禁执行 \`pm2 restart anycode\`** — 你是这个进程的子进程，restart 会杀掉你自己的父进程，导致对话中断和级联重启。代码部署后 CI/CD 会自动 restart
 - 你的工作目录是服务仓库的隔离 clone，修改不会直接影响运行中的实例，需要推送代码并重启才能生效
 - 日志是 JSON 格式（Pino），可用 \`| jq .\` 格式化或 \`| grep "关键词"\` 过滤` : '';
 
@@ -382,10 +568,11 @@ export class ClaudeExecutor {
           workspaceChanged = true;
           newWorkingDir = newDir;
           onWorkspaceChanged(newDir);
-          // workspace 变更后立即 abort 当前 query，不再等它自然结束
-          // event-handler 通过 needsRestart 用新 cwd 立即 restart
-          abortController.abort();
-          logger.info({ sessionKey, newDir }, 'Workspace changed — aborting query for immediate restart');
+          // 不再立即 abort — SDK 在 MCP 工具执行期间 abort 会导致 handleControlRequest
+          // 写入已死进程 stdin 时抛出 unhandled "Operation aborted"，使 query 卡住。
+          // 系统提示词已告知 agent 调用 setup_workspace 后立即结束，query 会自然结束，
+          // event-handler 通过 needsRestart 标记触发 restart。
+          logger.info({ sessionKey, newDir }, 'Workspace changed — will restart after query completes');
         }
       : undefined;
 
@@ -451,7 +638,7 @@ export class ClaudeExecutor {
     // 构建 systemPrompt.append 内容
     // 注入层次：knowledge → persona/workspace prompt → 历史会话摘要
     // pipeline 模式使用独立的 system prompt，不需要工作区管理指引
-    const baseAppend = systemPromptOverride ?? buildWorkspaceSystemPrompt(workingDir);
+    const baseAppend = systemPromptOverride ?? buildWorkspaceSystemPrompt(workingDir, { isRestart: input.isRestart });
     // system prompt 只保留静态内容（knowledge + base prompt），最大化 prompt caching 命中率
     // 动态内容（记忆、历史摘要）移到 user prompt 前缀，避免 per-query 差异导致 cache miss
     const withKnowledge = input.knowledgeContent
@@ -496,6 +683,19 @@ export class ClaudeExecutor {
         userPromptPrefix += '[系统提示：当前用户处于受限模式，请谨慎使用写入类工具。]\n\n';
       }
     }
+    // 前次 query 的对话轨迹（workspace 切换 restart 时注入）
+    if (input.priorContext) {
+      userPromptPrefix += [
+        '<prior-analysis>',
+        '以下是你在切换工作区前的完整工作记录（推理、工具调用和结果）。',
+        '基于此继续工作，不要重复已完成的分析。',
+        '注意：文件路径可能指向旧工作区，当前已切换到新工作区。',
+        '',
+        input.priorContext,
+        '</prior-analysis>',
+        '',
+      ].join('\n');
+    }
     const effectivePrompt = userPromptPrefix + prompt;
 
     // 构建 SDK query
@@ -537,11 +737,45 @@ export class ClaudeExecutor {
           hasToolActivity = true;
           resetIdleTimer(`canUseTool:${toolName}`);
 
+          // workspace 变更后 deny 所有后续工具调用，迫使 agent 只输出文本后自然结束
+          // 不使用 abort（会导致 SDK handleControlRequest unhandled rejection 卡死）
+          if (workspaceChanged) {
+            logger.info({ toolName }, 'canUseTool denied — workspace changed, forcing query to end');
+            return { behavior: 'deny' as const, message: '工作区已切换，当前 query 即将结束。请直接输出简短确认。' };
+          }
+
+          // AskUserQuestion 拦截：通过飞书卡片收集用户回答，注入 answers 后放行
+          if (toolName === 'AskUserQuestion' && input.onAskUser) {
+            const questions = inputObj.questions as Array<{
+              question: string;
+              header?: string;
+              options: Array<{ label: string; description?: string }>;
+              multiSelect?: boolean;
+            }> | undefined;
+            if (questions?.length) {
+              try {
+                const answers = await input.onAskUser(questions);
+                return { behavior: 'allow' as const, updatedInput: { ...inputObj, answers } };
+              } catch (err) {
+                logger.warn({ err }, 'AskUserQuestion card interaction failed, allowing tool to proceed without answers');
+                return { behavior: 'allow' as const, updatedInput: inputObj };
+              }
+            }
+          }
+
           // per-agent 工具禁止列表（优先级最高）
           if (input.toolDeny?.some(p => matchToolPattern(toolName, p))) {
             logger.info({ toolName }, 'canUseTool denied — agent toolDeny list');
             return { behavior: 'deny' as const, message: `工具 ${toolName} 被 agent 配置禁止。` };
           }
+
+          // ★ 源仓库保护（系统安全机制，优先级高于 toolAllow）★
+          // 必须在 toolAllow 之前检查，因为 toolAllow 匹配后会提前 return allow。
+          {
+            const sourceRepoDeny = checkSourceRepoProtection(toolName, inputObj, workingDir, input.inplaceEdit);
+            if (sourceRepoDeny) return sourceRepoDeny;
+          }
+
           // per-agent 工具允许列表（管理员显式配置，可覆盖 readOnly 限制）
           if (input.toolAllow?.some(p => matchToolPattern(toolName, p))) {
             // readOnly 模式下 MCP 工具不能通过 toolAllow 绕过 — 交给后续 MCP readonly 白名单检查
@@ -665,6 +899,13 @@ export class ClaudeExecutor {
     let activityToolCallCount = 0;
     let currentActivity: 'thinking' | 'tool_call' = 'thinking';
 
+    // 对话轨迹累积（用于 restart 时传递上下文）
+    const conversationTrace: ConversationTurn[] = [];
+    const traceByteCosts: number[] = []; // 每个 turn 插入时快照的 byte cost
+    const pendingToolCalls = new Map<string, ToolCallTrace>();
+    let conversationTraceBytes = 0;
+    const MAX_TRACE_BYTES = 50 * 1024; // 50KB 上限
+
     try {
       // 遍历 SDK 流式消息
       for await (const message of q) {
@@ -695,6 +936,7 @@ export class ClaudeExecutor {
             // 提取文本输出和工具调用
             const turnText: string[] = [];
             const turnTools: ToolCallInfo[] = [];
+            const traceToolCalls: ToolCallTrace[] = [];
 
             if (message.message?.content) {
               for (const block of message.message.content) {
@@ -711,7 +953,31 @@ export class ClaudeExecutor {
                 }
                 if ('type' in block && block.type === 'tool_use' && 'name' in block && 'input' in block) {
                   turnTools.push({ name: block.name as string, input: block.input as Record<string, unknown> });
+                  // 记录工具调用到对话轨迹，通过 id 关联后续的 tool_result
+                  const trace: ToolCallTrace = {
+                    id: (block as Record<string, unknown>).id as string ?? '',
+                    name: block.name as string,
+                    input: block.input as Record<string, unknown>,
+                  };
+                  traceToolCalls.push(trace);
+                  if (trace.id) pendingToolCalls.set(trace.id, trace);
                 }
+              }
+            }
+
+            // 累积对话轨迹（用于 restart 上下文传递）
+            if (conversationTraceBytes < MAX_TRACE_BYTES && (turnText.length > 0 || traceToolCalls.length > 0)) {
+              const turnTextStr = turnText.join('');
+              const turn: ConversationTurn = { text: turnTextStr, toolCalls: traceToolCalls };
+              // 在 tool_result 回填前快照 byte cost，避免 mutate 后计算漂移
+              const byteCost = turnTextStr.length + JSON.stringify(traceToolCalls).length;
+              conversationTrace.push(turn);
+              traceByteCosts.push(byteCost);
+              conversationTraceBytes += byteCost;
+              // 超过上限时丢弃最早的 turn（使用快照的 byteCost）
+              while (conversationTraceBytes > MAX_TRACE_BYTES && conversationTrace.length > 1) {
+                conversationTrace.shift();
+                conversationTraceBytes -= traceByteCosts.shift()!;
               }
             }
 
@@ -749,6 +1015,36 @@ export class ClaudeExecutor {
             break;
           }
 
+          case 'user': {
+            // 回填工具结果到对应的 toolCall 轨迹
+            const content = (message as Record<string, unknown>).message as Record<string, unknown> | undefined;
+            const blocks = (content?.content as Array<Record<string, unknown>>) ?? [];
+            for (const block of blocks) {
+              if (block.type === 'tool_result' && typeof block.tool_use_id === 'string') {
+                const trace = pendingToolCalls.get(block.tool_use_id);
+                if (trace) {
+                  // 提取文本结果
+                  let text = '';
+                  const resultContent = block.content;
+                  if (typeof resultContent === 'string') {
+                    text = resultContent;
+                  } else if (Array.isArray(resultContent)) {
+                    text = (resultContent as Array<Record<string, unknown>>)
+                      .filter(c => c.type === 'text')
+                      .map(c => c.text as string)
+                      .join('');
+                  }
+                  // 截断过长的工具结果
+                  trace.result = text.length > 2000
+                    ? text.slice(0, 1500) + '\n...(truncated)...\n' + text.slice(-500)
+                    : text;
+                  pendingToolCalls.delete(block.tool_use_id);
+                }
+              }
+            }
+            break;
+          }
+
           case 'result':
             resultMessage = message;
             break;
@@ -771,6 +1067,23 @@ export class ClaudeExecutor {
           ? `Query hard timeout after ${input.hardTimeoutSeconds}s total execution time`
           : `Query idle timeout after ${(hasToolActivity ? idleTimeoutMs * 2 : idleTimeoutMs) / 1000}s with no activity (total elapsed: ${Math.round(durationMs / 1000)}s)`)
         : (err instanceof Error ? err.message : String(err));
+
+      // 30MB message size 超限 + resume 模式 → 累积的会话历史太大
+      // 自动丢弃旧 session，不带 resume 重试（开启新会话）
+      const isMessageSizeError = /message size.*exceeds.*limit/i.test(errorMsg);
+      if (isMessageSizeError && effectiveResumeId) {
+        logger.warn(
+          { sessionKey, resumeId: effectiveResumeId, errorMsg },
+          'Message size exceeded on resume — retrying without resume (new session)',
+        );
+        // 递归调用自身，去掉 resumeSessionId + 清除 storedSystemPromptHash
+        return this.execute({
+          ...input,
+          resumeSessionId: undefined,
+          storedSystemPromptHash: undefined,
+        });
+      }
+
       logger.error({ sessionKey, err: errorMsg, timedOut }, 'Claude Agent SDK query error');
 
       return {
@@ -782,6 +1095,7 @@ export class ClaudeExecutor {
         durationMs,
         needsRestart: workspaceChanged,
         newWorkingDir,
+        conversationTrace,
       };
     }
 
@@ -885,7 +1199,6 @@ export class ClaudeExecutor {
    *
    * 匹配逻辑适配 agent-prefixed key 格式:
    *   agent:{agentId}:{chatId}:{userId}:...
-   *   routing:agent:{agentId}:{chatId}:...
    *   以及旧格式 {chatId}:{userId}:... (兼容)
    */
   killSessionsForChat(chatId: string, userId: string): void {
@@ -895,10 +1208,8 @@ export class ClaudeExecutor {
       const matchesChat = key.includes(`${chatId}:${userId}`);
       // 旧格式兼容
       const matchesOld = key === oldPrefix || key.startsWith(oldPrefix + ':');
-      // routing 前缀兼容
-      const matchesRouting = key === `routing:${oldPrefix}` || key.startsWith(`routing:${oldPrefix}:`);
 
-      if (matchesChat || matchesOld || matchesRouting) {
+      if (matchesChat || matchesOld) {
         q.close();
         this.runningQueries.delete(key);
         logger.info({ sessionKey: key }, 'Killed Claude Agent SDK query');

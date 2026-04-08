@@ -43,7 +43,7 @@ function parseFrontMatter(content) {
     }
 
     // Key-value pair
-    const kvMatch = line.match(/^(\w[\w_]*)\s*:\s*(.+)/);
+    const kvMatch = line.match(/^(\w[\w_]*)\s*:\s*(.*)/);
     if (kvMatch) {
       // Save previous list if any
       currentKey = kvMatch[1];
