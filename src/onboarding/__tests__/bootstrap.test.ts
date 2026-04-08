@@ -119,7 +119,7 @@ describe('getBootstrapPrompt', () => {
     const prompt = getBootstrapPrompt();
     expect(prompt).toContain('.env');
     expect(prompt).toContain('config/agents.example.json');
-    expect(prompt).toContain('config/personas/pm.example.md');
+    expect(prompt).toContain('config/personas/assistant.example.md');
     expect(prompt).toContain('config/knowledge/team.example.md');
   });
 

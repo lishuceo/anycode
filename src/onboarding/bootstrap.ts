@@ -71,8 +71,8 @@ export function getBootstrapPrompt(): string {
   const envExamplePath = resolve(root(), '.env.example');
   const agentsExamplePath = resolve(root(), 'config/agents.example.json');
   const agentsPath = resolve(root(), 'config/agents.json');
-  const personaExamplePath = resolve(root(), 'config/personas/pm.example.md');
-  const personaPath = resolve(root(), 'config/personas/pm.md');
+  const personaExamplePath = resolve(root(), 'config/personas/assistant.example.md');
+  const personaDir = resolve(root(), 'config/personas');
   const knowledgeExamplePath = resolve(root(), 'config/knowledge/team.example.md');
   const knowledgePath = resolve(root(), 'config/knowledge/team.md');
 
@@ -84,8 +84,8 @@ export function getBootstrapPrompt(): string {
 - .env 模板文件: ${envExamplePath}
 - Agent 配置模板: ${agentsExamplePath}
 - Agent 配置文件: ${agentsPath}
-- PM 人设模板: ${personaExamplePath}
-- PM 人设文件: ${personaPath}
+- 人设模板: ${personaExamplePath}
+- 人设目录: ${personaDir}
 - 团队信息模板: ${knowledgeExamplePath}
 - 团队信息文件: ${knowledgePath}
 
@@ -121,14 +121,16 @@ export function getBootstrapPrompt(): string {
 1. 询问希望 Bot 用什么名字/称呼
 2. 沟通风格偏好（正式/随意/技术流/幽默）
 3. 特别的行为偏好
-4. 读取 ${personaExamplePath} 了解格式
-5. 将人格设定写入 ${personaPath}
+4. 读取 ${personaExamplePath} 了解人设文件的格式
+5. 将人格设定写入人设文件（文件名不要叫 pm.md，用 assistant.md 或与 Bot 名字相关的名字）
 
 ### Phase 4: Agent 配置文件
 
 1. 如果 ${agentsPath} 不存在，从 ${agentsExamplePath} 复制
-2. 如果用户给了 Bot 名字，更新 agents.json 中的 displayName
-3. 同时初始化 persona 和 knowledge 的 .example.md → .md 文件（仅当正式文件不存在时复制）
+2. 读取 agents.json，找到所有 agent，将每个 agent 的 displayName 更新为用户设定的 Bot 名字
+3. 将所有引用了 persona 字段的 agent 指向 Phase 3 中创建的人设文件
+4. 没有 persona 字段的 agent（如 dev），也加上 persona 指向同一文件
+5. 确保 knowledge 的 .example.md 已复制为 .md（仅当正式文件不存在时）
 
 ### Phase 5: 可选功能
 
