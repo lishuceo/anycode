@@ -1,5 +1,5 @@
 import fs from 'node:fs';
-import { config, validateConfig, isMultiBotMode, setMultiBotMode } from './config.js';
+import { config, validateConfig, setMultiBotMode } from './config.js';
 import { logger } from './utils/logger.js';
 import { startServer, closeServer } from './server.js';
 import { sessionManager } from './session/manager.js';
