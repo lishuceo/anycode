@@ -24,6 +24,32 @@ const ToolPolicyDetailedSchema = z.object({
 /** toolPolicy 支持两种格式 */
 export const ToolPolicySchema = z.union([ToolPolicySimpleSchema, ToolPolicyDetailedSchema]);
 
+// ─── 飞书账号 ────────────────────────────────────────────────
+
+/** 飞书应用凭证（内嵌在 agent 配置中） */
+const FeishuAccountSchema = z.object({
+  appId: z.string().min(1),
+  appSecret: z.string().min(1),
+});
+
+// ─── Binding 路由 ────────────────────────────────────────────
+
+/** Binding 匹配条件 */
+const BindingMatchSchema = z.object({
+  accountId: z.string().optional(),
+  peer: z.object({
+    kind: z.enum(['group', 'direct']),
+    id: z.string(),
+  }).optional(),
+  userId: z.string().optional(),
+});
+
+/** Agent Binding — 消息路由规则 */
+const AgentBindingSchema = z.object({
+  agentId: z.string(),
+  match: BindingMatchSchema,
+});
+
 // ─── Agent 配置输入（用户填写，除 id 外全部 optional） ─────
 
 export const AgentConfigInputSchema = z.object({
@@ -31,6 +57,8 @@ export const AgentConfigInputSchema = z.object({
   id: z.string().min(1),
   /** 显示名称 */
   displayName: z.string().optional(),
+  /** Agent 角色描述（说明该 agent 的定位和特点，便于理解配置意图） */
+  description: z.string().optional(),
   /** 模型名称 */
   model: z.string().optional(),
   /** 工具策略 */
@@ -53,6 +81,8 @@ export const AgentConfigInputSchema = z.object({
   bashAllowPatterns: z.array(z.string()).optional(),
   /** 即使 readOnly 也允许 Edit/Write 的路径 glob 列表（相对于 cwd，如 "config/personas/*"） */
   editablePathPatterns: z.array(z.string()).optional(),
+  /** 飞书应用凭证（appId + appSecret） */
+  feishu: FeishuAccountSchema.optional(),
 });
 
 // ─── Defaults（全部 optional） ──────────────────────────────
@@ -77,6 +107,8 @@ export const AgentConfigFileSchema = z.object({
   knowledgeDir: z.string().optional(),
   defaults: AgentDefaultsSchema.optional(),
   agents: z.array(AgentConfigInputSchema).min(1),
+  /** 消息路由规则（可选，覆盖 feishu 字段自动推导的路由） */
+  bindings: z.array(AgentBindingSchema).optional(),
 });
 
 // ─── 导出类型 ──────────────────────────────────────────────

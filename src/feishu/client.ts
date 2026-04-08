@@ -1,5 +1,5 @@
 import * as lark from '@larksuiteoapi/node-sdk';
-import { config } from '../config.js';
+
 import { logger } from '../utils/logger.js';
 import { formatMergeForwardSubMessage } from './message-parser.js';
 import { chatBotRegistry } from './bot-registry.js';
@@ -35,10 +35,10 @@ export class FeishuClient {
     return this._botName;
   }
 
-  constructor(appId?: string, appSecret?: string) {
+  constructor(appId: string, appSecret: string) {
     this.client = new lark.Client({
-      appId: appId ?? config.feishu.appId,
-      appSecret: appSecret ?? config.feishu.appSecret,
+      appId,
+      appSecret,
       disableTokenCache: false,
     });
   }
@@ -895,10 +895,17 @@ export function registerClientResolver(resolver: (accountId: string) => FeishuCl
  * 在多 bot 模式下，通过 Proxy 自动路由到 AsyncLocalStorage 中绑定的 per-account client。
  * 单 bot 模式下或 AsyncLocalStorage 无值时，回退到默认实例。
  */
-const _defaultClient = new FeishuClient();
+/** 默认 FeishuClient 实例（由 initDefaultClient 设置） */
+let _defaultClient: FeishuClient | undefined;
 
-export const feishuClient: FeishuClient = new Proxy(_defaultClient, {
-  get(target, prop, receiver) {
+/** 初始化默认 FeishuClient（单 bot 模式下由 index.ts 调用） */
+export function initDefaultClient(appId: string, appSecret: string): FeishuClient {
+  _defaultClient = new FeishuClient(appId, appSecret);
+  return _defaultClient;
+}
+
+export const feishuClient: FeishuClient = new Proxy({} as FeishuClient, {
+  get(_target, prop, receiver) {
     const accountId = feishuClientContext.getStore();
     if (accountId && accountId !== 'default' && _clientResolver) {
       const client = _clientResolver(accountId);
@@ -906,6 +913,9 @@ export const feishuClient: FeishuClient = new Proxy(_defaultClient, {
         return Reflect.get(client, prop, receiver);
       }
     }
-    return Reflect.get(target, prop, receiver);
+    if (!_defaultClient) {
+      throw new Error('FeishuClient not initialized — call initDefaultClient() first');
+    }
+    return Reflect.get(_defaultClient, prop, receiver);
   },
 });

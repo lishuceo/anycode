@@ -138,7 +138,7 @@ describe('getBootstrapPrompt', () => {
 
   it('should contain important rules', () => {
     const prompt = getBootstrapPrompt();
-    expect(prompt).toContain('Alice/Bob/Carol');
+    expect(prompt).toContain('占位');
     expect(prompt).toContain('跳过');
   });
 });

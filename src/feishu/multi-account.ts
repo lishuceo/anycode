@@ -70,14 +70,14 @@ export class AccountManager {
   /**
    * 初始化单 bot 兼容模式（使用现有 FEISHU_APP_ID / FEISHU_APP_SECRET）
    */
-  initializeSingleBot(appId: string, appSecret: string): void {
+  initializeSingleBot(appId: string, appSecret: string, botName?: string): void {
     this._singleBotMode = true;
     const feishuClient = new FeishuClient(appId, appSecret);
     const account: BotAccount = {
       accountId: 'default',
       appId,
       appSecret,
-      botName: 'default',
+      botName: botName ?? 'default',
       feishuClient,
     };
     this.accounts.set('default', account);

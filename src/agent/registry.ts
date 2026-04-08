@@ -43,6 +43,11 @@ class AgentRegistry {
     return [...this.agents.keys()];
   }
 
+  /** 所有已注册的 agent 配置 */
+  list(): AgentConfig[] {
+    return [...this.agents.values()];
+  }
+
   /** 默认 agent（兜底） */
   get defaultAgentId(): AgentId {
     return 'dev';

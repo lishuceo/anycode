@@ -12,36 +12,7 @@ describe('config', () => {
   }
 
   describe('validateConfig', () => {
-    it('should return errors when FEISHU_APP_ID is missing', async () => {
-      vi.stubEnv('FEISHU_APP_ID', '');
-      vi.stubEnv('FEISHU_APP_SECRET', 'secret');
-      vi.stubEnv('BOT_ACCOUNTS', '');
-      const { validateConfig } = await loadConfig();
-      const errors = validateConfig();
-      expect(errors.some(e => e.includes('FEISHU_APP_ID is required'))).toBe(true);
-    });
-
-    it('should return errors when FEISHU_APP_SECRET is missing', async () => {
-      vi.stubEnv('FEISHU_APP_ID', 'id');
-      vi.stubEnv('FEISHU_APP_SECRET', '');
-      vi.stubEnv('BOT_ACCOUNTS', '');
-      const { validateConfig } = await loadConfig();
-      const errors = validateConfig();
-      expect(errors.some(e => e.includes('FEISHU_APP_SECRET is required'))).toBe(true);
-    });
-
-    it('should return errors for both missing fields', async () => {
-      vi.stubEnv('FEISHU_APP_ID', '');
-      vi.stubEnv('FEISHU_APP_SECRET', '');
-      vi.stubEnv('BOT_ACCOUNTS', '');
-      const { validateConfig } = await loadConfig();
-      const errors = validateConfig();
-      expect(errors).toHaveLength(2);
-    });
-
-    it('should return empty array when all required fields are set', async () => {
-      vi.stubEnv('FEISHU_APP_ID', 'myid');
-      vi.stubEnv('FEISHU_APP_SECRET', 'mysecret');
+    it('should return empty array (feishu validation moved to agents.json)', async () => {
       const { validateConfig } = await loadConfig();
       const errors = validateConfig();
       expect(errors).toHaveLength(0);
@@ -50,32 +21,24 @@ describe('config', () => {
 
   describe('environment variable parsing', () => {
     it('should parse comma-separated ALLOWED_USER_IDS', async () => {
-      vi.stubEnv('FEISHU_APP_ID', 'id');
-      vi.stubEnv('FEISHU_APP_SECRET', 'secret');
       vi.stubEnv('ALLOWED_USER_IDS', 'user1, user2, user3');
       const { config } = await loadConfig();
       expect(config.security.allowedUserIds).toEqual(['user1', 'user2', 'user3']);
     });
 
     it('should handle empty ALLOWED_USER_IDS', async () => {
-      vi.stubEnv('FEISHU_APP_ID', 'id');
-      vi.stubEnv('FEISHU_APP_SECRET', 'secret');
       vi.stubEnv('ALLOWED_USER_IDS', '');
       const { config } = await loadConfig();
       expect(config.security.allowedUserIds).toEqual([]);
     });
 
     it('should parse PORT as integer', async () => {
-      vi.stubEnv('FEISHU_APP_ID', 'id');
-      vi.stubEnv('FEISHU_APP_SECRET', 'secret');
       vi.stubEnv('PORT', '8080');
       const { config } = await loadConfig();
       expect(config.server.port).toBe(8080);
     });
 
     it('should parse CLAUDE_TIMEOUT as integer', async () => {
-      vi.stubEnv('FEISHU_APP_ID', 'id');
-      vi.stubEnv('FEISHU_APP_SECRET', 'secret');
       vi.stubEnv('CLAUDE_TIMEOUT', '600');
       const { config } = await loadConfig();
       expect(config.claude.timeoutSeconds).toBe(600);
@@ -84,16 +47,12 @@ describe('config', () => {
 
   describe('defaults', () => {
     it('should default eventMode to websocket', async () => {
-      vi.stubEnv('FEISHU_APP_ID', 'id');
-      vi.stubEnv('FEISHU_APP_SECRET', 'secret');
       delete process.env.FEISHU_EVENT_MODE;
       const { config } = await loadConfig();
       expect(config.feishu.eventMode).toBe('websocket');
     });
 
     it('should default work dir to parent of process.cwd()', async () => {
-      vi.stubEnv('FEISHU_APP_ID', 'id');
-      vi.stubEnv('FEISHU_APP_SECRET', 'secret');
       vi.stubEnv('DEFAULT_WORK_DIR', '');
       const { config } = await loadConfig();
       const { dirname } = await import('node:path');

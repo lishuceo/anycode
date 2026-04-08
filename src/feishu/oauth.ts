@@ -4,6 +4,7 @@ import { feishuClient, feishuClientContext } from './client.js';
 import { accountManager } from './multi-account.js';
 import { sessionManager } from '../session/manager.js';
 import { logger } from '../utils/logger.js';
+import { deriveBotAccounts } from '../agent/config-loader.js';
 
 // ============================================================
 // 飞书 OAuth 2.0 用户授权
@@ -32,9 +33,16 @@ const STATE_MAX_AGE_MS = 10 * 60 * 1000; // 10 minutes
  * Sign the state payload with HMAC-SHA256 using app secret.
  * Format: base64url(json).signature
  */
+/** 获取主 bot 的 appSecret（用于 OAuth HMAC 签名） */
+function getPrimaryAppSecret(): string {
+  const accounts = deriveBotAccounts();
+  if (!accounts.length) throw new Error('No bot accounts configured — cannot sign OAuth state');
+  return accounts[0].appSecret;
+}
+
 function signState(payload: OAuthState): string {
   const data = Buffer.from(JSON.stringify(payload)).toString('base64url');
-  const sig = createHmac('sha256', config.feishu.appSecret)
+  const sig = createHmac('sha256', getPrimaryAppSecret())
     .update(data)
     .digest('base64url');
   return `${data}.${sig}`;
@@ -51,7 +59,7 @@ export function verifyState(state: string): OAuthState | undefined {
   const data = state.slice(0, dotIndex);
   const sig = state.slice(dotIndex + 1);
 
-  const expected = createHmac('sha256', config.feishu.appSecret)
+  const expected = createHmac('sha256', getPrimaryAppSecret())
     .update(data)
     .digest('base64url');
 
@@ -85,7 +93,9 @@ const FALLBACK_REDIRECT_URI = 'http://127.0.0.1:3000/feishu/oauth/callback';
 export function generateAuthUrl(userId: string, chatId: string): string {
   const state = signState({ userId, chatId, ts: Date.now() });
   const redirectUri = encodeURIComponent(config.feishu.oauth.redirectUri || FALLBACK_REDIRECT_URI);
-  const appId = config.feishu.appId;
+  const accounts = deriveBotAccounts();
+  if (!accounts.length) throw new Error('No bot accounts configured — cannot generate OAuth URL');
+  const appId = accounts[0].appId;
   // 显式请求 scope，确保 user_access_token 包含所需权限（如 task:task:read）。
   // 不传 scope 时飞书文档称默认授权全部权限，但实测某些权限不会自动包含。
   const scopes = config.feishu.oauth.scopes;

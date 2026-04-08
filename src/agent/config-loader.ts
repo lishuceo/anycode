@@ -15,7 +15,7 @@ import { logger } from '../utils/logger.js';
 import { agentRegistry } from './registry.js';
 import { AgentConfigFileSchema } from './config-schema.js';
 import type { AgentDefaults, AgentConfigInput, ToolPolicyValue } from './config-schema.js';
-import type { AgentConfig, ToolPolicy } from './types.js';
+import type { AgentConfig, ToolPolicy, BotAccountConfig, AgentBinding } from './types.js';
 
 // ─── 内置默认值（无配置文件时的 fallback） ───────────────────
 
@@ -37,6 +37,12 @@ let configFilePath: string | undefined;
 let configFileDir: string | undefined;
 /** 知识文件根目录（resolved absolute path） */
 let knowledgeDirPath: string | undefined;
+/** 配置文件中的显式 bindings */
+let explicitBindings: AgentBinding[] = [];
+/** 缓存的 bot 账号列表（agents 加载/重载时更新） */
+let cachedBotAccounts: BotAccountConfig[] = [];
+/** 缓存的推导 bindings（agents 加载/重载时更新） */
+let cachedDerivedBindings: AgentBinding[] = [];
 /** 文件监听是否活跃 */
 let watcherActive = false;
 /** 重载防抖定时器 */
@@ -81,6 +87,7 @@ function mergeAgentConfig(input: AgentConfigInput, defaults: AgentDefaults): Age
   return {
     id: input.id,
     displayName: input.displayName ?? input.id,
+    description: input.description,
     model: input.model ?? defaults.model ?? BUILTIN_DEFAULTS.model!,
     toolPolicy,
     readOnly,
@@ -95,6 +102,7 @@ function mergeAgentConfig(input: AgentConfigInput, defaults: AgentDefaults): Age
     toolDeny,
     bashAllowPatterns: input.bashAllowPatterns,
     editablePathPatterns: input.editablePathPatterns ?? defaults.editablePathPatterns,
+    feishu: input.feishu,
   };
 }
 
@@ -180,11 +188,21 @@ export function reloadAgentConfig(): LoadResult {
       knowledgeDirPath = undefined;
     }
 
+    // 保存显式 bindings
+    explicitBindings = (configFile.bindings ?? []).map(b => ({
+      agentId: b.agentId,
+      match: b.match,
+    }));
+
     // 合并每个 agent
     const agents = configFile.agents.map(input => mergeAgentConfig(input, defaults));
 
     // 应用到 registry
     agentRegistry.replaceAll(agents);
+
+    // 刷新缓存（bot 账号 + 推导 bindings）
+    cachedBotAccounts = computeBotAccounts(agents);
+    cachedDerivedBindings = computeDerivedBindings(agents);
 
     logger.info(
       { path: configFilePath, agentCount: agents.length, agentIds: agents.map(a => a.id) },
@@ -280,6 +298,66 @@ export function loadKnowledgeContent(agentId: string): string | undefined {
   }
 
   return parts.length > 0 ? parts.join('\n\n') : undefined;
+}
+
+// ─── 飞书凭证推导 ─────────────────────────────────────────
+
+/** 内部：从 agents 列表计算 bot 账号（reload 时调用） */
+function computeBotAccounts(agents: AgentConfig[]): BotAccountConfig[] {
+  const seen = new Map<string, BotAccountConfig>();
+  for (const agent of agents) {
+    if (!agent.feishu) continue;
+    const { appId, appSecret } = agent.feishu;
+    if (seen.has(appId)) continue;
+    seen.set(appId, {
+      accountId: agent.id,
+      appId,
+      appSecret,
+      botName: agent.displayName,
+    });
+  }
+  return [...seen.values()];
+}
+
+/** 内部：从 agents 列表推导 bindings（reload 时调用） */
+function computeDerivedBindings(agents: AgentConfig[]): AgentBinding[] {
+  const appIdToAccountId = new Map<string, string>();
+  for (const agent of agents) {
+    if (!agent.feishu) continue;
+    if (!appIdToAccountId.has(agent.feishu.appId)) {
+      appIdToAccountId.set(agent.feishu.appId, agent.id);
+    }
+  }
+  if (appIdToAccountId.size <= 1) return [];
+  const bindings: AgentBinding[] = [];
+  for (const agent of agents) {
+    if (!agent.feishu) continue;
+    const accountId = appIdToAccountId.get(agent.feishu.appId);
+    if (!accountId) continue;
+    bindings.push({ agentId: agent.id, match: { accountId } });
+  }
+  return bindings;
+}
+
+/**
+ * 获取缓存的 bot 账号列表（agents 加载/重载时自动更新）。
+ * 按 appId 去重，返回空数组表示没有配置飞书凭证。
+ */
+export function deriveBotAccounts(): BotAccountConfig[] {
+  return cachedBotAccounts;
+}
+
+/**
+ * 获取缓存的推导 bindings（agents 加载/重载时自动更新）。
+ * 仅多 bot 模式（多个不同 appId）时非空。
+ */
+export function deriveBindings(): AgentBinding[] {
+  return cachedDerivedBindings;
+}
+
+/** 获取配置文件中用户显式配置的 bindings */
+export function getExplicitBindings(): AgentBinding[] {
+  return explicitBindings;
 }
 
 // ─── 热重载 Watcher ────────────────────────────────────────

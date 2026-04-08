@@ -14,6 +14,11 @@
     {
       "id": "pm",
       "displayName": "<onboarding 中设定>",
+      "description": "Chat Bot — 日常对话、问答、讨论。只读模式，不修改代码，直接回复消息（不创建话题）。适合群聊中的轻量交互。",
+      "feishu": {
+        "appId": "<飞书应用 App ID>",
+        "appSecret": "<飞书应用 App Secret>"
+      },
       "model": "claude-opus-4-6",
       "replyMode": "direct",
       "toolPolicy": {
@@ -27,6 +32,11 @@
     {
       "id": "dev",
       "displayName": "<onboarding 中设定>",
+      "description": "Dev Bot — 代码开发、修 bug、创建 PR。完整读写权限，每条消息创建独立话题，非 Owner 需要审批。适合实际编码任务。",
+      "feishu": {
+        "appId": "<同上，共享同一个飞书应用>",
+        "appSecret": "<同上>"
+      },
       "model": "claude-opus-4-6",
       "toolPolicy": "all",
       "replyMode": "thread",

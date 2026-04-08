@@ -28,7 +28,7 @@ import { agentRegistry } from '../agent/registry.js';
 import { accountManager } from './multi-account.js';
 import { chatBotRegistry } from './bot-registry.js';
 import type { AgentId } from '../agent/types.js';
-import { readPersonaFile, loadKnowledgeContent, getAgentConfigInfo } from '../agent/config-loader.js';
+import { readPersonaFile, loadKnowledgeContent, getAgentConfigInfo, getExplicitBindings, deriveBindings } from '../agent/config-loader.js';
 import { resolveMentions } from './mention-resolver.js';
 import { createDiscussionMcpServer } from '../agent/tools/discussion.js';
 import { generateAuthUrl, hasCallbackUrl, handleManualCode } from './oauth.js';
@@ -686,8 +686,9 @@ async function handleMessageEvent(data: MessageEventData, accountId: string = 'd
   logger.info({ userId, chatId, chatType, rootId, threadId, accountId, text: text.slice(0, 100), hasImages: !!images?.length }, 'Received message');
 
   // ── 多 Agent: Binding Router 选 agent 角色（提前解析，供 @mention 过滤使用） ──
+  const allBindings = [...getExplicitBindings(), ...deriveBindings()];
   const agentId: AgentId = isMultiBotMode()
-    ? resolveAgent(config.agent.bindings, { accountId, chatId, userId, chatType: chatType as 'group' | 'p2p' })
+    ? resolveAgent(allBindings, { accountId, chatId, userId, chatType: chatType as 'group' | 'p2p' })
     : 'dev'; // 单 bot 模式默认 dev agent
 
   // ── 无需 @mention 的斜杠命令（在 @mention 过滤之前拦截） ──
@@ -1116,6 +1117,7 @@ async function handleSlashCommand(
       `🔧 **Agent 配置 — ${agentId}**`,
       '',
       `**显示名称**: ${agentCfg?.displayName ?? '(未配置)'}`,
+      ...(agentCfg?.description ? [`**描述**: ${agentCfg.description}`] : []),
       `**飞书 Bot 名**: ${feishuClient.botName ?? '(未获取)'}`,
       `**模型**: ${agentCfg?.model ?? '(默认)'}`,
       `**工具策略**: ${agentCfg?.toolPolicy ?? '(默认)'}`,

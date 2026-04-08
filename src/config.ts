@@ -2,25 +2,7 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 import { dirname } from 'node:path';
-import type { BotAccountConfig, AgentBinding, GroupConfig } from './agent/types.js';
-
-function parseBotAccounts(raw?: string): BotAccountConfig[] {
-  if (!raw?.trim()) return [];
-  try {
-    return JSON.parse(raw) as BotAccountConfig[];
-  } catch {
-    return [];
-  }
-}
-
-function parseAgentBindings(raw?: string): AgentBinding[] {
-  if (!raw?.trim()) return [];
-  try {
-    return JSON.parse(raw) as AgentBinding[];
-  } catch {
-    return [];
-  }
-}
+import type { GroupConfig } from './agent/types.js';
 
 function parseGroupConfigs(raw?: string): Record<string, GroupConfig> {
   if (!raw?.trim()) return {};
@@ -32,10 +14,8 @@ function parseGroupConfigs(raw?: string): Record<string, GroupConfig> {
 }
 
 export const config = {
-  // 飞书配置
+  // 飞书配置（凭证在 agents.json 的 agent.feishu 字段中，此处仅保留事件/工具配置）
   feishu: {
-    appId: process.env.FEISHU_APP_ID || '',
-    appSecret: process.env.FEISHU_APP_SECRET || '',
     encryptKey: process.env.FEISHU_ENCRYPT_KEY || '',
     verifyToken: process.env.FEISHU_VERIFY_TOKEN || '',
     /** 事件接收模式: 'webhook' (HTTP 回调，需要公网) | 'websocket' (长连接，无需公网) */
@@ -130,10 +110,6 @@ export const config = {
 
   // 多 Agent 配置
   agent: {
-    /** 多 bot 账号配置 (JSON 数组)，未配置时退化为单 bot 模式 */
-    botAccounts: parseBotAccounts(process.env.BOT_ACCOUNTS),
-    /** Agent 路由规则 (JSON 数组)，未配置时所有消息走 dev agent */
-    bindings: parseAgentBindings(process.env.AGENT_BINDINGS),
     /** 群配置 (JSON 对象: chatId → GroupConfig) */
     groupConfigs: parseGroupConfigs(process.env.GROUP_CONFIGS),
     /** Agent 配置文件路径 (默认 ./config/agents.json，不存在则使用内置默认值) */
@@ -220,19 +196,12 @@ export const config = {
   },
 };
 
-/** 检查必要配置是否存在 */
+/** 检查必要配置是否存在（飞书凭证在 agents.json 中校验，此处仅检查非飞书配置） */
 export function validateConfig(): string[] {
-  const errors: string[] = [];
-  const hasMultiBot = config.agent.botAccounts.length > 0;
-  // 多 bot 模式下不需要 FEISHU_APP_ID/SECRET（从 BOT_ACCOUNTS 读取）
-  if (!hasMultiBot) {
-    if (!config.feishu.appId) errors.push('FEISHU_APP_ID is required (or configure BOT_ACCOUNTS)');
-    if (!config.feishu.appSecret) errors.push('FEISHU_APP_SECRET is required (or configure BOT_ACCOUNTS)');
-  }
-  return errors;
+  return [];
 }
 
-/** 是否多 bot 模式 */
-export function isMultiBotMode(): boolean {
-  return config.agent.botAccounts.length > 0;
-}
+/** 多 bot 模式标记（由 index.ts 在 deriveBotAccounts 后设置） */
+let _multiBotMode = false;
+export function setMultiBotMode(value: boolean): void { _multiBotMode = value; }
+export function isMultiBotMode(): boolean { return _multiBotMode; }
