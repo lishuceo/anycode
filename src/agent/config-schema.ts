@@ -51,6 +51,8 @@ export const AgentConfigInputSchema = z.object({
   knowledge: z.array(z.string()).optional(),
   /** Bash 命令白名单正则（readOnly + toolAllow 含 Bash 时生效，仅匹配的命令被放行） */
   bashAllowPatterns: z.array(z.string()).optional(),
+  /** 即使 readOnly 也允许 Edit/Write 的路径 glob 列表（相对于 cwd，如 "config/personas/*"） */
+  editablePathPatterns: z.array(z.string()).optional(),
 });
 
 // ─── Defaults（全部 optional） ──────────────────────────────
@@ -65,6 +67,7 @@ export const AgentDefaultsSchema = z.object({
   replyMode: z.enum(['direct', 'thread']).optional(),
   persona: z.string().optional(),
   knowledge: z.array(z.string()).optional(),
+  editablePathPatterns: z.array(z.string()).optional(),
 });
 
 // ─── 顶层配置文件 ──────────────────────────────────────────

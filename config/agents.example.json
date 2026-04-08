@@ -7,7 +7,8 @@
     "maxBudgetUsd": 5,
     "maxTurns": 100,
     "requiresApproval": false,
-    "settingSources": ["user", "project"]
+    "settingSources": ["user", "project"],
+    "editablePathPatterns": ["config/personas/*", "config/knowledge/*"]
   },
   "agents": [
     {

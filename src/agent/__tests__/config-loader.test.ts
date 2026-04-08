@@ -266,3 +266,77 @@ describe('getAgentConfigInfo', () => {
     expect(info).toBeUndefined();
   });
 });
+
+describe('editablePathPatterns', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    mkdirSync(KNOWLEDGE_DIR, { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(TEST_DIR, { recursive: true, force: true });
+  });
+
+  async function setup(configObj: Record<string, unknown>) {
+    writeFileSync(CONFIG_FILE, JSON.stringify(configObj));
+    vi.stubEnv('AGENT_CONFIG_PATH', CONFIG_FILE);
+    vi.doMock('../../config.js', () => ({
+      config: {
+        agent: { configPath: CONFIG_FILE },
+        claude: { model: 'claude-sonnet-4-6', maxBudgetUsd: 5, maxTurns: 100 },
+      },
+    }));
+    const loader = await import('../config-loader.js');
+    const result = loader.loadAgentConfig();
+    expect(result.loaded).toBe(true);
+    return loader;
+  }
+
+  it('should pass agent-level editablePathPatterns through to registry', async () => {
+    await setup({
+      agents: [
+        { id: 'pm', editablePathPatterns: ['config/personas/*', 'config/knowledge/*'] },
+      ],
+    });
+
+    const { agentRegistry } = await import('../registry.js');
+    const cfg = agentRegistry.get('pm');
+    expect(cfg).toBeDefined();
+    expect(cfg!.editablePathPatterns).toEqual(['config/personas/*', 'config/knowledge/*']);
+  });
+
+  it('should inherit editablePathPatterns from defaults', async () => {
+    await setup({
+      defaults: { editablePathPatterns: ['config/**'] },
+      agents: [{ id: 'dev' }],
+    });
+
+    const { agentRegistry } = await import('../registry.js');
+    const cfg = agentRegistry.get('dev');
+    expect(cfg).toBeDefined();
+    expect(cfg!.editablePathPatterns).toEqual(['config/**']);
+  });
+
+  it('should let agent-level editablePathPatterns override defaults', async () => {
+    await setup({
+      defaults: { editablePathPatterns: ['config/**'] },
+      agents: [
+        { id: 'pm', editablePathPatterns: ['config/personas/*'] },
+      ],
+    });
+
+    const { agentRegistry } = await import('../registry.js');
+    const cfg = agentRegistry.get('pm');
+    expect(cfg!.editablePathPatterns).toEqual(['config/personas/*']);
+  });
+
+  it('should be undefined when not configured', async () => {
+    await setup({
+      agents: [{ id: 'dev' }],
+    });
+
+    const { agentRegistry } = await import('../registry.js');
+    const cfg = agentRegistry.get('dev');
+    expect(cfg!.editablePathPatterns).toBeUndefined();
+  });
+});
