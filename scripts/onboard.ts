@@ -142,7 +142,9 @@ while (round < MAX_ROUNDS) {
     // 检查是否完成
     if (isOnboardingCompleted()) {
       console.log(`\n${BOLD}${GREEN}配置完成!${RESET}`);
-      console.log(`\n运行 ${BOLD}npm run dev${RESET} 启动 Anycode 服务。\n`);
+      console.log(`\n${BOLD}启动服务:${RESET}`);
+      console.log(`  npm run dev              ${DIM}# 开发模式 (带 auto-reload)${RESET}`);
+      console.log(`  pm2 start npm --name anycode -- start  ${DIM}# 生产模式 (后台运行)${RESET}\n`);
       break;
     }
 
