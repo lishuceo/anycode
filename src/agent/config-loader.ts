@@ -87,6 +87,7 @@ function mergeAgentConfig(input: AgentConfigInput, defaults: AgentDefaults): Age
   return {
     id: input.id,
     displayName: input.displayName ?? input.id,
+    description: input.description,
     model: input.model ?? defaults.model ?? BUILTIN_DEFAULTS.model!,
     toolPolicy,
     readOnly,

@@ -37,6 +37,8 @@ export interface AgentConfig {
   id: AgentId;
   /** 显示名称（用于日志和审批卡片） */
   displayName: string;
+  /** 角色描述（说明该 agent 的定位和特点） */
+  description?: string;
   /** 默认模型 */
   model: string;
   /** 工具策略 */

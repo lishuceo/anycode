@@ -57,6 +57,8 @@ export const AgentConfigInputSchema = z.object({
   id: z.string().min(1),
   /** 显示名称 */
   displayName: z.string().optional(),
+  /** Agent 角色描述（说明该 agent 的定位和特点，便于理解配置意图） */
+  description: z.string().optional(),
   /** 模型名称 */
   model: z.string().optional(),
   /** 工具策略 */

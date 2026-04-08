@@ -1117,6 +1117,7 @@ async function handleSlashCommand(
       `🔧 **Agent 配置 — ${agentId}**`,
       '',
       `**显示名称**: ${agentCfg?.displayName ?? '(未配置)'}`,
+      ...(agentCfg?.description ? [`**描述**: ${agentCfg.description}`] : []),
       `**飞书 Bot 名**: ${feishuClient.botName ?? '(未获取)'}`,
       `**模型**: ${agentCfg?.model ?? '(默认)'}`,
       `**工具策略**: ${agentCfg?.toolPolicy ?? '(默认)'}`,
