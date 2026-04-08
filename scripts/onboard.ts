@@ -139,6 +139,8 @@ while (round < MAX_ROUNDS) {
       }
     }
 
+    stopSpinner();
+
     // 检查是否完成
     if (isOnboardingCompleted()) {
       console.log(`\n${BOLD}${GREEN}配置完成!${RESET}`);
