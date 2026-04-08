@@ -18,6 +18,26 @@ describe('validateToken', () => {
   it('should reject empty string', () => {
     expect(() => validateToken('', 'test')).toThrow('无效的 test');
   });
+
+  it('should accept calendar_id with @, . and = characters', () => {
+    // Google Calendar IDs contain @ and .
+    expect(() => validateToken('user@gmail.com', 'calendar_id')).not.toThrow();
+    // Feishu shared calendar IDs may contain special chars
+    expect(() => validateToken('feishu.calendar_id+tag', 'calendar_id')).not.toThrow();
+    expect(() => validateToken('cal_abc=123:def', 'calendar_id')).not.toThrow();
+  });
+
+  it('should still reject path traversal in calendar_id', () => {
+    expect(() => validateToken('../etc/passwd', 'calendar_id')).toThrow('无效的 calendar_id');
+    expect(() => validateToken('abc/def', 'calendar_id')).toThrow('无效的 calendar_id');
+    expect(() => validateToken('abc def', 'calendar_id')).toThrow('无效的 calendar_id');
+  });
+
+  it('should still use strict validation for non-calendar tokens', () => {
+    // @ and . should be rejected for doc_token, folder_token, etc.
+    expect(() => validateToken('user@gmail.com', 'doc_token')).toThrow('无效的 doc_token');
+    expect(() => validateToken('has.dot', 'folder_token')).toThrow('无效的 folder_token');
+  });
 });
 
 describe('validateFieldsObject', () => {
