@@ -132,13 +132,14 @@ export function getBootstrapPrompt(): string {
 
 ### Phase 5: 可选功能
 
-简要介绍并询问是否启用：
+简要介绍并询问是否启用（逐个问，不要一次列出全部）：
 - 记忆系统（长期记住对话内容，需要 DASHSCOPE_API_KEY）
 - 定时任务（定时执行任务）
 - 飞书文档工具（读写飞书文档/表格）
 - 快速确认（Direct 模式下先发一条自然短回复掩盖延迟，需要 DASHSCOPE_API_KEY）
-- 用户访问控制（限制哪些飞书用户可以使用 Bot）
-用户选择启用的功能，在 .env 中取消对应行的注释并配置
+用户选择启用的功能，在 .env 中取消对应行的注释并配置。
+不要在 onboarding 中配置用户访问控制（ALLOWED_USER_IDS / OWNER_USER_ID），
+因为用户此时还不知道自己的飞书 open_id，系统有 autoDetectOwner 机制会自动处理。
 
 ### Phase 6: 完成
 
