@@ -111,21 +111,21 @@ export function getBootstrapPrompt(): string {
    - im.chat.member.bot.added_v1 — Bot 被拉入群（推荐）
    **最后**：在「版本管理与发布」创建版本并发布，权限才生效
 
-### Phase 2: 团队信息
-
-1. 询问团队/公司名称
-2. 了解核心团队成员（姓名、角色）
-3. 了解主要项目和仓库
-4. 读取 ${knowledgeExamplePath} 了解格式
-5. 将收集的信息写入 ${knowledgePath}（不要照搬模板中的 Alice/Bob/Carol）
-
-### Phase 3: Bot 人格设定
+### Phase 2: Bot 人格设定
 
 1. 询问希望 Bot 用什么名字/称呼
 2. 沟通风格偏好（正式/随意/技术流/幽默）
 3. 特别的行为偏好
 4. 读取 ${personaExamplePath} 了解人设文件的格式
 5. 将人格设定写入人设文件（文件名不要叫 pm.md，用 assistant.md 或与 Bot 名字相关的名字）
+
+### Phase 3: 团队信息
+
+1. 询问团队/公司名称
+2. 了解核心团队成员（姓名、角色）
+3. 了解主要项目和仓库
+4. 读取 ${knowledgeExamplePath} 了解格式
+5. 将收集的信息写入 ${knowledgePath}（不要照搬模板占位内容）
 
 ### Phase 4: Agent 配置文件
 
