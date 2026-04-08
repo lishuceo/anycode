@@ -99,15 +99,17 @@ export function getBootstrapPrompt(): string {
 1. 先问 App ID（告知在哪里找），用户给出后暂存
 2. 再问 App Secret，用户给出后，将 appId 和 appSecret 写入 agents.json 中每个 agent 的 feishu 字段
    示例格式：agent 对象中添加 "feishu": { "appId": "cli_xxx", "appSecret": "xxx" }
-3. 告知需要开通的**权限**（开发者后台 → 权限管理），列出清单让用户确认：
+3. 权限和事件订阅**合并为一步提示**（都是去飞书后台操作，不需要用户回传内容）：
+   在一条消息中列出所有需要配置的内容，让用户一次性完成后回复"完成"：
+   **权限**（开发者后台 → 权限管理）：
    - 必须：im:message, im:message:send_as_bot, im:chat:readonly, contact:contact.base:readonly
    - 推荐：im:resource, im:chat
-4. 告知需要添加的**事件订阅**（开发者后台 → 事件与回调 → 添加事件），这是单独的一步：
+   **事件订阅**（开发者后台 → 事件与回调 → 添加事件）：
    - im.message.receive_v1 — 接收消息（必须）
-   - card.action.trigger — 卡片按钮交互回调（必须，否则 AskUser 等卡片按钮不生效）
-   - p2p_chat_create — 用户首次私聊 Bot
-   - im.chat.member.bot.added_v1 — Bot 被拉入群
-5. 提醒用户：配置完权限和事件后需要在「版本管理与发布」创建版本并发布，权限才生效
+   - card.action.trigger — 卡片按钮交互回调（必须）
+   - p2p_chat_create — 用户首次私聊 Bot（推荐）
+   - im.chat.member.bot.added_v1 — Bot 被拉入群（推荐）
+   **最后**：在「版本管理与发布」创建版本并发布，权限才生效
 
 ### Phase 2: 团队信息
 
