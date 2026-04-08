@@ -161,20 +161,11 @@ else
 
   # ANTHROPIC_API_KEY (必填)
   info "Anthropic API Key -- 在 console.anthropic.com/settings/keys 获取"
-  info "格式: sk-ant-... 或 sk-..."
-  while true; do
+  info "使用第三方代理时填写对应平台的 API Key"
+  read -rp "  ANTHROPIC_API_KEY: " ANTHROPIC_API_KEY
+  while [[ -z "$ANTHROPIC_API_KEY" ]]; do
+    warn "API Key 不能为空"
     read -rp "  ANTHROPIC_API_KEY: " ANTHROPIC_API_KEY
-    if [[ -z "$ANTHROPIC_API_KEY" ]]; then
-      warn "API Key 不能为空，请重新输入"
-      continue
-    fi
-    if [[ ! "$ANTHROPIC_API_KEY" =~ ^sk- ]]; then
-      warn "API Key 应以 sk- 开头，你输入的看起来不像 Anthropic API Key"
-      read -rp "$(echo -e "${YELLOW}确认使用？(y/N): ${NC}")" CONFIRM
-      [[ "${CONFIRM,,}" == "y" ]] && break
-      continue
-    fi
-    break
   done
   sed -i "s|^ANTHROPIC_API_KEY=.*|ANTHROPIC_API_KEY=$(sed_escape "$ANTHROPIC_API_KEY")|" "$ROOT/.env"
 

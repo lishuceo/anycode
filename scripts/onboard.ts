@@ -53,7 +53,9 @@ while (round < MAX_ROUNDS) {
   round++;
 
   try {
-    console.log(`${DIM}[启动 Agent SDK query, round ${round}...]${RESET}`);
+    if (round === 1) {
+      console.log(`${DIM}正在连接 AI 服务... (首次可能需要 10-20 秒)${RESET}`);
+    }
     const q = query({
       prompt: userMessage,
       options: {
@@ -144,8 +146,14 @@ while (round < MAX_ROUNDS) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error(`\n${YELLOW}出错: ${msg}${RESET}`);
 
-    if (msg.includes('ANTHROPIC_API_KEY') || msg.includes('authentication')) {
-      console.error(`请确认 .env 中的 ANTHROPIC_API_KEY 已正确配置。`);
+    // 认证相关错误：给出清晰的修复指引
+    if (msg.includes('401') || msg.includes('auth') || msg.includes('authenticate') || msg.includes('API Key') || msg.includes('Unauthorized')) {
+      console.error(`\n${BOLD}API 认证失败。请检查:${RESET}`);
+      console.error(`  1. .env 中的 ANTHROPIC_API_KEY 是否正确`);
+      console.error(`  2. 如果使用代理，ANTHROPIC_BASE_URL 是否正确`);
+      console.error(`  3. API Key 是否有效且未过期\n`);
+      console.error(`  当前 ANTHROPIC_BASE_URL: ${process.env.ANTHROPIC_BASE_URL || '(官方地址)'}`);
+      console.error(`  编辑 .env 修正后重新运行: ${BOLD}npm run onboard${RESET}\n`);
       break;
     }
 
