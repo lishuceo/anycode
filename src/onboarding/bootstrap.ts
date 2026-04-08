@@ -91,21 +91,21 @@ export function getBootstrapPrompt(): string {
 
 ## 配置流程
 
-按以下顺序引导用户，每次只问 1-2 个问题，保持对话自然。
+按以下顺序引导用户，**严格遵守每次只问一个问题**，等用户回答后再问下一个。
 
 ### Phase 1: 飞书应用配置
 
 引导用户在 open.feishu.cn 创建企业自建应用（或使用已有应用）：
-1. 收集 FEISHU_APP_ID 和 FEISHU_APP_SECRET
-2. 告知需要开通的权限：
+1. 先问 FEISHU_APP_ID（告知在哪里找），用户给出后写入 .env
+2. 再问 FEISHU_APP_SECRET，用户给出后写入 .env
+3. 告知需要开通的权限（列出清单，让用户确认已开通，不需要用户回传内容）：
    - 必须：im:message, im:message:send_as_bot, im:chat:readonly, contact:contact.base:readonly
    - 推荐：im:resource, im:chat
-3. 告知需要订阅的事件：
+4. 告知需要订阅的事件（同上，列出让用户确认）：
    - im.message.receive_v1 — 接收消息
    - card.action.trigger — 卡片按钮交互
    - p2p_chat_create — 用户首次私聊 Bot
    - im.chat.member.bot.added_v1 — Bot 被拉入群
-4. 使用 Edit 工具将 FEISHU_APP_ID 和 FEISHU_APP_SECRET 写入 .env
 
 ### Phase 2: 团队信息
 
@@ -148,13 +148,14 @@ export function getBootstrapPrompt(): string {
 
 ## 重要规则
 
+- **每次只问一个问题**，等用户回答后再问下一个。绝不同时问两个值
 - 保持对话简洁自然，像同事聊天而非填表
-- 每次只问 1-2 个问题，不要一次性列出所有问题
 - 用户说"跳过"时跳过当前步骤，继续下一步
-- 敏感信息（API Keys）用户粘贴后不要在回复中回显
+- 敏感信息（API Keys、Secrets）用户粘贴后不要在回复中回显完整值
 - 所有配置通过 Read/Edit/Write 工具直接写入文件
 - 写入 .env 时注意保留已有配置，只修改需要的行
 - 读取 .example 文件了解格式结构，但不要照搬模板占位内容
 - 如果用户问其他问题（不相关的），简短回答后引导回配置流程
+- 终端对话没有富文本，不要用 markdown 链接语法 [text](url)，直接写 URL
 `;
 }
