@@ -1067,6 +1067,23 @@ export class ClaudeExecutor {
           ? `Query hard timeout after ${input.hardTimeoutSeconds}s total execution time`
           : `Query idle timeout after ${(hasToolActivity ? idleTimeoutMs * 2 : idleTimeoutMs) / 1000}s with no activity (total elapsed: ${Math.round(durationMs / 1000)}s)`)
         : (err instanceof Error ? err.message : String(err));
+
+      // 30MB message size 超限 + resume 模式 → 累积的会话历史太大
+      // 自动丢弃旧 session，不带 resume 重试（开启新会话）
+      const isMessageSizeError = /message size.*exceeds.*limit/i.test(errorMsg);
+      if (isMessageSizeError && effectiveResumeId) {
+        logger.warn(
+          { sessionKey, resumeId: effectiveResumeId, errorMsg },
+          'Message size exceeded on resume — retrying without resume (new session)',
+        );
+        // 递归调用自身，去掉 resumeSessionId + 清除 storedSystemPromptHash
+        return this.execute({
+          ...input,
+          resumeSessionId: undefined,
+          storedSystemPromptHash: undefined,
+        });
+      }
+
       logger.error({ sessionKey, err: errorMsg, timedOut }, 'Claude Agent SDK query error');
 
       return {
