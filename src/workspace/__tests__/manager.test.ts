@@ -349,4 +349,28 @@ describe('setupWorkspace', () => {
       })).not.toThrow();
     });
   });
+
+  describe('parseRepoNameFromWorkspaceDir', () => {
+    it('should parse writable workspace dir name (branchPrefix with slash)', async () => {
+      const { parseRepoNameFromWorkspaceDir } = await import('../manager.js');
+      // branchPrefix = 'feat/claude-session' → suffix = 'feat-claude-session'
+      // dirName = 'anycode-feat-claude-session-fddd92'
+      expect(parseRepoNameFromWorkspaceDir('anycode-feat-claude-session-fddd92')).toBe('anycode');
+    });
+
+    it('should parse readonly workspace dir name', async () => {
+      const { parseRepoNameFromWorkspaceDir } = await import('../manager.js');
+      expect(parseRepoNameFromWorkspaceDir('my-repo-readonly-abc123')).toBe('my-repo');
+    });
+
+    it('should handle repo names with hyphens', async () => {
+      const { parseRepoNameFromWorkspaceDir } = await import('../manager.js');
+      expect(parseRepoNameFromWorkspaceDir('my-cool-repo-feat-claude-session-fddd92')).toBe('my-cool-repo');
+    });
+
+    it('should fallback to dirName when no suffix matches', async () => {
+      const { parseRepoNameFromWorkspaceDir } = await import('../manager.js');
+      expect(parseRepoNameFromWorkspaceDir('plain-dir-name')).toBe('plain-dir-name');
+    });
+  });
 });
