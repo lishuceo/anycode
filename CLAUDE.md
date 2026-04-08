@@ -103,8 +103,8 @@ Loaded via dotenv (see `.env.example`):
 
 ## Deployment
 
-- PR 合并到 main 后会自动触发 GitHub Actions deploy workflow，将代码部署到服务器并自动 `pm2 restart`。
-- **严禁在对话中执行 `pm2 restart anycode`** — Claude 作为服务的子进程运行，执行此命令会杀掉自己的父进程，导致级联重启。
+- 部署方式取决于运行环境（PM2、systemd、Docker 等），服务启动时自动检测进程管理器类型（见 `src/utils/runtime.ts`）。
+- **自重启须在对话最后一步执行** — Claude 是服务的子进程，使用 `sleep 5 && <restart command> &` 脱离当前进程，避免 kill 自己的父进程导致对话中断。
 
 ## Tech Stack
 

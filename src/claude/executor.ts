@@ -14,6 +14,7 @@ import { createCronMcpServer } from '../cron/tool.js';
 import { getCronScheduler } from '../cron/init.js';
 import { feishuClientContext } from '../feishu/client.js';
 import { isAutoWorkspacePath, isServiceOwnRepo, isInsideSourceRepo } from '../workspace/isolation.js';
+import { detectRuntime } from '../utils/runtime.js';
 import type { ClaudeResult, ExecuteOptions, ProgressCallback, TurnInfo, ToolCallInfo, ImageAttachment, DocumentAttachment, MultimodalContentBlock, ConversationTurn, ToolCallTrace } from './types.js';
 
 // ============================================================
@@ -445,26 +446,28 @@ gh search issues --repo owner/repo -- "keyword"
 cd /some/other/dir && gh pr view 123
 \`\`\``;
 
-  const selfRepoGuide = (workingDir && isServiceOwnRepo(workingDir)) ? `
+  const selfRepoGuide = (workingDir && isServiceOwnRepo(workingDir)) ? (() => {
+    const rt = detectRuntime();
+    const managerLine = rt.manager !== 'unknown'
+      ? `- **进程管理器**: ${rt.manager}${rt.processName ? `（进程名: \`${rt.processName}\`）` : ''}`
+      : '- **进程管理器**: 未检测到（可能直接通过 node 启动）';
+
+    return `
 
 ## 服务运行时信息（自改自模式）
 
 **你就是 anycode 服务本身。** 用户正在通过飞书与你对话，你的回复由当前正在运行的这个服务进程处理并发送。当用户要求你修改"这个项目"、"你自己的代码"或未指定具体仓库时，指的就是这个服务的源码仓库。
 
 ### 运行中的服务实例
-- **PM2 进程名**: \`anycode\`
+${managerLine}
 - **服务部署目录**: \`${process.cwd()}\`
 
-### 常用命令
-- 查看最近日志: \`pm2 logs anycode --lines 200 --nostream\`
-- 仅看错误日志: \`pm2 logs anycode --err --lines 100 --nostream\`
-- 进程状态: \`pm2 show anycode\`
-- 实时日志（谨慎，会持续输出）: \`pm2 logs anycode --lines 50\`（需 Ctrl+C 中断）
-
 ### 注意事项
-- **严禁执行 \`pm2 restart anycode\`** — 你是这个进程的子进程，restart 会杀掉你自己的父进程，导致对话中断和级联重启。代码部署后 CI/CD 会自动 restart
+- 根据上述进程管理器类型，自行推导查看日志、查看进程状态、重启服务等命令
+- **重启必须在对话最后一步执行** — 你是服务的子进程，重启会杀掉父进程导致对话中断。使用 \`sleep 5 && <restart command> &\` 脱离当前进程执行，留出时间让最后的助手文本输出完成
 - 你的工作目录是服务仓库的隔离 clone，修改不会直接影响运行中的实例，需要推送代码并重启才能生效
-- 日志是 JSON 格式（Pino），可用 \`| jq .\` 格式化或 \`| grep "关键词"\` 过滤` : '';
+- 日志是 JSON 格式（Pino），可用 \`| jq .\` 格式化或 \`| grep "关键词"\` 过滤`;
+  })() : '';
 
   return basePrompt + selfRepoGuide;
 }

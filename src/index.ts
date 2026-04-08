@@ -255,7 +255,7 @@ async function main(): Promise<void> {
 
     // 等待正在运行的 task 完成（发送结果卡片到飞书），最多等 8 秒
     // killAll() 关闭 stream → execute() 返回 → executeClaudeTask 发结果卡片 → task 完成
-    // 注意：必须 < pm2 kill_timeout (10s)，留出余量给后续清理步骤
+    // 注意：必须 < 进程管理器的 kill timeout（PM2 默认 10s），留出余量给后续清理步骤
     await claudeExecutor.waitForRunningTasks(8000);
 
     pipelineStore.close();
