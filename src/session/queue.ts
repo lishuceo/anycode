@@ -27,6 +27,8 @@ export class TaskQueue {
     images?: import('../claude/types.js').ImageAttachment[],
     documents?: import('../claude/types.js').DocumentAttachment[],
     createTime?: string,
+    forceThread?: boolean,
+    messageType?: string,
   ): Promise<string> {
     return new Promise((resolve, reject) => {
       const task: QueueTask = {
@@ -39,7 +41,9 @@ export class TaskQueue {
         threadId,
         images,
         documents,
+        messageType,
         createTime,
+        forceThread,
         resolve,
         reject,
         createdAt: new Date(),
@@ -73,6 +77,19 @@ export class TaskQueue {
    */
   complete(queueKey: string): void {
     this.running.delete(queueKey);
+  }
+
+  /**
+   * 标记某个队列为忙碌（占位，阻止 dequeue）
+   *
+   * 用于 perMessageParallel 任务创建话题后锁定 per-thread queueKey，
+   * 防止后续消息（带 threadId，使用不同 queueKey）并发执行。
+   */
+  markBusy(queueKey: string): void {
+    if (!this.running.has(queueKey)) {
+      this.running.set(queueKey, {} as QueueTask);
+      logger.debug({ queueKey }, 'Queue marked busy (placeholder)');
+    }
   }
 
   /**

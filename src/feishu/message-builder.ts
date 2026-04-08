@@ -9,7 +9,7 @@ import type { TurnInfo, ToolCallInfo } from '../claude/types.js';
 import type { Memory, MemorySearchResult } from '../memory/types.js';
 import { MEMORY_PAGE_SIZE } from '../memory/types.js';
 
-/** 构建新会话问候卡片（初始状态，工作目录未确定） */
+/** 构建新会话问候卡片（初始状态） */
 export function buildGreetingCard(): Record<string, unknown> {
   return {
     config: { wide_screen_mode: true },
@@ -22,51 +22,46 @@ export function buildGreetingCard(): Record<string, unknown> {
         tag: 'div',
         text: {
           tag: 'lark_md',
-          content: '⏳ 正在初始化工作目录...',
+          content: '⏳ 正在启动...',
         },
       },
     ],
   };
 }
 
-/** 构建新会话问候卡片（已就绪，显示话题 ID 和工作目录） */
-export function buildGreetingCardReady(
-  threadId: string,
+/** 构建工作区切换卡片（setup_workspace 成功后显示） */
+export function buildWorkspaceSwitchCard(
+  repoName: string,
   workingDir: string,
-  warning?: string,
+  branch?: string,
+  title: string = '📂 工作区已切换',
 ): Record<string, unknown> {
-  const elements: Record<string, unknown>[] = [
+  const fields: Record<string, unknown>[] = [
     {
-      tag: 'div',
-      fields: [
-        {
-          is_short: true,
-          text: { tag: 'lark_md', content: `**话题 ID:**\n\`${threadId}\`` },
-        },
-        {
-          is_short: true,
-          text: { tag: 'lark_md', content: `**工作目录:**\n${workingDir}` },
-        },
-      ],
+      is_short: true,
+      text: { tag: 'lark_md', content: `**仓库:**\n${repoName}` },
+    },
+    {
+      is_short: true,
+      text: { tag: 'lark_md', content: `**分支:**\n${branch ?? 'default'}` },
     },
   ];
-
-  if (warning) {
-    elements.push({
-      tag: 'note',
-      elements: [
-        { tag: 'plain_text', content: `⚠️ ${warning}` },
-      ],
-    });
-  }
 
   return {
     config: { wide_screen_mode: true },
     header: {
-      title: { tag: 'plain_text', content: warning ? '🤖 新会话已就绪（有警告）' : '🤖 新会话已就绪' },
-      template: warning ? 'orange' : 'green',
+      title: { tag: 'plain_text', content: title },
+      template: 'green',
     },
-    elements,
+    elements: [
+      { tag: 'div', fields },
+      {
+        tag: 'note',
+        elements: [
+          { tag: 'plain_text', content: workingDir },
+        ],
+      },
+    ],
   };
 }
 
@@ -1144,6 +1139,132 @@ export function buildMemoryClearConfirmCard(
         ],
       },
     ],
+  };
+}
+
+// ============================================================
+// AskUserQuestion 交互卡片
+// ============================================================
+
+/** AskUserQuestion 的选项 */
+export interface AskUserOption {
+  label: string;
+  description?: string;
+}
+
+/** AskUserQuestion 的单个问题 */
+export interface AskUserQuestionItem {
+  question: string;
+  header?: string;
+  options: AskUserOption[];
+  multiSelect?: boolean;
+}
+
+/**
+ * 构建 AskUserQuestion 交互卡片
+ * 每个问题渲染为一组按钮，用户点击后触发 card action
+ */
+export function buildAskUserQuestionCard(
+  questionId: string,
+  questions: AskUserQuestionItem[],
+): Record<string, unknown> {
+  const elements: Record<string, unknown>[] = [];
+
+  for (let qi = 0; qi < questions.length; qi++) {
+    const q = questions[qi]!;
+
+    // 问题标题
+    elements.push({
+      tag: 'div',
+      text: {
+        tag: 'lark_md',
+        content: q.header
+          ? `**${escapeMarkdown(q.header)}** — ${escapeMarkdown(q.question)}`
+          : `**${escapeMarkdown(q.question)}**`,
+      },
+    });
+
+    // 选项按钮
+    const buttons = q.options.map((opt, oi) => ({
+      tag: 'button',
+      text: { tag: 'plain_text', content: opt.label },
+      type: oi === 0 ? 'primary' : 'default',
+      value: {
+        action: 'ask_user_answer',
+        questionId,
+        questionIndex: qi,
+        optionIndex: oi,
+        optionLabel: opt.label,
+      },
+    }));
+
+    elements.push({ tag: 'action', actions: buttons });
+
+    // 选项描述（如果有）
+    const descriptions = q.options
+      .filter(opt => opt.description)
+      .map(opt => `• **${escapeMarkdown(opt.label)}**: ${escapeMarkdown(opt.description!)}`)
+      .join('\n');
+    if (descriptions) {
+      elements.push({
+        tag: 'div',
+        text: { tag: 'lark_md', content: descriptions },
+      });
+    }
+
+    // 分隔线（多个问题时）
+    if (qi < questions.length - 1) {
+      elements.push({ tag: 'hr' });
+    }
+  }
+
+  // 底部「自定义回答」提示
+  elements.push({
+    tag: 'note',
+    elements: [
+      { tag: 'plain_text', content: '也可以直接回复文字作为自定义答案' },
+    ],
+  });
+
+  return {
+    config: { wide_screen_mode: true },
+    header: {
+      title: { tag: 'plain_text', content: '🤔 需要你的输入' },
+      template: 'purple',
+    },
+    elements,
+  };
+}
+
+/**
+ * 构建 AskUserQuestion 已回答卡片（替换原卡片）
+ */
+export function buildAskUserAnsweredCard(
+  questions: AskUserQuestionItem[],
+  answers: Record<string, string>,
+): Record<string, unknown> {
+  const elements: Record<string, unknown>[] = [];
+
+  for (const q of questions) {
+    const answer = answers[q.question] ?? '—';
+    elements.push({
+      tag: 'div',
+      text: {
+        tag: 'lark_md',
+        content: q.header
+          ? `**${escapeMarkdown(q.header)}** — ${escapeMarkdown(q.question)}\n✅ ${escapeMarkdown(answer)}`
+          : `**${escapeMarkdown(q.question)}**\n✅ ${escapeMarkdown(answer)}`,
+      },
+    });
+  }
+
+  return {
+    config: { wide_screen_mode: true },
+    header: {
+      title: { tag: 'plain_text', content: '✅ 已回答' },
+      template: 'green',
+    },
+    elements,
   };
 }
 

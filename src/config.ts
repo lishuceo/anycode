@@ -1,6 +1,7 @@
 import dotenv from 'dotenv';
 dotenv.config();
 
+import { dirname } from 'node:path';
 import type { BotAccountConfig, AgentBinding, GroupConfig } from './agent/types.js';
 
 function parseBotAccounts(raw?: string): BotAccountConfig[] {
@@ -82,7 +83,7 @@ export const config = {
 
   // Claude Code 配置
   claude: {
-    defaultWorkDir: process.env.DEFAULT_WORK_DIR || '/home/ubuntu/projects',
+    defaultWorkDir: process.env.DEFAULT_WORK_DIR || dirname(process.cwd()),
     /** Anthropic API Base URL（支持代理/自定义端点），默认官方地址 */
     apiBaseUrl: process.env.ANTHROPIC_BASE_URL || '',
     /** 单步空闲超时 (秒)：某步骤长时间无 SDK 消息活动时 abort。不限制总执行时长 */
@@ -103,7 +104,7 @@ export const config = {
   workspace: {
     baseDir:
       process.env.WORKSPACE_BASE_DIR ||
-      `${process.env.DEFAULT_WORK_DIR || '/home/ubuntu/projects'}/anywhere-code-work-dir`,
+      `${process.env.DEFAULT_WORK_DIR || dirname(process.cwd())}/.workspaces`,
     branchPrefix: process.env.WORKSPACE_BRANCH_PREFIX || 'feat/claude-session',
     /** 工作区最大保留天数（过期后 thread session 和目录均会被清理） */
     maxAgeDays: parseInt(process.env.WORKSPACE_MAX_AGE_DAYS || '3', 10),
@@ -112,7 +113,7 @@ export const config = {
   // 仓库缓存配置
   repoCache: {
     /** 缓存根目录 (bare clone 存放位置) */
-    dir: process.env.REPO_CACHE_DIR || '/repos/cache',
+    dir: process.env.REPO_CACHE_DIR || `${process.env.DEFAULT_WORK_DIR || dirname(process.cwd())}/.repo-cache`,
     /** 缓存最大保留天数 */
     maxAgeDays: parseInt(process.env.REPO_CACHE_MAX_AGE_DAYS || '30', 10),
     /** 缓存最大总大小 (GB)，超过按 LRU 清理 — TODO: 尚未实现，当前仅按过期时间清理 */

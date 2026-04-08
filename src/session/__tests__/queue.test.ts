@@ -167,6 +167,60 @@ describe('TaskQueue', () => {
     });
   });
 
+  describe('forceThread flag', () => {
+    it('should preserve forceThread flag on dequeued task', () => {
+      queue.enqueue('chat1', 'chat1', 'user1', 'msg1', 'mid1', undefined, undefined, undefined, undefined, undefined, true);
+      const task = queue.dequeue('chat1');
+      expect(task).toBeDefined();
+      expect(task!.forceThread).toBe(true);
+    });
+
+    it('should default forceThread to undefined when not set', () => {
+      queue.enqueue('chat1', 'chat1', 'user1', 'msg1', 'mid1');
+      const task = queue.dequeue('chat1');
+      expect(task).toBeDefined();
+      expect(task!.forceThread).toBeUndefined();
+    });
+  });
+
+  describe('markBusy', () => {
+    it('should block dequeue on the marked key', () => {
+      queue.markBusy('chat1:threadA');
+      queue.enqueue('chat1:threadA', 'chat1', 'user1', 'msg1', 'mid1', 'threadA');
+
+      // dequeue blocked because key is marked busy
+      expect(queue.dequeue('chat1:threadA')).toBeUndefined();
+      expect(queue.isBusy('chat1:threadA')).toBe(true);
+
+      // complete releases the lock, then dequeue works
+      queue.complete('chat1:threadA');
+      const task = queue.dequeue('chat1:threadA');
+      expect(task).toBeDefined();
+      expect(task!.message).toBe('msg1');
+    });
+
+    it('should not overwrite an existing running task', () => {
+      queue.enqueue('chat1', 'chat1', 'user1', 'msg1', 'mid1');
+      const task = queue.dequeue('chat1');
+      expect(task).toBeDefined();
+
+      // markBusy on already-running key should be a no-op
+      queue.markBusy('chat1');
+      queue.complete('chat1');
+      expect(queue.isBusy('chat1')).toBe(false);
+    });
+
+    it('should not affect other queue keys', () => {
+      queue.markBusy('chat1:threadA');
+      queue.enqueue('chat1:threadB', 'chat1', 'user1', 'msg1', 'mid1', 'threadB');
+
+      // threadB is not blocked
+      const task = queue.dequeue('chat1:threadB');
+      expect(task).toBeDefined();
+      expect(task!.message).toBe('msg1');
+    });
+  });
+
   describe('cancelAllForChat', () => {
     it('should cancel pending tasks across all threads for a chat', async () => {
       const p1 = queue.enqueue('chat1:threadA', 'chat1', 'user1', 'msg1', 'mid1', 'threadA');

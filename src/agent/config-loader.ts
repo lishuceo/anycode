@@ -305,6 +305,28 @@ export function startConfigWatcher(): void {
   logger.info({ path: configFilePath }, 'Watching agent config file for hot reload');
 }
 
+/** 获取指定 agent 的配置文件路径信息（用于注入 prompt） */
+export function getAgentConfigInfo(agentId: string): { configFile: string; knowledgeDir?: string; personaFile?: string; knowledgeFiles: string[] } | undefined {
+  if (!configFilePath) return undefined;
+  const agentCfg = agentRegistry.get(agentId);
+  if (!agentCfg) return undefined;
+
+  const baseDir = configFileDir ?? process.cwd();
+  const personaFile = agentCfg.persona
+    ? (agentCfg.persona.startsWith('/') ? agentCfg.persona : resolve(baseDir, agentCfg.persona))
+    : undefined;
+  const knowledgeFiles = (agentCfg.knowledge ?? []).map(f =>
+    knowledgeDirPath ? resolve(knowledgeDirPath, f) : f,
+  );
+
+  return {
+    configFile: configFilePath,
+    knowledgeDir: knowledgeDirPath,
+    personaFile,
+    knowledgeFiles,
+  };
+}
+
 /** 停止配置文件监听 */
 export function stopConfigWatcher(): void {
   if (configFilePath && watcherActive) {

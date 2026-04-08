@@ -1,8 +1,10 @@
 /**
- * Thread Reaction Tests
+ * Emoji Reaction Tests
  *
- * Tests for the emoji reaction feature in thread messages:
- * - When user @bot in a thread (no quick-ack), bot adds a reaction as immediate feedback
+ * Tests for the emoji reaction feedback feature:
+ * - Thread messages: always add reaction as immediate feedback
+ * - Main chat with quick-ack disabled: fallback to emoji reaction
+ * - Main chat with quick-ack enabled: no emoji reaction (quick-ack handles feedback)
  * - After formal reply is sent, bot removes the reaction
  * - Reaction cleanup happens in finally block (even on error)
  */
@@ -48,19 +50,23 @@ vi.mock('../utils/logger.js', () => ({
 // ============================================================
 
 /**
- * Simulates the thread reaction add/remove flow from executeDirectTask.
+ * Simulates the emoji reaction add/remove flow from executeDirectTask.
+ * Mirrors the logic: useEmojiFallback = !!threadId || (!quickAckEnabled && !skipQuickAck)
  */
 async function simulateThreadReactionFlow(params: {
   messageId: string;
   eventThreadId?: string;
+  quickAckEnabled?: boolean;
+  skipQuickAck?: boolean;
   shouldError?: boolean;
 }) {
   const { feishuClient } = await import('../feishu/client.js');
-  const { messageId, eventThreadId, shouldError } = params;
+  const { messageId, eventThreadId, quickAckEnabled = true, skipQuickAck = false, shouldError } = params;
 
   // Same logic as executeDirectTask
   let pendingReactionId: string | undefined;
-  if (eventThreadId) {
+  const useEmojiFallback = !!eventThreadId || (!quickAckEnabled && !skipQuickAck);
+  if (useEmojiFallback) {
     pendingReactionId = await feishuClient.addReaction(messageId, 'OnIt').catch(() => undefined);
   }
 
@@ -100,13 +106,50 @@ describe('thread reaction: immediate feedback for @bot in threads', () => {
     expect(mockAddReaction).toHaveBeenCalledTimes(1);
   });
 
-  it('does NOT add reaction when not in thread (main chat)', async () => {
+  it('does NOT add reaction in main chat when quick-ack is enabled', async () => {
     await simulateThreadReactionFlow({
       messageId: 'msg-1',
       eventThreadId: undefined,
+      quickAckEnabled: true,
     });
 
     expect(mockAddReaction).not.toHaveBeenCalled();
+  });
+
+  it('adds fallback reaction in main chat when quick-ack is disabled', async () => {
+    mockAddReaction.mockResolvedValue('reaction-fallback');
+
+    await simulateThreadReactionFlow({
+      messageId: 'msg-1',
+      eventThreadId: undefined,
+      quickAckEnabled: false,
+    });
+
+    expect(mockAddReaction).toHaveBeenCalledWith('msg-1', 'OnIt');
+    expect(mockAddReaction).toHaveBeenCalledTimes(1);
+  });
+
+  it('does NOT add fallback reaction when skipQuickAck is true (even if quick-ack disabled)', async () => {
+    await simulateThreadReactionFlow({
+      messageId: 'msg-1',
+      eventThreadId: undefined,
+      quickAckEnabled: false,
+      skipQuickAck: true,
+    });
+
+    expect(mockAddReaction).not.toHaveBeenCalled();
+  });
+
+  it('removes fallback reaction after reply in main chat', async () => {
+    mockAddReaction.mockResolvedValue('reaction-fallback-2');
+
+    await simulateThreadReactionFlow({
+      messageId: 'msg-1',
+      eventThreadId: undefined,
+      quickAckEnabled: false,
+    });
+
+    expect(mockRemoveReaction).toHaveBeenCalledWith('msg-1', 'reaction-fallback-2');
   });
 
   it('removes reaction after successful reply', async () => {

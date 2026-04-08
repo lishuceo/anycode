@@ -500,7 +500,7 @@ export class MemoryDatabase {
 // ============================================================
 
 /** Current migration version. Bump when adding new migrations. */
-const CURRENT_MIGRATION_VERSION = 1;
+const CURRENT_MIGRATION_VERSION = 2;
 
 /**
  * Run idempotent data migrations guarded by PRAGMA user_version.
@@ -519,6 +519,9 @@ function runDataMigrations(db: Database.Database): void {
       migrationV1_normalizeWorkspaceDirs(db);
       migrationV1_invalidateTransientMemories(db);
     }
+    if (version < 2) {
+      migrationV2_renameRepoUrl(db);
+    }
 
     db.pragma(`user_version = ${CURRENT_MIGRATION_VERSION}`);
   })();
@@ -533,9 +536,9 @@ function runDataMigrations(db: Database.Database): void {
 function migrationV1_normalizeWorkspaceDirs(db: Database.Database): void {
   // Known local paths → canonical repo identity
   const mappings: Array<[string, string]> = [
-    ['/root/dev', 'github.com/lishuceo/anywhere-code.git'],
-    ['/root/dev/', 'github.com/lishuceo/anywhere-code.git'],
-    ['/root/dev/anywhere-code', 'github.com/lishuceo/anywhere-code.git'],
+    ['/root/dev', 'github.com/lishuceo/anycode.git'],
+    ['/root/dev/', 'github.com/lishuceo/anycode.git'],
+    ['/root/dev/anywhere-code', 'github.com/lishuceo/anycode.git'],
   ];
 
   let totalUpdated = 0;
@@ -550,11 +553,24 @@ function migrationV1_normalizeWorkspaceDirs(db: Database.Database): void {
   // .workspaces paths: /root/dev/.workspaces/anywhere-code-* → anywhere-code repo
   const wsResult = db.prepare(
     'UPDATE memories SET workspace_dir = ? WHERE workspace_dir LIKE ?',
-  ).run('github.com/lishuceo/anywhere-code.git', '/root/dev/.workspaces/anywhere-code-%');
+  ).run('github.com/lishuceo/anycode.git', '/root/dev/.workspaces/anywhere-code-%');
   totalUpdated += wsResult.changes;
 
   if (totalUpdated > 0) {
     logger.info({ updated: totalUpdated }, 'Migration v1: normalized workspace_dir values');
+  }
+}
+
+/**
+ * Migration v2: Rename repo URL after GitHub repo rename (anywhere-code → anycode).
+ */
+function migrationV2_renameRepoUrl(db: Database.Database): void {
+  const result = db.prepare(
+    'UPDATE memories SET workspace_dir = ? WHERE workspace_dir = ?',
+  ).run('github.com/lishuceo/anycode.git', 'github.com/lishuceo/anywhere-code.git');
+
+  if (result.changes > 0) {
+    logger.info({ updated: result.changes }, 'Migration v2: renamed repo URL anywhere-code → anycode');
   }
 }
 
