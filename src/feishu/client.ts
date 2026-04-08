@@ -23,10 +23,16 @@ export function serializeCard(card: Record<string, unknown>): string {
 export class FeishuClient {
   private client: lark.Client;
   private _botOpenId: string | undefined;
+  private _botName: string | undefined;
 
   /** Bot's own open_id, fetched at startup */
   get botOpenId(): string | undefined {
     return this._botOpenId;
+  }
+
+  /** Bot's display name from Feishu, fetched at startup */
+  get botName(): string | undefined {
+    return this._botName;
   }
 
   constructor(appId?: string, appSecret?: string) {
@@ -54,7 +60,8 @@ export class FeishuClient {
 
       if (resp.code === 0 && resp.bot?.open_id) {
         this._botOpenId = resp.bot.open_id;
-        logger.info({ botOpenId: this._botOpenId, appName: resp.bot.app_name }, 'Bot info fetched');
+        this._botName = resp.bot.app_name;
+        logger.info({ botOpenId: this._botOpenId, appName: this._botName }, 'Bot info fetched');
       } else {
         logger.warn({ code: resp.code, msg: resp.msg }, 'Failed to fetch bot info, @mention detection may be inaccurate');
       }
