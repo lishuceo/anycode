@@ -58,7 +58,7 @@ export async function injectMemories(
     const fragment = formatMemories(results, context.chatId);
     logger.info(
       { agentId: context.agentId, userId: context.userId, count: results.length, chars: fragment.length },
-      'Memories injected into system prompt',
+      'Memories injected into user prompt prefix',
     );
     return fragment;
   } catch (err) {
