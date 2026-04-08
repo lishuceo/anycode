@@ -144,6 +144,9 @@ async function main(): Promise<void> {
   // 预热 quick-ack client（避免首次调用冷启动）
   warmupQuickAck();
 
+  // 初始化默认 FeishuClient（所有模式都需要，作为 AsyncLocalStorage 无值时的 fallback）
+  initDefaultClient(botAccounts[0].appId, botAccounts[0].appSecret);
+
   // 初始化 bot 账号（从 agents.json 的 feishu 字段推导）
   if (multiBotMode) {
     // 多 bot 模式：初始化所有账号
@@ -162,7 +165,6 @@ async function main(): Promise<void> {
   } else {
     // 单 bot 模式
     const bot = botAccounts[0];
-    initDefaultClient(bot.appId, bot.appSecret);
     accountManager.initializeSingleBot(bot.appId, bot.appSecret, bot.botName);
 
     // 获取机器人信息（用于精确 @mention 检测）

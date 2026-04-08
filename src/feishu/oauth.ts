@@ -35,7 +35,9 @@ const STATE_MAX_AGE_MS = 10 * 60 * 1000; // 10 minutes
  */
 /** 获取主 bot 的 appSecret（用于 OAuth HMAC 签名） */
 function getPrimaryAppSecret(): string {
-  return deriveBotAccounts()[0]?.appSecret ?? '';
+  const accounts = deriveBotAccounts();
+  if (!accounts.length) throw new Error('No bot accounts configured — cannot sign OAuth state');
+  return accounts[0].appSecret;
 }
 
 function signState(payload: OAuthState): string {
@@ -91,7 +93,9 @@ const FALLBACK_REDIRECT_URI = 'http://127.0.0.1:3000/feishu/oauth/callback';
 export function generateAuthUrl(userId: string, chatId: string): string {
   const state = signState({ userId, chatId, ts: Date.now() });
   const redirectUri = encodeURIComponent(config.feishu.oauth.redirectUri || FALLBACK_REDIRECT_URI);
-  const appId = deriveBotAccounts()[0]?.appId ?? '';
+  const accounts = deriveBotAccounts();
+  if (!accounts.length) throw new Error('No bot accounts configured — cannot generate OAuth URL');
+  const appId = accounts[0].appId;
   // 显式请求 scope，确保 user_access_token 包含所需权限（如 task:task:read）。
   // 不传 scope 时飞书文档称默认授权全部权限，但实测某些权限不会自动包含。
   const scopes = config.feishu.oauth.scopes;
