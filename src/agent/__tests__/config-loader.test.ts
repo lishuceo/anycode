@@ -199,3 +199,70 @@ describe('loadKnowledgeContent', () => {
     );
   });
 });
+
+describe('getAgentConfigInfo', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    mkdirSync(KNOWLEDGE_DIR, { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(TEST_DIR, { recursive: true, force: true });
+  });
+
+  async function setup(configObj: Record<string, unknown>) {
+    writeFileSync(CONFIG_FILE, JSON.stringify(configObj));
+    vi.stubEnv('AGENT_CONFIG_PATH', CONFIG_FILE);
+    vi.doMock('../../config.js', () => ({
+      config: {
+        agent: { configPath: CONFIG_FILE },
+        claude: { model: 'claude-sonnet-4-6', maxBudgetUsd: 5, maxTurns: 100 },
+      },
+    }));
+    const loader = await import('../config-loader.js');
+    const result = loader.loadAgentConfig();
+    expect(result.loaded).toBe(true);
+    return loader;
+  }
+
+  it('should return config file path and knowledge files', async () => {
+    writeFileSync(resolve(KNOWLEDGE_DIR, 'team.md'), '# Team');
+
+    const loader = await setup({
+      knowledgeDir: './knowledge/',
+      agents: [
+        { id: 'dev', knowledge: ['team.md'] },
+      ],
+    });
+
+    const info = loader.getAgentConfigInfo('dev');
+    expect(info).toBeDefined();
+    expect(info!.configFile).toBe(CONFIG_FILE);
+    expect(info!.knowledgeFiles).toHaveLength(1);
+    expect(info!.knowledgeFiles[0]).toContain('team.md');
+  });
+
+  it('should include persona file path when configured', async () => {
+    mkdirSync(resolve(TEST_DIR, 'personas'), { recursive: true });
+    writeFileSync(resolve(TEST_DIR, 'personas', 'pm.md'), '# PM');
+
+    const loader = await setup({
+      agents: [
+        { id: 'pm', persona: './personas/pm.md' },
+      ],
+    });
+
+    const info = loader.getAgentConfigInfo('pm');
+    expect(info).toBeDefined();
+    expect(info!.personaFile).toContain('personas/pm.md');
+  });
+
+  it('should return undefined for unknown agent', async () => {
+    const loader = await setup({
+      agents: [{ id: 'dev' }],
+    });
+
+    const info = loader.getAgentConfigInfo('nonexistent');
+    expect(info).toBeUndefined();
+  });
+});

@@ -1,8 +1,9 @@
 import { existsSync, realpathSync, readFileSync } from 'node:fs';
-import { resolve, join } from 'node:path';
+import { resolve, join, dirname, basename } from 'node:path';
 import { config } from '../config.js';
 import { logger } from '../utils/logger.js';
 import { setupWorkspace } from './manager.js';
+import { getSourceRepoPaths } from './registry.js';
 
 // ============================================================
 // 工作区隔离工具
@@ -31,7 +32,7 @@ export function isAutoWorkspacePath(dir: string): boolean {
 }
 
 /**
- * 判断工作目录是否是 anywhere-code 服务自身的仓库（自改自场景）。
+ * 判断工作目录是否是 anycode 服务自身的仓库（自改自场景）。
  * 通过 package.json name 字段匹配，比路径对比更鲁棒（worktree clone 也能识别）。
  */
 export function isServiceOwnRepo(dir: string): boolean {
@@ -39,10 +40,82 @@ export function isServiceOwnRepo(dir: string): boolean {
     const pkgPath = join(resolve(dir), 'package.json');
     if (!existsSync(pkgPath)) return false;
     const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'));
-    return pkg.name === 'feishu-claude-bridge';
+    return pkg.name === 'anycode';
   } catch {
     return false;
   }
+}
+
+/**
+ * 判断路径是否位于 DEFAULT_WORK_DIR 下某个源仓库的工作树内。
+ * 用于源仓库保护：阻止 agent 直接修改源仓库中的文件。
+ *
+ * 优先使用 registry 缓存的源仓库路径集合做前缀匹配（O(n)），
+ * 缓存未初始化时 fallback 到向上遍历目录树查找 .git。
+ *
+ * 对于不存在的文件路径（Write 新建文件），resolve 其父目录。
+ */
+export function isInsideSourceRepo(filePath: string): boolean {
+  let resolved: string;
+  try {
+    if (existsSync(filePath)) {
+      resolved = realpathSync(filePath);
+    } else {
+      // Write 新建文件：文件不存在，resolve 父目录后拼接文件名
+      const parentDir = dirname(filePath);
+      if (existsSync(parentDir)) {
+        resolved = realpathSync(parentDir) + '/' + basename(filePath);
+      } else {
+        resolved = resolve(filePath);
+      }
+    }
+  } catch (err) {
+    // 安全检查 fail-closed：无法解析路径时视为在源仓库内（拒绝写入）
+    logger.warn({ err, filePath }, 'isInsideSourceRepo: path resolution failed, failing closed');
+    return true;
+  }
+
+  // 排除 WORKSPACE_BASE_DIR（已隔离的工作区）
+  if (isAutoWorkspacePath(filePath)) return false;
+
+  // 排除 .repo-cache 目录
+  try {
+    const cacheDir = existsSync(config.repoCache.dir)
+      ? realpathSync(config.repoCache.dir)
+      : resolve(config.repoCache.dir);
+    if (resolved.startsWith(cacheDir + '/') || resolved === cacheDir) return false;
+  } catch {
+    // repoCache.dir 不存在，不需要排除
+  }
+
+  // 快速路径：使用 registry 缓存的源仓库路径集合
+  const cachedPaths = getSourceRepoPaths();
+  if (cachedPaths.size > 0) {
+    for (const repoRoot of cachedPaths) {
+      if (resolved === repoRoot || resolved.startsWith(repoRoot + '/')) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // Fallback：缓存未初始化，向上遍历查找 .git
+  const projectsDir = existsSync(config.claude.defaultWorkDir)
+    ? realpathSync(config.claude.defaultWorkDir)
+    : resolve(config.claude.defaultWorkDir);
+
+  if (!resolved.startsWith(projectsDir + '/') && resolved !== projectsDir) {
+    return false;
+  }
+
+  let current = resolved;
+  while (current.length > projectsDir.length) {
+    if (existsSync(join(current, '.git'))) return true;
+    const parent = dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+  return false;
 }
 
 /**

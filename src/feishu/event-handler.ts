@@ -1,16 +1,16 @@
 import * as lark from '@larksuiteoapi/node-sdk';
 import { logger } from '../utils/logger.js';
-import { isUserAllowed, containsDangerousCommand, isOwner } from '../utils/security.js';
+import { isUserAllowed, containsDangerousCommand, isOwner, autoDetectOwner } from '../utils/security.js';
 import { sessionManager } from '../session/manager.js';
 import { taskQueue } from '../session/queue.js';
 import { claudeExecutor } from '../claude/executor.js';
 import { DEFAULT_IMAGE_PROMPT, DEFAULT_DOCUMENT_PROMPT } from '../claude/types.js';
-import type { TurnInfo, ToolCallInfo, ImageAttachment, DocumentAttachment } from '../claude/types.js';
-import { buildResultCard, buildStatusCard, buildCancelledCard, buildPipelineCard, buildPipelineConfirmCard, buildProgressCard, buildToolProgressCard, buildTextContentCard, buildSimpleResultCard } from './message-builder.js';
+import type { TurnInfo, ToolCallInfo, ImageAttachment, DocumentAttachment, ConversationTurn } from '../claude/types.js';
+import { buildResultCard, buildStatusCard, buildCancelledCard, buildPipelineCard, buildPipelineConfirmCard, buildProgressCard, buildToolProgressCard, buildTextContentCard, buildSimpleResultCard, buildWorkspaceSwitchCard, buildAskUserQuestionCard, buildAskUserAnsweredCard } from './message-builder.js';
+import type { AskUserQuestionItem } from './message-builder.js';
 import { TOTAL_PHASES } from '../pipeline/types.js';
 import { feishuClient, feishuClientContext, runWithAccountId } from './client.js';
 import { config, isMultiBotMode } from '../config.js';
-import { setupWorkspace } from '../workspace/manager.js';
 import { checkAndRequestApproval, handleApprovalTextCommand, handleApprovalCardAction, setOnApproved } from './approval.js';
 import { resolveThreadContext } from './thread-context.js';
 import { ensureThread } from './thread-utils.js';
@@ -28,7 +28,7 @@ import { agentRegistry } from '../agent/registry.js';
 import { accountManager } from './multi-account.js';
 import { chatBotRegistry } from './bot-registry.js';
 import type { AgentId } from '../agent/types.js';
-import { readPersonaFile, loadKnowledgeContent } from '../agent/config-loader.js';
+import { readPersonaFile, loadKnowledgeContent, getAgentConfigInfo } from '../agent/config-loader.js';
 import { resolveMentions } from './mention-resolver.js';
 import { createDiscussionMcpServer } from '../agent/tools/discussion.js';
 import { generateAuthUrl, hasCallbackUrl, handleManualCode } from './oauth.js';
@@ -60,6 +60,167 @@ setOnApproved((chatId, userId, text, messageId, rootId, threadId) => {
 //
 // 配合 adaptExpress 可以一行代码接入 Express
 // ============================================================
+
+/**
+ * 将对话轨迹格式化为文本，用于 restart 时注入 priorContext。
+ * 保留 Agent 的推理文本和关键工具交互，截断过长内容。
+ */
+export function formatConversationTrace(trace?: ConversationTurn[]): string {
+  if (!trace?.length) return '';
+  const MAX_TOTAL = 15000;
+  const parts: string[] = [];
+  for (const turn of trace) {
+    if (turn.text) parts.push(turn.text);
+    for (const tc of turn.toolCalls) {
+      // 只保留关键输入字段，避免序列化完整 input
+      const inputSummary = tc.name === 'Read' ? String(tc.input.file_path ?? '')
+        : tc.name === 'Bash' ? String(tc.input.command ?? '')
+        : tc.name === 'Grep' ? `${tc.input.pattern ?? ''} in ${tc.input.path ?? '.'}`
+        : JSON.stringify(tc.input).slice(0, 200);
+      parts.push(`[${tc.name}] ${inputSummary}`);
+      if (tc.result) parts.push(tc.result);
+    }
+  }
+  const joined = parts.join('\n');
+  return joined.length > MAX_TOTAL ? joined.slice(-MAX_TOTAL) : joined;
+}
+
+// ============================================================
+// AskUserQuestion 待回答存储
+// 当 Claude 调用 AskUserQuestion 时，canUseTool 拦截并发送飞书卡片，
+// 然后在此等待用户通过卡片按钮回答。
+// ============================================================
+interface PendingQuestion {
+  questions: AskUserQuestionItem[];
+  /** 已收集的答案（按 question 文本为 key） */
+  answers: Record<string, string>;
+  /** 需要回答的问题总数 */
+  totalQuestions: number;
+  /** 回答完成后 resolve */
+  resolve: (answers: Record<string, string>) => void;
+  /** 超时或异常时 reject */
+  reject: (err: Error) => void;
+  /** 卡片消息 ID（用于更新卡片） */
+  cardMessageId?: string;
+  /** 卡片所在 chatId */
+  chatId?: string;
+  /** 超时 timer */
+  timeoutTimer?: ReturnType<typeof setTimeout>;
+}
+
+/** questionId → PendingQuestion */
+const pendingQuestions = new Map<string, PendingQuestion>();
+
+/** AskUserQuestion 等待超时（5 分钟） */
+const ASK_USER_TIMEOUT_MS = 5 * 60 * 1000;
+
+/**
+ * 创建 AskUserQuestion 回调（供 executeClaudeTask / executeDirectTask 共用）
+ * 将 Claude 的 AskUserQuestion 工具调用渲染为飞书交互卡片，等待用户点击按钮回答。
+ */
+function createAskUserHandler(chatId: string, getThreadReplyMsgId: () => string | undefined) {
+  return async (questions: Array<{ question: string; header?: string; options: Array<{ label: string; description?: string }>; multiSelect?: boolean }>) => {
+    const questionId = `ask_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const questionItems: AskUserQuestionItem[] = questions.map(q => ({
+      question: q.question,
+      header: q.header,
+      options: q.options.map(o => ({ label: o.label, description: o.description })),
+      multiSelect: q.multiSelect,
+    }));
+
+    const card = buildAskUserQuestionCard(questionId, questionItems);
+
+    return new Promise<Record<string, string>>((resolve, reject) => {
+      const pending: PendingQuestion = {
+        questions: questionItems,
+        answers: {},
+        totalQuestions: questions.length,
+        resolve,
+        reject,
+        chatId,
+      };
+
+      pending.timeoutTimer = setTimeout(() => {
+        pendingQuestions.delete(questionId);
+        reject(new Error('AskUserQuestion timed out'));
+      }, ASK_USER_TIMEOUT_MS);
+
+      pendingQuestions.set(questionId, pending);
+
+      // 发送卡片（在话题内回复或直接发到群）
+      // 如果发送失败，立即 reject 而非等待 5 分钟超时
+      const trySendCard = async () => {
+        try {
+          const threadMsgId = getThreadReplyMsgId();
+          const msgId = threadMsgId
+            ? await feishuClient.replyCardInThread(threadMsgId, card)
+            : await feishuClient.sendCard(chatId, card);
+          pending.cardMessageId = msgId ?? undefined;
+        } catch (err) {
+          logger.warn({ err, questionId }, 'Failed to send AskUserQuestion card');
+          pendingQuestions.delete(questionId);
+          if (pending.timeoutTimer) clearTimeout(pending.timeoutTimer);
+          reject(err instanceof Error ? err : new Error('Failed to send AskUserQuestion card'));
+        }
+      };
+      trySendCard();
+    });
+  };
+}
+
+/** 处理 AskUserQuestion 卡片按钮点击 */
+function handleAskUserAnswer(actionValue: Record<string, unknown>): Record<string, unknown> {
+  const questionId = actionValue.questionId as string | undefined;
+  const questionIndex = actionValue.questionIndex as number | undefined;
+  const optionLabel = actionValue.optionLabel as string | undefined;
+
+  if (!questionId || questionIndex == null || !optionLabel) return {};
+
+  const pending = pendingQuestions.get(questionId);
+  if (!pending) {
+    logger.warn({ questionId }, 'AskUserQuestion answer received but no pending question found');
+    return {
+      toast: {
+        type: 'info' as const,
+        content: '该问题已过期或已回答',
+      },
+    };
+  }
+
+  const question = pending.questions[questionIndex];
+  if (!question) return {};
+
+  // 用 questionIndex 作为内部 key，避免相同问题文本导致 key 冲突
+  pending.answers[String(questionIndex)] = optionLabel;
+
+  // 检查是否所有问题都已回答
+  if (Object.keys(pending.answers).length >= pending.totalQuestions) {
+    // 全部回答完毕：将 index-keyed 答案转换回 question-text-keyed（SDK 需要）
+    if (pending.timeoutTimer) clearTimeout(pending.timeoutTimer);
+    const sdkAnswers: Record<string, string> = {};
+    const displayAnswers: Record<string, string> = {};
+    for (const [idx, answer] of Object.entries(pending.answers)) {
+      const q = pending.questions[Number(idx)];
+      if (q) {
+        sdkAnswers[q.question] = answer;
+        displayAnswers[q.question] = answer;
+      }
+    }
+    pending.resolve(sdkAnswers);
+    pendingQuestions.delete(questionId);
+
+    // 返回已回答卡片（替换原卡片）
+    return buildAskUserAnsweredCard(pending.questions, displayAnswers);
+  }
+
+  // 部分回答：返回 toast 提示
+  return {
+    toast: {
+      type: 'success' as const,
+      content: `已选择: ${optionLabel}`,
+    },
+  };
+}
 
 // 消息去重缓存 (accountId:message_id → 时间戳)，防止飞书重试导致重复处理
 // 多 bot 模式下每个 bot 独立去重（key 包含 accountId），避免跨 bot 误去重
@@ -178,6 +339,11 @@ async function handleCardAction(data: Record<string, unknown>): Promise<Record<s
   // 记忆管理卡片动作（memory_*）
   if (actionType.startsWith('memory_') && operatorId) {
     return handleMemoryCardAction(actionType, action?.value, operatorId);
+  }
+
+  // AskUserQuestion 卡片动作
+  if (actionType === 'ask_user_answer' && action?.value) {
+    return handleAskUserAnswer(action.value);
   }
 
   // 管道卡片动作需要 pipelineId
@@ -327,8 +493,8 @@ function processQueue(queueKey: string, agentId: AgentId = 'dev'): void {
   const useDirectMode = agentCfg?.replyMode === 'direct';
 
   const executeFn = useDirectMode
-    ? executeDirectTask(task.message, task.chatId, task.userId, task.messageId, task.images, task.documents, agentId, task.threadId, task.rootId, task.createTime, { forceThread: task.forceThread })
-    : executeClaudeTask(task.message, task.chatId, task.userId, task.messageId, task.rootId, task.threadId, task.images, task.documents, agentId, task.createTime);
+    ? executeDirectTask(task.message, task.chatId, task.userId, task.messageId, task.images, task.documents, agentId, task.threadId, task.rootId, task.createTime, { forceThread: task.forceThread }, task.messageType)
+    : executeClaudeTask(task.message, task.chatId, task.userId, task.messageId, task.rootId, task.threadId, task.images, task.documents, agentId, task.createTime, task.messageType);
 
   // 注册 task promise：graceful shutdown 时等待结果卡片发送完成
   claudeExecutor.registerTask(executeFn);
@@ -459,6 +625,8 @@ interface ParsedMessage {
   images?: ImageAttachment[];
   /** 文档附件列表 (用户发送 PDF 等文件时) */
   documents?: DocumentAttachment[];
+  /** 原始消息类型（text/image/file 等），用于区分"新文件上传"与"引用父消息文件" */
+  messageType?: string;
   /** 发送者类型: 'user' = 人类用户, 'app' = 应用/机器人 */
   senderType?: string;
   /** 消息创建时间（毫秒级时间戳字符串，来自飞书 message.create_time） */
@@ -512,7 +680,7 @@ async function handleMessageEvent(data: MessageEventData, accountId: string = 'd
   const parsed = await parseMessage(data);
   if (!parsed) return;
 
-  const { text, messageId, userId, chatId, chatType, mentionedBot, rootId, threadId, images, documents, mentions, createTime } = parsed;
+  const { text, messageId, userId, chatId, chatType, mentionedBot, rootId, threadId, images, documents, messageType, mentions, createTime } = parsed;
 
   logger.info({ userId, chatId, chatType, rootId, threadId, accountId, text: text.slice(0, 100), hasImages: !!images?.length }, 'Received message');
 
@@ -625,6 +793,11 @@ async function handleMessageEvent(data: MessageEventData, accountId: string = 'd
     return;
   }
 
+  // 自动检测 owner：OWNER_USER_ID 未配置时，首个发消息的用户自动成为管理员
+  if (autoDetectOwner(userId)) {
+    await feishuClient.replyText(messageId, `🔑 已自动将你设为管理员 (${userId})，已写入 .env`);
+  }
+
   // /t <text> — 强制话题回复 + 跳过 quick-ack（仅对 direct 模式 agent 生效）
   // thread 模式 agent 本身就会创建话题，/t 对其无意义，直接忽略前缀
   let forceThread = false;
@@ -687,7 +860,7 @@ async function handleMessageEvent(data: MessageEventData, accountId: string = 'd
   const queueKey = perMessageParallel
     ? makeQueueKey(chatId, undefined, agentId, messageId)
     : makeQueueKey(chatId, effectiveThreadId, agentId, isDirectMode ? userId : undefined);
-  taskQueue.enqueue(queueKey, chatId, userId, effectiveText, messageId, rootId, effectiveThreadId, images, documents, createTime, forceThread).catch(() => {});
+  taskQueue.enqueue(queueKey, chatId, userId, effectiveText, messageId, rootId, effectiveThreadId, images, documents, createTime, forceThread, messageType).catch(() => {});
   processQueue(queueKey, agentId);
 }
 
@@ -709,46 +882,6 @@ async function handleSlashCommand(
   // rootId 单独出现（无 threadId）= 主面板引用回复，不应跟进话题
   // 不 fallback 到 session 的 threadRootMessageId，避免群主界面的命令被发到旧话题
   const threadReplyMsgId = effectiveThreadId ? rootId : undefined;
-
-  // /project <path> - 切换工作目录
-  if (trimmed.startsWith('/project ')) {
-    const dir = trimmed.slice('/project '.length).trim();
-    // 安全校验：路径必须在允许的基目录下（用 realpathSync 跟踪 symlink）
-    const { resolve } = await import('node:path');
-    const { existsSync, realpathSync } = await import('node:fs');
-    const resolved = resolve(dir);
-    if (!existsSync(resolved)) {
-      const reply = `⚠️ 路径不存在: ${dir}`;
-      if (threadReplyMsgId) {
-        await feishuClient.replyTextInThread(threadReplyMsgId, reply);
-      } else {
-        await feishuClient.replyText(messageId, reply);
-      }
-      return true;
-    }
-    const realResolved = realpathSync(resolved);
-    const allowedBase = existsSync(resolve(config.claude.defaultWorkDir))
-      ? realpathSync(resolve(config.claude.defaultWorkDir))
-      : resolve(config.claude.defaultWorkDir);
-    if (!realResolved.startsWith(allowedBase + '/') && realResolved !== allowedBase) {
-      const reply = `⚠️ 路径不在允许的目录范围内 (允许: ${allowedBase})`;
-      if (threadReplyMsgId) {
-        await feishuClient.replyTextInThread(threadReplyMsgId, reply);
-      } else {
-        await feishuClient.replyText(messageId, reply);
-      }
-      return true;
-    }
-    sessionManager.getOrCreate(chatId, userId);
-    sessionManager.setWorkingDir(chatId, userId, realResolved);
-    const reply = `📂 工作目录已切换到: ${realResolved}`;
-    if (threadReplyMsgId) {
-      await feishuClient.replyTextInThread(threadReplyMsgId, reply);
-    } else {
-      await feishuClient.replyText(messageId, reply);
-    }
-    return true;
-  }
 
   // /status - 查看状态
   if (trimmed === '/status') {
@@ -804,14 +937,10 @@ async function handleSlashCommand(
     return true;
   }
 
-  // /workspace <url-or-path> [branch] - 创建隔离工作区
-  if (trimmed.startsWith('/workspace ')) {
-    const args = trimmed.slice('/workspace '.length).trim().split(/\s+/);
-    const source = args[0];
-    const sourceBranch = args[1];
-
-    if (!source) {
-      const reply = '⚠️ 用法: `/workspace <repo-url-or-local-path> [branch]`';
+  // /edit [repo] [task] - 原地编辑源仓库（OWNER only）
+  if (trimmed === '/edit' || trimmed.startsWith('/edit ')) {
+    if (!isOwner(userId)) {
+      const reply = '⚠️ 只有管理员可以使用 /edit 命令';
       if (threadReplyMsgId) {
         await feishuClient.replyTextInThread(threadReplyMsgId, reply);
       } else {
@@ -820,36 +949,111 @@ async function handleSlashCommand(
       return true;
     }
 
-    try {
-      const isUrl = /^(https?:\/\/|git@|ssh:\/\/)/.test(source);
-      const result = setupWorkspace({
-        ...(isUrl ? { repoUrl: source } : { localPath: source }),
-        sourceBranch,
-      });
+    const args = trimmed.slice('/edit'.length).trim();
+    const { resolve: resolvePath } = await import('node:path');
+    const { existsSync } = await import('node:fs');
+    const { findLocalPathByName } = await import('../workspace/registry.js');
 
-      sessionManager.getOrCreate(chatId, userId);
-      sessionManager.setWorkingDir(chatId, userId, result.workspacePath);
+    let targetDir: string | undefined;
+    let task = args;
 
-      const reply = [
-        '📂 工作区已创建',
-        `路径: ${result.workspacePath}`,
-        `分支: ${result.branch}`,
-        `仓库: ${result.repoName}`,
-      ].join('\n');
-      if (threadReplyMsgId) {
-        await feishuClient.replyTextInThread(threadReplyMsgId, reply);
+    if (args) {
+      // 尝试解析第一个 token 为仓库名或路径
+      const firstToken = args.split(/\s+/)[0];
+      const rest = args.slice(firstToken.length).trim();
+
+      // 1. 绝对路径
+      if (firstToken.startsWith('/') && existsSync(firstToken)) {
+        targetDir = resolvePath(firstToken);
+        task = rest;
       } else {
-        await feishuClient.replyText(messageId, reply);
-      }
-    } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : String(err);
-      const reply = `❌ 工作区创建失败: ${errorMsg}`;
-      if (threadReplyMsgId) {
-        await feishuClient.replyTextInThread(threadReplyMsgId, reply);
-      } else {
-        await feishuClient.replyText(messageId, reply);
+        // 2. 按名字从 registry 查找
+        const found = findLocalPathByName(firstToken);
+        if (found && existsSync(found)) {
+          targetDir = found;
+          task = rest;
+        }
+        // 3. 未匹配到仓库名 → 整个 args 作为 task，使用当前 workdir
       }
     }
+
+    // fallback: 使用 anycode 服务仓库本身（process.cwd()）
+    // /edit 不指定仓库时，用户大概率是想改服务配置（知识、人设、agents.json）
+    if (!targetDir) {
+      targetDir = process.cwd();
+    }
+
+    // 验证目标路径存在
+    if (!existsSync(targetDir)) {
+      const reply = `⚠️ 路径不存在: ${targetDir}`;
+      if (threadReplyMsgId) {
+        await feishuClient.replyTextInThread(threadReplyMsgId, reply);
+      } else {
+        await feishuClient.replyText(messageId, reply);
+      }
+      return true;
+    }
+
+    // 设置 session workingDir
+    sessionManager.getOrCreate(chatId, userId, agentId);
+    sessionManager.setWorkingDir(chatId, userId, targetDir, agentId);
+
+    // 确保话题存在并标记 inplaceEdit
+    const threadResult = await ensureThread(chatId, userId, messageId, rootId, effectiveThreadId);
+    const editThreadReplyMsgId = threadResult.threadReplyMsgId;
+    const editThreadId = effectiveThreadId || sessionManager.getOrCreate(chatId, userId, agentId).threadId;
+
+    if (editThreadId) {
+      // 确保 thread session 存在
+      if (!sessionManager.getThreadSession(editThreadId, agentId)) {
+        sessionManager.upsertThreadSession(editThreadId, chatId, userId, targetDir, agentId);
+      } else {
+        sessionManager.setThreadWorkingDir(editThreadId, targetDir, agentId);
+      }
+      sessionManager.setThreadInplaceEdit(editThreadId, true, agentId);
+    }
+
+    // 确认消息
+    const { basename: baseName } = await import('node:path');
+    const repoName = baseName(targetDir);
+    const confirmReply = [
+      `📝 原地编辑模式 — ${repoName} (${targetDir})`,
+      '⚠️ 直接修改源仓库，hot-reload 即时生效',
+    ].join('\n');
+    if (editThreadReplyMsgId) {
+      await feishuClient.replyTextInThread(editThreadReplyMsgId, confirmReply);
+    } else {
+      await feishuClient.replyText(messageId, confirmReply);
+    }
+
+    // 如果有 task 内容，将其作为普通消息入队执行
+    if (task) {
+      // 当 /edit 目标是 anycode 服务仓库时，注入 agent 配置路径信息
+      // 让 agent 知道自己的知识/人设文件在哪，以及 .example.md 是模板不要编辑
+      let editPrompt = task;
+      if (targetDir === process.cwd()) {
+        const cfgInfo = getAgentConfigInfo(agentId);
+        if (cfgInfo) {
+          editPrompt = [
+            '<agent-config-info>',
+            '你正在编辑的是 anycode 服务仓库。',
+            `你当前的 agent id 是 "${agentId}"，所有 agent 的配置（persona、knowledge 路径等）定义在: ${cfgInfo.configFile}`,
+            '先读取该文件了解配置结构，再修改对应的文件。',
+            '.example.md 是模板，不要编辑。只编辑不带 .example 的正式文件。',
+            '配置文件支持热加载，修改后下次查询自动生效。',
+            '</agent-config-info>',
+            '',
+            task,
+          ].join('\n');
+        }
+      }
+      const queueKey = editThreadId
+        ? makeQueueKey(chatId, editThreadId, agentId)
+        : makeQueueKey(chatId, undefined, agentId);
+      taskQueue.enqueue(queueKey, chatId, userId, editPrompt, messageId, editThreadReplyMsgId || rootId, editThreadId).catch(() => {});
+      processQueue(queueKey, agentId);
+    }
+
     return true;
   }
 
@@ -892,24 +1096,65 @@ async function handleSlashCommand(
 
   // /help - 帮助
   if (trimmed === '/help') {
-    const helpText = [
-      '🤖 **Coding Agent 使用帮助**',
+    const helpLines: string[] = [
+      '🤖 **Anycode 使用帮助**',
       '',
-      '直接发送文本消息即可让 Coding Agent 执行任务。',
+      '直接发送消息即可与 Agent 对话。支持文本、图片、PDF 文件。',
       '',
-      '**可用命令:**',
-      '`/project <path>` - 切换工作目录',
-      '`/workspace <url|path> [branch]` - 创建隔离工作区 (自动 clone + 创建分支)',
-      '`/t <text>` - 强制开话题回复，跳过 quick-ack',
-      '`/dev <task>` - 自动开发管道 (方案→审查→实现→审查→推送)',
-      '`/memory` - 查看/管理记忆',
-      '`/status` - 查看当前会话状态',
-      '`/reset` - 重置会话',
-      '`/stop` - 中断当前执行',
-      '`/help` - 显示此帮助',
+      '**── 基础命令 ──**',
+      '`/status` — 查看当前会话状态（工作目录、队列）',
+      '`/reset` — 重置会话，清除对话历史',
+      '`/stop` — 中断当前正在执行的任务',
+      '`/help` — 显示此帮助',
       '',
-      '**自动工作区:** 直接发消息包含仓库 URL，Claude 会自动创建隔离工作区。',
-    ].join('\n');
+      '**── 工作区 ──**',
+      '`/edit [repo] [task]` — 原地编辑源仓库，跳过 clone 隔离 🔒',
+      '提到仓库 URL 或名称时，Agent 会自动创建隔离工作区',
+      '',
+      '**── 开发流程 ──**',
+      '`/dev <task>` — 自动开发管道 🔒',
+      '  方案 → 方案审查 → 实现 → 代码审查 → 推送 → PR 修复',
+      '`/t <text>` — 强制开话题回复（适用于 direct 模式）',
+    ];
+
+    // 条件性功能
+    if (config.memory.enabled) {
+      helpLines.push(
+        '',
+        '**── 记忆系统 ──**',
+        '`/memory` — 查看所有记忆',
+        '`/memory search <关键词>` — 搜索记忆',
+        '`/memory add <内容>` — 手动添加记忆',
+        '`/memory delete <id>` — 删除记忆',
+        'Agent 也会自动从对话中提取和注入相关记忆',
+      );
+    }
+
+    if (config.cron.enabled) {
+      helpLines.push(
+        '',
+        '**── 定时任务 ──**',
+        '对话中要求 Agent 设置定时任务即可，支持 cron 表达式和自然语言时间',
+      );
+    }
+
+    if (hasCallbackUrl()) {
+      helpLines.push(
+        '',
+        '**── OAuth 授权 ──**',
+        '`/auth` — 授权飞书个人权限（任务、日历等） 🔒',
+      );
+    }
+
+    helpLines.push(
+      '',
+      '**── 说明 ──**',
+      '🔒 = 仅管理员可用',
+      '每个话题独立维护对话上下文和工作目录',
+      '发送图片或 PDF 文件，Agent 可直接查看和分析',
+    );
+
+    const helpText = helpLines.join('\n');
     if (threadReplyMsgId) {
       await feishuClient.replyTextInThread(threadReplyMsgId, helpText);
     } else {
@@ -971,6 +1216,126 @@ async function downloadHistoryImages(
   return images;
 }
 
+/** 支持下载并嵌入 prompt 的文本类文件扩展名 */
+const TEXT_FILE_EXTENSIONS = new Set([
+  '.md', '.txt', '.json', '.jsonl', '.log', '.yaml', '.yml',
+  '.csv', '.xml', '.html', '.htm', '.css', '.js', '.ts', '.jsx', '.tsx',
+  '.py', '.go', '.rs', '.java', '.c', '.cpp', '.h', '.hpp',
+  '.sh', '.bash', '.zsh', '.toml', '.ini', '.cfg', '.conf',
+  '.sql', '.graphql', '.proto', '.lua', '.rb', '.php', '.swift',
+  '.kt', '.kts', '.scala', '.r', '.m', '.mm',
+  '.gitignore', '.dockerfile', '.makefile',
+]);
+
+/** 无扩展名但属于文本文件的文件名（大小写不敏感匹配） */
+const EXTENSIONLESS_TEXT_FILES = /^(makefile|dockerfile|readme|license|changelog|todo)$/i;
+
+/** 判断文件是否为文本类文件（统一入口，所有路径共用） */
+function isTextFile(fileName: string): boolean {
+  const lower = fileName.toLowerCase();
+  const ext = lower.includes('.') ? '.' + lower.split('.').pop()! : '';
+  return TEXT_FILE_EXTENSIONS.has(ext) || (ext === '' && EXTENSIONLESS_TEXT_FILES.test(lower));
+}
+
+/** 最多从历史消息中下载的文件数 */
+const MAX_HISTORY_FILES = 3;
+
+/**
+ * 文档 payload 大小上限（base64 字节数）。
+ * Anthropic API 的 message size 上限为 30MB，预留 10MB 给 system prompt + 对话历史 + 图片等。
+ */
+const MAX_TOTAL_DOCUMENT_BYTES = 20 * 1024 * 1024;
+
+/**
+ * 按 fileName 去重 + 总大小截断，防止重复文档撑爆 API 30MB 限制。
+ * 优先保留靠前的文档（当前消息 > 历史消息）。
+ */
+export function deduplicateDocuments(docs: DocumentAttachment[]): DocumentAttachment[] {
+  const seen = new Set<string>();
+  const result: DocumentAttachment[] = [];
+  let totalBytes = 0;
+  for (const doc of docs) {
+    const key = doc.fileName;
+    if (seen.has(key)) {
+      logger.info({ fileName: doc.fileName }, 'Skipping duplicate document');
+      continue;
+    }
+    const docBytes = doc.data.length; // base64 string length ≈ bytes
+    if (totalBytes + docBytes > MAX_TOTAL_DOCUMENT_BYTES) {
+      logger.warn({ fileName: doc.fileName, totalBytes, docBytes, limit: MAX_TOTAL_DOCUMENT_BYTES }, 'Document payload size limit reached, skipping');
+      continue;
+    }
+    seen.add(key);
+    result.push(doc);
+    totalBytes += docBytes;
+  }
+  if (result.length < docs.length) {
+    logger.info({ original: docs.length, deduplicated: result.length, totalBytes }, 'Documents deduplicated');
+  }
+  return result;
+}
+
+/**
+ * 从历史消息中下载文件附件（PDF → DocumentAttachment, 文本类 → 嵌入文本）
+ *
+ * @returns { documents, fileTexts } — documents 供多模态传入, fileTexts 拼入 prompt
+ */
+async function downloadHistoryFiles(
+  messages: Array<{ messageId: string; fileRefs?: Array<{ fileKey: string; fileName: string }> }>,
+): Promise<{ documents: DocumentAttachment[]; fileTexts: string[] }> {
+  const refs: Array<{ messageId: string; fileKey: string; fileName: string }> = [];
+  for (const msg of messages) {
+    if (msg.fileRefs) {
+      for (const ref of msg.fileRefs) {
+        refs.push({ messageId: msg.messageId, ...ref });
+      }
+    }
+  }
+  if (refs.length === 0) return { documents: [], fileTexts: [] };
+
+  // 按 fileKey 去重（同一文件可能在多条历史消息中出现，如话题内引用同一文件）
+  const seenKeys = new Set<string>();
+  const uniqueRefs = refs.filter(ref => {
+    if (seenKeys.has(ref.fileKey)) return false;
+    seenKeys.add(ref.fileKey);
+    return true;
+  });
+
+  const toDownload = uniqueRefs.slice(-MAX_HISTORY_FILES);
+  const MAX_PDF_SIZE = 30 * 1024 * 1024;
+  const MAX_TEXT_SIZE = 1 * 1024 * 1024;
+
+  const documents: DocumentAttachment[] = [];
+  const fileTexts: string[] = [];
+
+  await Promise.all(toDownload.map(async (ref) => {
+    try {
+      if (ref.fileName.toLowerCase().endsWith('.pdf')) {
+        const buf = await feishuClient.downloadMessageFile(ref.messageId, ref.fileKey);
+        if (buf.length <= MAX_PDF_SIZE) {
+          documents.push({ data: buf.toString('base64'), mediaType: 'application/pdf', fileName: ref.fileName });
+          logger.info({ messageId: ref.messageId, fileName: ref.fileName, sizeBytes: buf.length }, 'History PDF downloaded');
+        }
+      } else if (isTextFile(ref.fileName)) {
+        const buf = await feishuClient.downloadMessageFile(ref.messageId, ref.fileKey);
+        if (buf.length <= MAX_TEXT_SIZE) {
+          const content = buf.toString('utf-8');
+          fileTexts.push(`[历史消息中的文件: ${ref.fileName}]\n\n<file name="${ref.fileName}">\n${content}\n</file>`);
+          logger.info({ messageId: ref.messageId, fileName: ref.fileName, sizeBytes: buf.length }, 'History text file downloaded');
+        }
+      }
+    } catch (err) {
+      logger.warn({ err, messageId: ref.messageId, fileName: ref.fileName }, 'Failed to download history file, skipping');
+    }
+  }));
+
+  if (documents.length > 0 || fileTexts.length > 0) {
+    logger.info({ docCount: documents.length, textCount: fileTexts.length, totalRefs: refs.length }, 'Downloaded history files');
+  }
+
+  return { documents, fileTexts };
+}
+
 /**
  * 构建飞书聊天历史上下文（首次 @bot 时注入，帮助 Claude 理解对话背景）
  *
@@ -1009,11 +1374,18 @@ async function buildChatHistoryContext(
       // afterMsgId 不在列表中 → 可能消息已过期滚动，注入全部
     }
 
-    const [text, images] = await Promise.all([
+    const [text, images, historyFiles] = await Promise.all([
       formatHistoryMessages(filtered, chatId, selfBotOpenIds),
       downloadHistoryImages(filtered),
+      downloadHistoryFiles(filtered),
     ]);
-    return { text: text ?? undefined, newestMsgId, ...(images.length > 0 ? { images } : {}) };
+    return {
+      text: text ?? undefined,
+      newestMsgId,
+      ...(images.length > 0 ? { images } : {}),
+      ...(historyFiles.documents.length > 0 ? { documents: historyFiles.documents } : {}),
+      ...(historyFiles.fileTexts.length > 0 ? { fileTexts: historyFiles.fileTexts } : {}),
+    };
   } catch (err) {
     logger.error({ err, chatId, threadId }, 'Failed to build chat history context');
     return {};
@@ -1411,8 +1783,9 @@ export async function executeClaudeTask(
   documents?: DocumentAttachment[],
   agentId: AgentId = 'dev',
   createTime?: string,
+  messageType?: string,
 ): Promise<void> {
-  // 1. 解析话题上下文（thread + 路由 + 工作区隔离 + greeting）
+  // 1. 解析话题上下文（thread + workingDir + greeting）
   const resolved = await resolveThreadContext({
     prompt: rawPrompt,
     chatId,
@@ -1425,24 +1798,18 @@ export async function executeClaudeTask(
 
   if (resolved.status !== 'resolved') return;
 
-  // clarification 恢复后发现原始请求是 /dev pipeline → 转交 pipeline 执行
-  if (resolved.pipelineMode) {
-    const { workingDir, threadReplyMsgId, prompt } = resolved.ctx;
-    await createPendingPipeline({
-      chatId,
-      userId,
-      messageId,
-      rootId,
-      threadId: eventThreadId,
-      prompt,
-      workingDir,
-      threadReplyMsgId,
-    });
-    return;
-  }
-
-  const { threadReplyMsgId, workingDir, threadId, threadSession, prompt } = resolved.ctx;
+  const { threadReplyMsgId, greetingMsgId, workingDir, threadId, threadSession, prompt } = resolved.ctx;
   const session = sessionManager.getOrCreate(chatId, userId, agentId);
+
+  // 如果本次处理新建了话题（eventThreadId 为空但 threadId 已存在），
+  // 锁定 per-thread queueKey 防止后续消息（携带 threadId、使用不同 queueKey）并发执行。
+  // 场景：perMessageParallel 模式下第一条消息创建话题后，workspace 切换+restart 期间
+  // 第二条消息不应并发读取到旧的 workingDir。
+  let lockedThreadQueueKey: string | undefined;
+  if (!eventThreadId && threadId) {
+    lockedThreadQueueKey = makeQueueKey(chatId, threadId, agentId);
+    taskQueue.markBusy(lockedThreadQueueKey);
+  }
 
   // sessionKey 包含 threadId，per-thread 并行时各 query 有独立的 key
   const sessionKey = threadId ? `${chatId}:${userId}:${threadId}` : `${chatId}:${userId}`;
@@ -1457,6 +1824,24 @@ export async function executeClaudeTask(
     if (!progressCardMsgId) progressCardFailed = true;
   } else {
     await feishuClient.replyText(messageId, '🤖 处理中...');
+  }
+
+  // 更新问候卡片：从"正在启动"切换为工作区信息（fire-and-forget）
+  // 后续 setup_workspace 触发 restart 时会再次覆盖为新工作区信息
+  if (greetingMsgId) {
+    const { basename: bn } = await import('node:path');
+    let greetingBranch: string | undefined;
+    try {
+      const { execFileSync } = await import('node:child_process');
+      greetingBranch = execFileSync('git', ['-C', workingDir, 'branch', '--show-current'],
+        { encoding: 'utf-8', timeout: 3000 }).trim() || undefined;
+    } catch { /* best-effort */ }
+    feishuClient.updateCard(
+      greetingMsgId,
+      buildWorkspaceSwitchCard(bn(workingDir), workingDir, greetingBranch, '📂 工作区'),
+    ).catch(err => {
+      logger.warn({ err }, 'Failed to update greeting card');
+    });
   }
 
   // 标记会话为忙碌
@@ -1514,9 +1899,38 @@ export async function executeClaudeTask(
     if (history.newestMsgId) {
       _historyDedup.set(sessionKey, history.newestMsgId);
     }
-    // 合并历史消息中的图片
-    if (history.images && history.images.length > 0) {
-      images = [...(history.images), ...(images ?? [])];
+    // Resume 时跳过历史文件附件：SDK 会重放所有前序 turn，文件已在对话中，
+    // 重复附加会导致 payload 累积膨胀（N turns × PDF size → 超 30MB 限制）
+    if (activeConversationId) {
+      if (history.images?.length || history.documents?.length) {
+        logger.info(
+          { historyImages: history.images?.length ?? 0, historyDocs: history.documents?.length ?? 0 },
+          'Skipping history file attachments on resume — already in conversation',
+        );
+      }
+      // 当前消息非文件上传时，documents 来自引用父消息，resume 时同样已在对话中
+      if (documents?.length && messageType !== 'file') {
+        logger.info(
+          { docCount: documents.length, fileNames: documents.map(d => d.fileName) },
+          'Clearing quoted-parent documents on resume — already sent in previous turn',
+        );
+        documents = undefined;
+      }
+    } else {
+      // 非 resume：正常合并历史文件
+      // 合并历史消息中的图片
+      if (history.images && history.images.length > 0) {
+        images = [...(history.images), ...(images ?? [])];
+      }
+      // 合并历史消息中的文档（PDF），按 fileName 去重 + 大小截断
+      if (history.documents && history.documents.length > 0) {
+        // 当前消息的文档优先（放前面），历史文档补充
+        documents = deduplicateDocuments([...(documents ?? []), ...(history.documents)]);
+      }
+    }
+    // 合并历史消息中的文本文件内容到 prompt（文本内容不占多模态空间，始终注入）
+    if (history.fileTexts && history.fileTexts.length > 0) {
+      effectivePrompt = history.fileTexts.join('\n\n') + '\n\n---\n\n' + effectivePrompt;
     }
   }
 
@@ -1619,11 +2033,6 @@ export async function executeClaudeTask(
     const customSystemPrompt = readPersonaFile(agentId);
     const knowledgeContent = loadKnowledgeContent(agentId);
 
-    // 后续消息（有 conversationId）不允许切换工作区：
-    // 首条消息的路由已确定 workingDir，后续切换会触发 restart 导致上下文丢失
-    // （Agent SDK 不支持跨 cwd resume，restart 只能起新 session）
-    const isFirstMessage = !activeConversationId;
-
     // 记忆注入：搜索相关记忆，格式化为 system prompt 片段
     // 使用 repo identity（而非带随机后缀的工作区路径）确保同仓库记忆互通
     const repoIdentity = getRepoIdentity(workingDir);
@@ -1633,6 +2042,9 @@ export async function executeClaudeTask(
 
     // Bot 身份上下文（多 bot 模式下告诉 agent 自己是谁、群内有哪些其他 bot）
     const botIdentityContext = buildBotIdentityContext(chatId);
+
+    // AskUserQuestion 回调：将 Claude 的提问渲染为飞书交互卡片
+    const onAskUser = createAskUserHandler(chatId, () => threadReplyMsgId);
 
     const result = await claudeExecutor.execute({
       sessionKey,
@@ -1650,14 +2062,16 @@ export async function executeClaudeTask(
       storedSystemPromptHash: activePromptHash,
       botIdentityContext,
       onProgress,
-      onWorkspaceChanged: isFirstMessage ? onWorkspaceChanged : undefined,
+      onWorkspaceChanged,
       onTurn,
+      onAskUser,
       historySummaries,
       memoryContext,
       images,
       documents,
       knowledgeContent,
-      disableWorkspaceTool: !isFirstMessage,
+      disableWorkspaceTool: false,
+      inplaceEdit: threadSession?.inplaceEdit,
       agentId,
       threadId,
       threadRootMessageId: threadReplyMsgId,
@@ -1698,6 +2112,35 @@ export async function executeClaudeTask(
       }
       sessionManager.setConversationId(chatId, userId, '', undefined, agentId);
 
+      // 发送工作区切换卡片（更新 greeting 卡片或独立发送）
+      {
+        const { basename } = await import('node:path');
+        const dirName = basename(result.newWorkingDir);
+        // 从目录名解析仓库名和分支（格式: repoName-writable-shortId）
+        const parts = dirName.split('-');
+        parts.pop(); // shortId
+        parts.pop(); // writable/readonly
+        const repoName = parts.join('-') || dirName;
+        let branch: string | undefined;
+        try {
+          const { execFileSync } = await import('node:child_process');
+          branch = execFileSync('git', ['-C', result.newWorkingDir, 'branch', '--show-current'], { encoding: 'utf-8', timeout: 3000 }).trim() || undefined;
+        } catch { /* best-effort */ }
+
+        const switchCard = buildWorkspaceSwitchCard(repoName, result.newWorkingDir, branch);
+        if (greetingMsgId) {
+          // 更新 greeting 卡片为工作区切换信息
+          feishuClient.updateCard(greetingMsgId, switchCard).catch(err => {
+            logger.warn({ err }, 'Failed to update greeting card with workspace switch');
+          });
+        } else if (threadReplyMsgId) {
+          // 没有 greeting 卡片时，在话题中独立发送
+          feishuClient.replyCardInThread(threadReplyMsgId, switchCard).catch(err => {
+            logger.warn({ err }, 'Failed to send workspace switch card');
+          });
+        }
+      }
+
       // 第二次 query：以新 cwd 执行，CLAUDE.md 正确加载
       // - 不传 resumeSessionId（Agent SDK 不支持跨 cwd resume，会 exit code 1）
       // - 不传 onWorkspaceChanged（不触发二次 restart）
@@ -1720,6 +2163,8 @@ export async function executeClaudeTask(
         knowledgeContent,
         memoryContext,
         disableWorkspaceTool: true,
+        isRestart: true,
+        priorContext: formatConversationTrace(result.conversationTrace),
         agentId,
         ...(customSystemPrompt ? { systemPromptOverride: customSystemPrompt } : {}),
       });
@@ -1865,6 +2310,11 @@ export async function executeClaudeTask(
     } catch (err) {
       logger.error({ err, chatId, userId }, 'Failed to reset session status');
     }
+    // 释放 per-thread queueKey 锁，处理等待中的消息
+    if (lockedThreadQueueKey) {
+      taskQueue.complete(lockedThreadQueueKey);
+      processQueue(lockedThreadQueueKey, agentId);
+    }
   }
 }
 
@@ -1897,6 +2347,7 @@ export async function executeDirectTask(
   rootId?: string,
   createTime?: string,
   options?: { skipQuickAck?: boolean; forceThread?: boolean },
+  messageType?: string,
 ): Promise<void> {
   const agentCfg = agentRegistry.getOrThrow(agentId);
   const session = sessionManager.getOrCreate(chatId, userId, agentId);
@@ -1921,10 +2372,11 @@ export async function executeDirectTask(
     ? `${chatId}:${userId}:${threadId}`
     : `${chatId}:${userId}`;
 
-  // 话题内消息：跳过 quick-ack，改为先添加表情回复作为即时反馈
+  // 即时表情反馈：话题内消息或主聊天未启用 quick-ack 时，先添加表情回复
   // 正式回复发出后再移除表情（在 finally 中清理）
   let pendingReactionId: string | undefined;
-  if (threadId) {
+  const useEmojiFallback = !!threadId || (!config.quickAck.enabled && !options?.skipQuickAck);
+  if (useEmojiFallback) {
     pendingReactionId = await feishuClient.addReaction(messageId, 'OnIt').catch(() => undefined);
   }
 
@@ -2010,9 +2462,37 @@ export async function executeDirectTask(
     if (history.newestMsgId) {
       _historyDedup.set(sessionKey, history.newestMsgId);
     }
-    // 合并历史消息中的图片
-    if (history.images && history.images.length > 0) {
-      images = [...(history.images), ...(images ?? [])];
+    // Resume 时跳过历史文件附件：SDK 会重放所有前序 turn，文件已在对话中，
+    // 重复附加会导致 payload 累积膨胀（N turns × PDF size → 超 30MB 限制）
+    if (canResume) {
+      if (history.images?.length || history.documents?.length) {
+        logger.info(
+          { historyImages: history.images?.length ?? 0, historyDocs: history.documents?.length ?? 0 },
+          'Skipping history file attachments on resume — already in conversation',
+        );
+      }
+      // 当前消息非文件上传时，documents 来自引用父消息，resume 时同样已在对话中
+      if (documents?.length && messageType !== 'file') {
+        logger.info(
+          { docCount: documents.length, fileNames: documents.map(d => d.fileName) },
+          'Clearing quoted-parent documents on resume — already sent in previous turn',
+        );
+        documents = undefined;
+      }
+    } else {
+      // 非 resume：正常合并历史文件
+      // 合并历史消息中的图片
+      if (history.images && history.images.length > 0) {
+        images = [...(history.images), ...(images ?? [])];
+      }
+      // 合并历史消息中的文档（PDF），按 fileName 去重 + 大小截断
+      if (history.documents && history.documents.length > 0) {
+        documents = deduplicateDocuments([...(documents ?? []), ...(history.documents)]);
+      }
+    }
+    // 合并历史消息中的文本文件内容到 prompt（文本内容不占多模态空间，始终注入）
+    if (history.fileTexts && history.fileTexts.length > 0) {
+      effectivePrompt = history.fileTexts.join('\n\n') + '\n\n---\n\n' + effectivePrompt;
     }
 
     // rootId 引用消息注入（仅主面板引用回复，话题内 rootId 是锚定消息不需要注入）
@@ -2052,6 +2532,9 @@ export async function executeDirectTask(
     // Bot 身份上下文（多 bot 模式下告诉 agent 自己是谁、群内有哪些其他 bot）
     const botIdentityContext = buildBotIdentityContext(chatId);
 
+    // AskUserQuestion 回调（与 executeClaudeTask 共享逻辑）
+    const onAskUserDirect = createAskUserHandler(chatId, () => threadReplyMsgId);
+
     const result = await claudeExecutor.execute({
       sessionKey,
       prompt: effectivePrompt,
@@ -2072,6 +2555,7 @@ export async function executeDirectTask(
       images,
       documents,
       agentId,
+      onAskUser: onAskUserDirect,
       // 不需要 workspace-manager 工具（Chat Agent 不切换工作区）
       disableWorkspaceTool: true,
       // 注入 discussion-tools MCP server
@@ -2134,6 +2618,10 @@ interface HistoryResult {
   newestMsgId?: string;
   /** 历史消息中提取的图片（已压缩） */
   images?: ImageAttachment[];
+  /** 历史消息中提取的文档附件（PDF） */
+  documents?: DocumentAttachment[];
+  /** 历史消息中提取的文本文件内容（已格式化，可拼入 prompt） */
+  fileTexts?: string[];
 }
 
 /**
@@ -2232,11 +2720,18 @@ async function buildDirectTaskHistory(
       'buildDirectTaskHistory message pipeline',
     );
 
-    const [text, images] = await Promise.all([
+    const [text, images, historyFiles] = await Promise.all([
       formatHistoryMessages(messages, chatId, selfBotOpenIds, parentMsgCount > 0 ? { parentMsgCount } : undefined),
       downloadHistoryImages(messages),
+      downloadHistoryFiles(messages),
     ]);
-    return { text: text ?? undefined, newestMsgId, ...(images.length > 0 ? { images } : {}) };
+    return {
+      text: text ?? undefined,
+      newestMsgId,
+      ...(images.length > 0 ? { images } : {}),
+      ...(historyFiles.documents.length > 0 ? { documents: historyFiles.documents } : {}),
+      ...(historyFiles.fileTexts.length > 0 ? { fileTexts: historyFiles.fileTexts } : {}),
+    };
   } catch (err) {
     logger.error({ err, chatId, threadId }, 'Failed to build direct task history');
     return {};
@@ -2363,7 +2858,7 @@ async function executePipelineTask(
   let threadReplyMsgId: string | undefined;
 
   try {
-    // 1. 解析话题上下文（共享逻辑：thread + 路由 + 工作区隔离 + greeting）
+    // 1. 解析话题上下文（thread + workingDir + greeting）
     const resolved = await resolveThreadContext({
       prompt,
       chatId,
@@ -2371,7 +2866,6 @@ async function executePipelineTask(
       messageId,
       rootId,
       threadId: eventThreadId,
-      pipelineMode: true,
     });
 
     if (resolved.status !== 'resolved') return;
@@ -2379,7 +2873,7 @@ async function executePipelineTask(
     threadReplyMsgId = resolved.ctx.threadReplyMsgId;
     const { workingDir } = resolved.ctx;
 
-    // 2. 创建 pipeline，使用路由确定的工作目录
+    // 2. 创建 pipeline，使用当前 workingDir（默认 defaultWorkDir 或已被 setup_workspace 切换的目录）
     await createPendingPipeline({
       chatId,
       userId,
@@ -2648,8 +3142,9 @@ async function parseMessage(data: MessageEventData): Promise<ParsedMessage | nul
       return null;
     }
   } else if (message.message_type === 'file') {
-    // 文件消息：目前仅支持 PDF
+    // 文件消息：支持 PDF（多模态）和文本类文件（嵌入 prompt）
     const MAX_FILE_SIZE_BYTES = 30 * 1024 * 1024; // 30MB
+    const MAX_TEXT_FILE_SIZE_BYTES = 1 * 1024 * 1024; // 1MB for text files
     try {
       const content = JSON.parse(message.content);
       const fileKey = content.file_key as string | undefined;
@@ -2660,10 +3155,8 @@ async function parseMessage(data: MessageEventData): Promise<ParsedMessage | nul
         return null;
       }
 
-      // 仅支持 PDF 文件
-      if (!fileName.toLowerCase().endsWith('.pdf')) {
-        text = `[用户发送了文件: ${fileName}，但目前仅支持 PDF 文件]`;
-      } else {
+      if (fileName.toLowerCase().endsWith('.pdf')) {
+        // PDF 文件：多模态 DocumentAttachment
         const buf = await feishuClient.downloadMessageFile(message.message_id, fileKey);
 
         if (buf.length > MAX_FILE_SIZE_BYTES) {
@@ -2674,6 +3167,21 @@ async function parseMessage(data: MessageEventData): Promise<ParsedMessage | nul
 
         documents = [{ data: buf.toString('base64'), mediaType: 'application/pdf', fileName }];
         logger.info({ messageId: message.message_id, fileName, sizeBytes: buf.length }, 'PDF file downloaded');
+      } else if (isTextFile(fileName)) {
+        // 文本类文件：下载后作为文本嵌入 prompt
+        const buf = await feishuClient.downloadMessageFile(message.message_id, fileKey);
+
+        if (buf.length > MAX_TEXT_FILE_SIZE_BYTES) {
+          logger.warn({ messageId: message.message_id, sizeBytes: buf.length, fileName }, 'Text file too large, skipping');
+          await feishuClient.replyText(message.message_id, `⚠️ 文本文件太大（${(buf.length / 1024 / 1024).toFixed(1)}MB），请压缩到 1MB 以内后重试`);
+          return null;
+        }
+
+        const fileContent = buf.toString('utf-8');
+        text = `[用户发送了文件: ${fileName}]\n\n<file name="${fileName}">\n${fileContent}\n</file>`;
+        logger.info({ messageId: message.message_id, fileName, sizeBytes: buf.length }, 'Text file downloaded and embedded in prompt');
+      } else {
+        text = `[用户发送了文件: ${fileName}，该文件类型暂不支持。支持的类型：PDF、常见文本/代码文件（.md, .txt, .json, .log, .py, .ts 等）]`;
       }
     } catch (err) {
       logger.error({ err, messageId: message.message_id }, 'Failed to process file message');
@@ -2706,14 +3214,26 @@ async function parseMessage(data: MessageEventData): Promise<ParsedMessage | nul
           const parentContent = JSON.parse(parent.body.content);
           const fileKey = parentContent.file_key as string | undefined;
           const fileName = (parentContent.file_name as string) || '未知文件';
-          if (fileKey && fileName.toLowerCase().endsWith('.pdf')) {
-            const MAX_FILE_SIZE_BYTES = 30 * 1024 * 1024;
-            const buf = await feishuClient.downloadMessageFile(parent.message_id, fileKey);
-            if (buf.length <= MAX_FILE_SIZE_BYTES) {
-              documents = [{ data: buf.toString('base64'), mediaType: 'application/pdf', fileName }];
-              logger.info({ messageId: message.message_id, parentId: message.parent_id, fileName, sizeBytes: buf.length }, 'PDF downloaded from quoted parent message');
-            } else {
-              logger.warn({ messageId: message.message_id, sizeBytes: buf.length, fileName }, 'Quoted file too large, skipping');
+          if (fileKey) {
+            if (fileName.toLowerCase().endsWith('.pdf')) {
+              const MAX_FILE_SIZE_BYTES = 30 * 1024 * 1024;
+              const buf = await feishuClient.downloadMessageFile(parent.message_id, fileKey);
+              if (buf.length <= MAX_FILE_SIZE_BYTES) {
+                documents = [{ data: buf.toString('base64'), mediaType: 'application/pdf', fileName }];
+                logger.info({ messageId: message.message_id, parentId: message.parent_id, fileName, sizeBytes: buf.length }, 'PDF downloaded from quoted parent message');
+              } else {
+                logger.warn({ messageId: message.message_id, sizeBytes: buf.length, fileName }, 'Quoted file too large, skipping');
+              }
+            } else if (isTextFile(fileName)) {
+              const MAX_TEXT_SIZE = 1 * 1024 * 1024;
+              const buf = await feishuClient.downloadMessageFile(parent.message_id, fileKey);
+              if (buf.length <= MAX_TEXT_SIZE) {
+                const fileContent = buf.toString('utf-8');
+                text = `${text}\n\n[引用的文件: ${fileName}]\n\n<file name="${fileName}">\n${fileContent}\n</file>`;
+                logger.info({ messageId: message.message_id, parentId: message.parent_id, fileName, sizeBytes: buf.length }, 'Text file downloaded from quoted parent message');
+              } else {
+                logger.warn({ messageId: message.message_id, sizeBytes: buf.length, fileName }, 'Quoted text file too large, skipping');
+              }
             }
           }
         }
@@ -2772,6 +3292,7 @@ async function parseMessage(data: MessageEventData): Promise<ParsedMessage | nul
     threadId: message.thread_id || undefined,
     images,
     documents,
+    messageType: message.message_type,
     senderType: sender.sender_type,
     createTime: message.create_time || undefined,
   };

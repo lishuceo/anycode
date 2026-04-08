@@ -584,7 +584,7 @@ export class FeishuClient {
     limit: number = 10,
     /** 用于 bot 被动收集：thread 容器时需传入所属 chatId */
     chatIdForBotDiscovery?: string,
-  ): Promise<Array<{ messageId: string; senderId: string; senderType: 'user' | 'app'; content: string; msgType: string; createTime?: string; imageRefs?: Array<{ imageKey: string }> }>> {
+  ): Promise<Array<{ messageId: string; senderId: string; senderType: 'user' | 'app'; content: string; msgType: string; createTime?: string; imageRefs?: Array<{ imageKey: string }>; fileRefs?: Array<{ fileKey: string; fileName: string }> }>> {
     try {
       const resp = await this.client.im.message.list({
         params: {
@@ -599,7 +599,7 @@ export class FeishuClient {
         return [];
       }
       const items = resp.data?.items ?? [];
-      const messages: Array<{ messageId: string; senderId: string; senderType: 'user' | 'app'; content: string; msgType: string; createTime?: string; imageRefs?: Array<{ imageKey: string }> }> = [];
+      const messages: Array<{ messageId: string; senderId: string; senderType: 'user' | 'app'; content: string; msgType: string; createTime?: string; imageRefs?: Array<{ imageKey: string }>; fileRefs?: Array<{ fileKey: string; fileName: string }> }> = [];
       // 诊断：记录 API 返回的原始消息分布
       const diagSkipped: Array<{ id: string; type: string; reason: string }> = [];
       // 被动收集 bot：历史消息中的 bot sender 注册到 registry（弥补实时事件可能未推送的情况）
@@ -614,13 +614,18 @@ export class FeishuClient {
         const senderType = item.sender?.sender_type === 'app' ? 'app' as const : 'user' as const;
         let content = '';
         const imageRefs: Array<{ imageKey: string }> = [];
-        // file 类型：仅显示文件名占位（不下载内容）
+        // file 类型：文件名占位 + 返回 fileRefs 供调用方按需下载
         // image 类型：文本占位 + 返回 imageRefs 供调用方按需下载
+        const fileRefs: Array<{ fileKey: string; fileName: string }> = [];
         if (msgType === 'file') {
           try {
             const body = JSON.parse(item.body?.content ?? '{}');
             const fileName = (body.file_name as string) || '未知文件';
+            const fileKey = body.file_key as string | undefined;
             content = `[文件: ${fileName}]`;
+            if (fileKey && item.message_id) {
+              fileRefs.push({ fileKey, fileName });
+            }
           } catch {
             content = '[文件]';
           }
@@ -735,6 +740,7 @@ export class FeishuClient {
           msgType,
           createTime: item.create_time ?? undefined,
           ...(imageRefs.length > 0 ? { imageRefs } : {}),
+          ...(fileRefs.length > 0 ? { fileRefs } : {}),
         });
       }
       // 诊断：记录消息获取和过滤的详情

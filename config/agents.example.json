@@ -12,16 +12,16 @@
   "agents": [
     {
       "id": "pm",
-      "displayName": "土豆儿",
+      "displayName": "PM Bot",
       "model": "claude-opus-4-6",
       "replyMode": "direct",
       "toolPolicy": {
         "profile": "readonly",
         "allow": ["Skill", "Bash"]
       },
-      "bashAllowPatterns": ["^python .*/skills/", "^(ls|cat|head|tail|wc|find|grep|git (log|status|diff|show|branch))"],
+      "bashAllowPatterns": ["^(ls|cat|head|tail|wc|find|grep|git (log|status|diff|show|branch))"],
       "persona": "./personas/pm.md",
-      "knowledge": ["team.md", "product.md", "recruitment.md"]
+      "knowledge": ["team.md"]
     },
     {
       "id": "dev",

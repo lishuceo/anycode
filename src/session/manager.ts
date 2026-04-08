@@ -4,7 +4,7 @@ import { config } from '../config.js';
 import { logger } from '../utils/logger.js';
 import { SessionDatabase } from './database.js';
 import { isAutoWorkspacePath } from '../workspace/isolation.js';
-import type { Session, ThreadSession, RoutingState, PipelineContext } from './types.js';
+import type { Session, ThreadSession, PipelineContext } from './types.js';
 
 /**
  * 会话管理器
@@ -155,31 +155,17 @@ export class SessionManager {
   }
 
   /**
-   * 设置 thread 的路由状态（need_clarification 时保存上下文）
-   */
-  setThreadRoutingState(threadId: string, state: RoutingState, agentId: string = 'dev'): void {
-    this.db.updateThreadRoutingState(this.makeThreadKey(threadId, agentId), state);
-  }
-
-  /**
-   * 清空 thread 的路由状态（路由完成后）
-   */
-  clearThreadRoutingState(threadId: string, agentId: string = 'dev'): void {
-    this.db.clearThreadRoutingState(this.makeThreadKey(threadId, agentId));
-  }
-
-  /**
-   * 标记 thread 的路由已完成
-   */
-  markThreadRoutingCompleted(threadId: string, agentId: string = 'dev'): void {
-    this.db.markThreadRoutingCompleted(this.makeThreadKey(threadId, agentId));
-  }
-
-  /**
    * 设置 thread 的审批状态（owner 审批通过/拒绝）
    */
   setThreadApproved(threadId: string, approved: boolean, agentId: string = 'dev'): void {
     this.db.setThreadApproved(this.makeThreadKey(threadId, agentId), approved);
+  }
+
+  /**
+   * 设置 thread 的原地编辑模式（/edit 命令触发，跳过源仓库保护）
+   */
+  setThreadInplaceEdit(threadId: string, inplaceEdit: boolean, agentId: string = 'dev'): void {
+    this.db.setThreadInplaceEdit(this.makeThreadKey(threadId, agentId), inplaceEdit);
   }
 
   /**
