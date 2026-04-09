@@ -791,8 +791,9 @@ async function handleMessageEvent(data: MessageEventData, accountId: string = 'd
   const agentConfig = agentRegistry.get(agentId);
   logger.debug({ agentId, accountId }, 'Agent resolved');
 
-  // 自动检测 owner：OWNER_USER_ID 未配置时，首个发消息的用户自动成为管理员
-  if (autoDetectOwner(userId)) {
+  // 自动检测 owner：OWNER_USER_ID 未配置时，首个发消息的白名单用户自动成为管理员
+  // 必须先过白名单检查，否则非白名单用户可自动成为 owner 绕过审批
+  if (isUserAllowed(userId) && autoDetectOwner(userId)) {
     await feishuClient.replyText(messageId, `🔑 已自动将你设为管理员 (${userId})，已写入 .env`);
   }
 
