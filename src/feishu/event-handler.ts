@@ -42,11 +42,14 @@ import { checkThreadRelevance } from '../utils/thread-relevance.js';
 import { compressImage, compressImageForHistory } from '../utils/image-compress.js';
 
 // 注册审批通过后的消息重新入队回调（避免 approval.ts → event-handler.ts 循环依赖）
-setOnApproved((chatId, userId, text, messageId, rootId, threadId) => {
+setOnApproved((chatId, userId, text, messageId, accountId, agentId, rootId, threadId) => {
   // threadId 由 handleMessageEvent 校验后传入（有 rootId 时必有 threadId）
-  const queueKey = makeQueueKey(chatId, threadId);
-  taskQueue.enqueue(queueKey, chatId, userId, text, messageId, rootId, threadId).catch(() => {});
-  processQueue(queueKey);
+  // accountId 用于恢复正确的 feishuClient 上下文（哪个 bot 收到的消息就由哪个 bot 处理）
+  const queueKey = makeQueueKey(chatId, threadId, agentId as AgentId);
+  runWithAccountId(accountId, () => {
+    taskQueue.enqueue(queueKey, chatId, userId, text, messageId, rootId, threadId).catch(() => {});
+    processQueue(queueKey, agentId as AgentId);
+  });
 });
 
 // ============================================================
@@ -838,7 +841,7 @@ async function handleMessageEvent(data: MessageEventData, accountId: string = 'd
     const threadIdForApproval = effectiveThreadId || session?.threadId;
     const approved = await checkAndRequestApproval(
       userId, chatId, chatType, strippedText, messageId,
-      rootId, rootId, threadIdForApproval,
+      accountId, agentId, rootId, rootId, threadIdForApproval,
     );
     if (!approved) return;
   }
