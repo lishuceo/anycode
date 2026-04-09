@@ -775,7 +775,7 @@ async function handleMessageEvent(data: MessageEventData, accountId: string = 'd
   } else {
     // 单 bot 模式：群聊中需要 @机器人 才响应
     // 例外：话题内后续消息，需同时满足：① 发送者是 session 创建者 ② 语义判断消息在跟 bot 对话
-    if (chatType === 'group' && !mentionedBot) {
+    if (chatType === 'group' && !mentionedBot && !images?.length && !documents?.length) {
       const ts = threadId ? sessionManager.getThreadSession(threadId) : undefined;
       if (!ts || (!isOwner(userId) && ts.userId !== userId)) {
         return;
