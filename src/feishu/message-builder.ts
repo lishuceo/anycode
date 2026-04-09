@@ -709,7 +709,9 @@ export function buildCombinedProgressCard(
     } else {
       // 执行中: 显示计数 + 最新 tool call 摘要
       const lastTool = displayed[displayed.length - 1];
-      const lastToolSummary = lastTool ? formatToolCall(lastTool) : '';
+      const lastToolSummary = lastTool
+        ? formatToolCall(lastTool).replace(/\*\*/g, '').replace(/`/g, '')
+        : '';
       panelTitle = `🔧 工具调用 (${toolCalls.length}) — ${lastToolSummary}`;
     }
 
