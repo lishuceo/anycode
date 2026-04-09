@@ -544,7 +544,7 @@ describe('buildCombinedProgressCard', () => {
     ];
     const card = buildCombinedProgressCard('正在分析代码...', tools, 2) as any;
     expect(card.header.template).toBe('blue');
-    expect(card.header.title.content).toContain('执行中');
+    expect(card.header.title.content).toBe('🤖 Coding Agent');
     // 文本区域直接展示
     expect(card.elements[0].text.content).toContain('正在分析代码');
     // hr 分隔
@@ -569,7 +569,7 @@ describe('buildCombinedProgressCard', () => {
     }));
     const card = buildCombinedProgressCard('分析完成', tools, 5, true) as any;
     expect(card.header.template).toBe('indigo');
-    expect(card.header.title.content).toContain('活动记录');
+    expect(card.header.title.content).toBe('🤖 Coding Agent');
     // 工具调用折叠面板
     const panel = card.elements.find((e: any) => e.tag === 'collapsible_panel');
     expect(panel).toBeDefined();
@@ -621,7 +621,7 @@ describe('buildCombinedProgressCard', () => {
     const result: CombinedCardResult = { success: true, durationStr: '12s | 💰 $0.05' };
     const card = buildCombinedProgressCard('All tests passed', tools, 3, true, undefined, result) as any;
     expect(card.header.template).toBe('green');
-    expect(card.header.title.content).toContain('执行完成');
+    expect(card.header.title.content).toBe('🤖 Coding Agent');
     const note = card.elements.find((e: any) => e.tag === 'note');
     expect(note.elements[0].content).toContain('✅ 执行完成');
     expect(note.elements[0].content).toContain('12s');
@@ -631,7 +631,7 @@ describe('buildCombinedProgressCard', () => {
     const result: CombinedCardResult = { success: false, durationStr: '5s', error: 'Something broke' };
     const card = buildCombinedProgressCard('', [], 1, true, undefined, result) as any;
     expect(card.header.template).toBe('red');
-    expect(card.header.title.content).toContain('执行失败');
+    expect(card.header.title.content).toBe('🤖 Coding Agent');
     // 错误信息应直接展示
     const errorEl = card.elements.find((e: any) => e.text?.content?.includes('Something broke'));
     expect(errorEl).toBeDefined();
@@ -641,7 +641,7 @@ describe('buildCombinedProgressCard', () => {
     const result: CombinedCardResult = { success: false, durationStr: '300s', timedOut: true };
     const card = buildCombinedProgressCard('partial output', [], 10, true, undefined, result) as any;
     expect(card.header.template).toBe('orange');
-    expect(card.header.title.content).toContain('执行超时');
+    expect(card.header.title.content).toBe('🤖 Coding Agent');
   });
 });
 

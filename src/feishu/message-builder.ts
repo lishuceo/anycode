@@ -659,19 +659,14 @@ export function buildCombinedProgressCard(
   maxDisplayed: number = 16,
   result?: CombinedCardResult,
 ): Record<string, unknown> {
-  let headerTitle: string;
+  const headerTitle = '🤖 Coding Agent';
   let headerTemplate: string;
 
   if (result) {
-    const icon = result.timedOut ? '⏱️' : result.success ? '✅' : '❌';
-    const status = result.timedOut ? '执行超时' : result.success ? '执行完成' : '执行失败';
-    headerTitle = `🤖 Coding Agent - ${status}`;
     headerTemplate = result.timedOut ? 'orange' : result.success ? 'green' : 'red';
   } else if (completed) {
-    headerTitle = '🤖 Coding Agent - 活动记录';
     headerTemplate = 'indigo';
   } else {
-    headerTitle = '🤖 Coding Agent - 执行中';
     headerTemplate = 'blue';
   }
 
