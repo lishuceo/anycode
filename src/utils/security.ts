@@ -4,7 +4,8 @@ import { config } from '../config.js';
 import { logger } from './logger.js';
 
 /**
- * 检查用户是否在白名单中
+ * 检查用户是否在免审批白名单中。
+ * 不在白名单的用户不会被直接拒绝，而是走审批流程（由 event-handler 处理）。
  */
 export function isUserAllowed(userId: string): boolean {
   const { allowedUserIds } = config.security;
