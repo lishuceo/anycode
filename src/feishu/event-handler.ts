@@ -774,13 +774,20 @@ async function handleMessageEvent(data: MessageEventData, accountId: string = 'd
     }
   } else {
     // 单 bot 模式：群聊中需要 @机器人 才响应
-    // 例外：话题内后续消息（文本或图片）有活跃 thread session 则放行
+    // 例外：话题内后续消息，需同时满足：① 发送者是 session 创建者 ② 语义判断消息在跟 bot 对话
     if (chatType === 'group' && !mentionedBot) {
-      const inActiveThread = threadId && sessionManager.getThreadSession(threadId);
-      if (!inActiveThread) {
+      const ts = threadId ? sessionManager.getThreadSession(threadId) : undefined;
+      if (!ts || (!isOwner(userId) && ts.userId !== userId)) {
         return;
       }
-      logger.debug({ messageId, threadId }, 'Message allowed in group thread: active thread session exists');
+      // 语义判断：与多 bot 模式对齐，用 Qwen 小模型判断消息是否在跟 bot 对话
+      const botDisplayName = agentRegistry.get(agentId)?.displayName ?? 'bot';
+      const relevant = await checkThreadRelevance(text, botDisplayName);
+      if (!relevant) {
+        logger.info({ messageId, threadId, text: text?.slice(0, 100) }, 'Single-bot thread bypass skipped — message not directed at bot');
+        return;
+      }
+      logger.debug({ messageId, threadId }, 'Message allowed in group thread: sender is session creator + semantically relevant');
     }
   }
 
