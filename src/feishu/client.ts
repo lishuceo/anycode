@@ -905,17 +905,25 @@ export function initDefaultClient(appId: string, appSecret: string): FeishuClien
 }
 
 export const feishuClient: FeishuClient = new Proxy({} as FeishuClient, {
-  get(_target, prop, receiver) {
+  get(_target, prop) {
+    // 解析到正确的 FeishuClient 实例
     const accountId = feishuClientContext.getStore();
+    let client: FeishuClient | undefined;
     if (accountId && accountId !== 'default' && _clientResolver) {
-      const client = _clientResolver(accountId);
-      if (client) {
-        return Reflect.get(client, prop, receiver);
+      client = _clientResolver(accountId);
+    }
+    if (!client) {
+      if (!_defaultClient) {
+        throw new Error('FeishuClient not initialized — call initDefaultClient() first');
       }
+      client = _defaultClient;
     }
-    if (!_defaultClient) {
-      throw new Error('FeishuClient not initialized — call initDefaultClient() first');
+
+    const value = Reflect.get(client, prop, client);
+    // 方法 bind 到真实实例，确保 this 指向正确（而非 Proxy）
+    if (typeof value === 'function') {
+      return value.bind(client);
     }
-    return Reflect.get(_defaultClient, prop, receiver);
+    return value;
   },
 });
