@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import path from 'node:path';
 import { config, validateConfig, setMultiBotMode } from './config.js';
 import { logger, cleanupOldLogs, LOG_FILE } from './utils/logger.js';
 import { startServer, closeServer } from './server.js';
@@ -24,6 +25,51 @@ import { agentRegistry } from './agent/registry.js';
 import type { AgentId } from './agent/types.js';
 
 const INTERRUPTED_SESSIONS_FILE = '/tmp/anycode-interrupted.json';
+
+/**
+ * 在 DEFAULT_WORK_DIR 维护 .claude/skills symlink → anycode 项目的技能目录
+ *
+ * SDK 根据 cwd 加载 .claude/skills/。当 cwd 是 DEFAULT_WORK_DIR（多项目容器）时，
+ * 自动 symlink 到 anycode 自身的 skills，让平台级技能（ship/deep-review/restore 等）
+ * 在默认工作目录下也可用。切换到具体项目后，该项目自己的 .claude/skills/ 会生效。
+ */
+function ensureGlobalSkillsLink(): void {
+  const defaultDir = config.claude.defaultWorkDir;
+  const anycodeDir = process.cwd();
+  const anycodeSkills = path.join(anycodeDir, '.claude', 'skills');
+  const targetLink = path.join(defaultDir, '.claude', 'skills');
+
+  // DEFAULT_WORK_DIR 就是 anycode 本身，SDK 直接加载，不需要 symlink
+  if (path.resolve(defaultDir) === path.resolve(anycodeDir)) return;
+
+  // anycode 没有 .claude/skills/，跳过
+  if (!fs.existsSync(anycodeSkills)) return;
+
+  // 已有正确的 symlink，跳过
+  try {
+    const existing = fs.readlinkSync(targetLink);
+    if (path.resolve(path.dirname(targetLink), existing) === path.resolve(anycodeSkills)) return;
+  } catch {
+    // 不是 symlink 或不存在 — 继续创建
+  }
+
+  // 目标是一个真实目录（非 symlink），不覆盖，避免误删用户数据
+  try {
+    const stat = fs.lstatSync(targetLink);
+    if (stat.isDirectory()) {
+      logger.warn({ targetLink }, 'DEFAULT_WORK_DIR already has a real .claude/skills/ directory, skipping symlink');
+      return;
+    }
+    // 过期 symlink 或文件 — 删掉重建
+    fs.unlinkSync(targetLink);
+  } catch {
+    // 不存在 — 正常
+  }
+
+  fs.mkdirSync(path.join(defaultDir, '.claude'), { recursive: true });
+  fs.symlinkSync(anycodeSkills, targetLink);
+  logger.info({ link: targetLink, target: anycodeSkills }, 'Created .claude/skills symlink at DEFAULT_WORK_DIR');
+}
 
 async function main(): Promise<void> {
   logger.info('Starting Feishu Claude Code Bridge...');
@@ -73,6 +119,9 @@ async function main(): Promise<void> {
     logger.info('SIGHUP received, reloading agent config...');
     reloadAgentConfig();
   });
+
+  // 在 DEFAULT_WORK_DIR 维护 skills symlink，让平台级技能在默认目录下可用
+  ensureGlobalSkillsLink();
 
   // 启动时清理残留的 .tmp-* 临时目录、孤儿 Claude 子进程和过期日志
   cleanupTmpDirs();
