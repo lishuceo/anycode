@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdirSync, writeFileSync, readdirSync, existsSync, rmSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readdirSync, existsSync, rmSync, statSync, unlinkSync, utimesSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -28,9 +28,9 @@ describe('cleanupOldLogs', () => {
       if (!file.endsWith('.log')) continue;
       const filePath = join(dir, file);
       try {
-        const { mtimeMs } = require('node:fs').statSync(filePath);
+        const { mtimeMs } = statSync(filePath);
         if (mtimeMs < cutoff) {
-          require('node:fs').unlinkSync(filePath);
+          unlinkSync(filePath);
           removed++;
         }
       } catch {
@@ -42,7 +42,7 @@ describe('cleanupOldLogs', () => {
 
   function setFileMtime(filePath: string, daysAgo: number): void {
     const time = new Date(Date.now() - daysAgo * 24 * 60 * 60 * 1000);
-    require('node:fs').utimesSync(filePath, time, time);
+    utimesSync(filePath, time, time);
   }
 
   it('should remove log files older than maxDays', () => {
