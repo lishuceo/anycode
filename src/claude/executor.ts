@@ -360,7 +360,8 @@ function buildWorkspaceSystemPrompt(workingDir?: string, options?: { isRestart?:
 
 当你需要判断用户要在哪个仓库工作时，先读取 \`${projectsDir}/.repo-registry.json\`，根据用户消息中的关键词、项目名、技术栈等信息匹配。
 - 如果匹配到唯一仓库，直接调用 setup_workspace（使用 registry 中的 repo URL）
-- 如果匹配到多个或无法确定，**明确询问用户是哪个仓库，不要猜测**
+- 即使 registry 没有精确匹配，但从上下文（项目名、功能描述、技术栈等）能高置信度推断出唯一仓库，也应直接调用 setup_workspace，不要反复确认
+- 仅当确实存在多个同等可能的候选仓库、无法区分时，才询问用户
 - 用户澄清后，调用 update_repo_registry 记录新的关键词映射，以便下次自动匹配
 
 **默认从 bare cache 创建隔离工作区。**
