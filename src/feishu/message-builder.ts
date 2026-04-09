@@ -105,6 +105,15 @@ export function buildResultCard(
   const status = timedOut ? '执行超时' : success ? '执行完成' : '执行失败';
   const headerTemplate = timedOut ? 'orange' : success ? 'green' : 'red';
 
+  const formattedOutput = formatOutputAsMarkdown(output);
+  const outputElement: Record<string, unknown> = {
+    tag: 'div',
+    text: {
+      tag: 'lark_md',
+      content: formattedOutput,
+    },
+  };
+
   const elements: Record<string, unknown>[] = [
     {
       tag: 'div',
@@ -114,13 +123,7 @@ export function buildResultCard(
       },
     },
     { tag: 'hr' },
-    {
-      tag: 'div',
-      text: {
-        tag: 'lark_md',
-        content: formatOutputAsMarkdown(output),
-      },
-    },
+    ...conditionalCollapsible('📋 查看完整回复', [outputElement], formattedOutput),
     { tag: 'hr' },
     {
       tag: 'note',
@@ -520,6 +523,20 @@ export function buildToolProgressCard(
   if (!completed) footerParts.push('⏳ 执行中');
   footerParts.push(`🔄 ${turnCount} 轮`);
 
+  const toolContent = lines.join('\n') || '_(无工具调用)_';
+  const contentElement: Record<string, unknown> = {
+    tag: 'div',
+    text: {
+      tag: 'lark_md',
+      content: toolContent,
+    },
+  };
+
+  // 完成后根据长度决定是否折叠，执行中展开
+  const mainElements = completed
+    ? conditionalCollapsible('🔧 查看全部工具调用', [contentElement], toolContent)
+    : [contentElement];
+
   return {
     config: { wide_screen_mode: true },
     header: {
@@ -527,13 +544,7 @@ export function buildToolProgressCard(
       template: headerTemplate,
     },
     elements: [
-      {
-        tag: 'div',
-        text: {
-          tag: 'lark_md',
-          content: lines.join('\n') || '_(无工具调用)_',
-        },
-      },
+      ...mainElements,
       { tag: 'hr' },
       {
         tag: 'note',
@@ -588,6 +599,20 @@ export function buildTextContentCard(
   if (!completed) footerParts.push('⏳ 生成中');
   footerParts.push(`🔄 ${turnCount} 轮`);
 
+  const displayContent = content || '_(暂无输出)_';
+  const contentElement: Record<string, unknown> = {
+    tag: 'div',
+    text: {
+      tag: 'lark_md',
+      content: displayContent,
+    },
+  };
+
+  // 完成后根据长度决定是否折叠，生成中展开
+  const mainElements = completed
+    ? conditionalCollapsible('📋 查看完整内容', [contentElement], displayContent)
+    : [contentElement];
+
   return {
     config: { wide_screen_mode: true },
     header: {
@@ -595,13 +620,7 @@ export function buildTextContentCard(
       template: headerTemplate,
     },
     elements: [
-      {
-        tag: 'div',
-        text: {
-          tag: 'lark_md',
-          content: content || '_(暂无输出)_',
-        },
-      },
+      ...mainElements,
       { tag: 'hr' },
       {
         tag: 'note',
@@ -727,17 +746,19 @@ export function buildSimpleResultCard(
       parts.push(lastTurn.toolCalls.map(formatToolCall).join('\n'));
     }
     if (parts.length > 0) {
-      elements.push({
+      const joinedContent = parts.join('\n\n');
+      const contentElement: Record<string, unknown> = {
         tag: 'div',
         text: {
           tag: 'lark_md',
-          content: parts.join('\n\n'),
+          content: joinedContent,
         },
-      });
+      };
+      elements.push(...conditionalCollapsible('📋 查看完整回复', [contentElement], joinedContent));
     }
   }
 
-  // 失败时显示错误信息
+  // 失败时显示错误信息（不折叠，需要直接看到）
   if (!success && error) {
     if (elements.length > 0) elements.push({ tag: 'hr' });
     elements.push({
@@ -896,6 +917,62 @@ function formatToolCall(tool: ToolCallInfo): string {
 }
 
 // === 工具函数 ===
+
+/** 内容折叠阈值（字符数），超过才折叠 */
+const COLLAPSIBLE_THRESHOLD = 300;
+
+/**
+ * 智能折叠：短内容直接展示，长内容显示摘要 + 折叠面板。
+ * 返回元素数组，需 spread 到父 elements 中。
+ */
+function conditionalCollapsible(
+  foldTitle: string,
+  contentElements: Record<string, unknown>[],
+  rawText: string,
+  threshold: number = COLLAPSIBLE_THRESHOLD,
+): Record<string, unknown>[] {
+  if (rawText.length <= threshold) {
+    return contentElements;
+  }
+
+  // 提取摘要：前 5 行作为预览直接显示，剩余内容折叠
+  const lines = rawText.split('\n');
+  const SUMMARY_LINES = 5;
+  const summaryText = lines.slice(0, SUMMARY_LINES).join('\n').trim();
+  const remainingText = lines.slice(SUMMARY_LINES).join('\n').trim();
+  const remainingCount = lines.length - SUMMARY_LINES;
+
+  // 摘要标题 + 预览内容
+  const summaryHeader: Record<string, unknown> = {
+    tag: 'div',
+    text: { tag: 'lark_md', content: '**💬 回复预览**' },
+  };
+  const summaryElement: Record<string, unknown> = {
+    tag: 'div',
+    text: { tag: 'lark_md', content: summaryText },
+  };
+
+  // 剩余部分放入折叠面板
+  const foldElement: Record<string, unknown> = {
+    tag: 'collapsible_panel',
+    expanded: false,
+    background_color: 'grey',
+    border: { color: 'grey', corner_radius: '5px' },
+    header: {
+      title: { tag: 'plain_text', content: foldTitle + ' (' + remainingCount + ' 行)' },
+      vertical_align: 'center',
+      icon: { tag: 'standard_icon', token: 'down-small-ccm_outlined', size: '16px 16px' },
+      icon_position: 'right',
+      icon_expanded_angle: -180,
+    },
+    elements: [{
+      tag: 'div',
+      text: { tag: 'lark_md', content: remainingText },
+    }],
+  };
+
+  return [summaryHeader, summaryElement, foldElement];
+}
 
 function escapeMarkdown(text: string): string {
   // 飞书 lark_md 中需要转义的字符较少
