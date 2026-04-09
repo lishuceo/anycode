@@ -791,16 +791,25 @@ async function handleMessageEvent(data: MessageEventData, accountId: string = 'd
   const agentConfig = agentRegistry.get(agentId);
   logger.debug({ agentId, accountId }, 'Agent resolved');
 
-  // 用户权限检查
-  if (!isUserAllowed(userId)) {
-    logger.warn({ userId }, 'Unauthorized user');
-    await feishuClient.replyText(messageId, '⚠️ 你没有权限使用此机器人');
-    return;
-  }
-
   // 自动检测 owner：OWNER_USER_ID 未配置时，首个发消息的用户自动成为管理员
   if (autoDetectOwner(userId)) {
     await feishuClient.replyText(messageId, `🔑 已自动将你设为管理员 (${userId})，已写入 .env`);
+  }
+
+  // 用户权限检查：不在白名单的用户走审批流程（而非直接拒绝）
+  if (!isUserAllowed(userId)) {
+    if (!config.security.ownerUserId) {
+      // 没有 owner 无法审批，直接放行
+      logger.debug({ userId }, 'No owner configured, allowing unlisted user');
+    } else {
+      const session = sessionManager.get(chatId, userId, agentId);
+      const threadIdForApproval = effectiveThreadId || session?.threadId;
+      const approved = await checkAndRequestApproval(
+        userId, chatId, chatType, text || '', messageId,
+        accountId, agentId, rootId, rootId, threadIdForApproval,
+      );
+      if (!approved) return;
+    }
   }
 
   // /t <text> — 强制话题回复 + 跳过 quick-ack（仅对 direct 模式 agent 生效）
