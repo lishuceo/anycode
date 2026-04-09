@@ -659,16 +659,7 @@ export function buildCombinedProgressCard(
   maxDisplayed: number = 16,
   result?: CombinedCardResult,
 ): Record<string, unknown> {
-  const headerTitle = '🤖 Coding Agent';
-  let headerTemplate: string;
-
-  if (result) {
-    headerTemplate = result.timedOut ? 'orange' : result.success ? 'green' : 'red';
-  } else if (completed) {
-    headerTemplate = 'indigo';
-  } else {
-    headerTemplate = 'blue';
-  }
+  // 无 header，通过底部状态栏区分状态
 
   const elements: Record<string, unknown>[] = [];
   const hasText = !!text.trim();
@@ -783,10 +774,6 @@ export function buildCombinedProgressCard(
 
   return {
     config: { wide_screen_mode: true },
-    header: {
-      title: { tag: 'plain_text', content: headerTitle },
-      template: headerTemplate,
-    },
     elements,
   };
 }
