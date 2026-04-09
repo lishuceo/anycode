@@ -1,7 +1,7 @@
 import { logger } from '../utils/logger.js';
 import { config } from '../config.js';
 import { isOwner } from '../utils/security.js';
-import { feishuClient } from './client.js';
+import { feishuClient, runWithAccountId } from './client.js';
 import { sessionManager } from '../session/manager.js';
 import { buildApprovalCard, buildApprovalResultCard } from './message-builder.js';
 
@@ -19,6 +19,10 @@ interface PendingApproval {
   threadReplyMsgId?: string;
   /** 审批卡片的消息 ID（用于更新卡片） */
   approvalMsgId?: string;
+  /** 发起审批的 bot accountId（审批通过后用于恢复正确的 feishuClient 上下文） */
+  accountId: string;
+  /** 路由到的 agentId（accountId 和 agentId 在共享飞书应用时可能不同） */
+  agentId: string;
   createdAt: number;
 }
 
@@ -41,7 +45,7 @@ function generateApprovalId(): string {
 // 回调机制：避免循环依赖
 // ============================================================
 
-type OnApprovedCallback = (chatId: string, userId: string, text: string, messageId: string, rootId?: string, threadId?: string) => void;
+type OnApprovedCallback = (chatId: string, userId: string, text: string, messageId: string, accountId: string, agentId: string, rootId?: string, threadId?: string) => void;
 let onApprovedCallback: OnApprovedCallback | undefined;
 
 /**
@@ -92,6 +96,8 @@ export async function checkAndRequestApproval(
   chatType: string,
   text: string,
   messageId: string,
+  accountId: string = 'default',
+  agentId: string = 'dev',
   rootId?: string,
   threadReplyMsgId?: string,
   threadId?: string,
@@ -137,6 +143,8 @@ export async function checkAndRequestApproval(
     messageId,
     rootId,
     threadReplyMsgId,
+    accountId,
+    agentId,
     createdAt: Date.now(),
   };
 
@@ -207,53 +215,56 @@ export function resolveApproval(approvalId: string, approved: boolean): PendingA
   const pending = pendingApprovals.get(approvalId);
   if (!pending) return undefined;
 
-  // 清理内存
-  pendingApprovals.delete(approvalId);
-  if (pending.threadId) {
-    threadToApproval.delete(pending.threadId);
-  }
+  // 在正确的 bot accountId 上下文中执行所有 feishuClient 调用
+  runWithAccountId(pending.accountId, () => {
+    // 清理内存
+    pendingApprovals.delete(approvalId);
+    if (pending.threadId) {
+      threadToApproval.delete(pending.threadId);
+    }
 
-  // 持久化审批状态
-  if (approved && pending.threadId) {
-    sessionManager.setThreadApproved(pending.threadId, true);
-  } else if (approved && !pending.threadId) {
-    // Thread 尚未创建，存入预审批集合（带 TTL）
-    preApprovedUsers.set(`${pending.chatId}:${pending.userId}`, Date.now());
-  }
+    // 持久化审批状态
+    if (approved && pending.threadId) {
+      sessionManager.setThreadApproved(pending.threadId, true);
+    } else if (approved && !pending.threadId) {
+      // Thread 尚未创建，存入预审批集合（带 TTL）
+      preApprovedUsers.set(`${pending.chatId}:${pending.userId}`, Date.now());
+    }
 
-  // 更新审批卡片
-  if (pending.approvalMsgId) {
-    feishuClient.updateCard(
-      pending.approvalMsgId,
-      buildApprovalResultCard(pending.userName, approved),
-    ).catch((err) => {
-      logger.warn({ err }, 'Failed to update approval card');
-    });
-  }
+    // 更新审批卡片
+    if (pending.approvalMsgId) {
+      feishuClient.updateCard(
+        pending.approvalMsgId,
+        buildApprovalResultCard(pending.userName, approved),
+      ).catch((err) => {
+        logger.warn({ err }, 'Failed to update approval card');
+      });
+    }
 
-  if (approved) {
-    // 通知用户并重新入队消息
-    const notification = '✅ 管理员已授权，正在处理你的消息...';
-    if (pending.threadReplyMsgId) {
-      feishuClient.replyTextInThread(pending.threadReplyMsgId, notification).catch(() => {});
+    if (approved) {
+      // 通知用户并重新入队消息
+      const notification = '✅ 管理员已授权，正在处理你的消息...';
+      if (pending.threadReplyMsgId) {
+        feishuClient.replyTextInThread(pending.threadReplyMsgId, notification).catch(() => {});
+      } else {
+        feishuClient.replyText(pending.messageId, notification).catch(() => {});
+      }
+
+      // 重新入队原始消息
+      if (onApprovedCallback) {
+        onApprovedCallback(pending.chatId, pending.userId, pending.messagePreview, pending.messageId, pending.accountId, pending.agentId, pending.rootId, pending.threadId || undefined);
+      }
     } else {
-      feishuClient.replyText(pending.messageId, notification).catch(() => {});
+      const notification = '❌ 管理员已拒绝你的请求';
+      if (pending.threadReplyMsgId) {
+        feishuClient.replyTextInThread(pending.threadReplyMsgId, notification).catch(() => {});
+      } else {
+        feishuClient.replyText(pending.messageId, notification).catch(() => {});
+      }
     }
 
-    // 重新入队原始消息
-    if (onApprovedCallback) {
-      onApprovedCallback(pending.chatId, pending.userId, pending.messagePreview, pending.messageId, pending.rootId, pending.threadId || undefined);
-    }
-  } else {
-    const notification = '❌ 管理员已拒绝你的请求';
-    if (pending.threadReplyMsgId) {
-      feishuClient.replyTextInThread(pending.threadReplyMsgId, notification).catch(() => {});
-    } else {
-      feishuClient.replyText(pending.messageId, notification).catch(() => {});
-    }
-  }
-
-  logger.info({ approvalId, userId: pending.userId, threadId: pending.threadId, approved }, 'Approval resolved');
+    logger.info({ approvalId, userId: pending.userId, threadId: pending.threadId, approved, accountId: pending.accountId }, 'Approval resolved');
+  });
 
   return pending;
 }
