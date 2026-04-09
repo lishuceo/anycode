@@ -901,6 +901,118 @@ describe('parseMessage empty @mention handling', () => {
 });
 
 // ============================================================
+// 单 bot 模式群聊图片/文档消息 @mention 过滤回归测试
+//
+// 回归 PR #220 的 BUG：群聊中纯图片/文档消息不应绕过 @mention 检查
+// 正确行为：
+//   - 主聊天区：没 @bot 的图片消息 → 不响应（无论有没有图片）
+//   - 话题内 session 创建者：图片消息 → 放行（无需语义判断）
+//   - 话题内非 session 创建者：图片消息 → 不响应
+// ============================================================
+
+describe('single-bot group image/doc @mention filtering (regression PR #220)', () => {
+  /**
+   * 模拟 event-handler.ts 第 778-796 行的单 bot 群聊过滤逻辑。
+   *
+   * @returns 'allow' 放行 | 'block' 拦截 | 'semantic_check' 需语义判断
+   */
+  function singleBotGroupFilter(params: {
+    chatType: string;
+    mentionedBot: boolean;
+    threadId?: string;
+    hasThreadSession: boolean;
+    isSessionCreatorOrOwner: boolean;
+    hasImages: boolean;
+    hasDocuments: boolean;
+  }): 'allow' | 'block' | 'semantic_check' {
+    const { chatType, mentionedBot, threadId, hasThreadSession, isSessionCreatorOrOwner, hasImages, hasDocuments } = params;
+
+    // 非群聊 或 已 @bot → 直接放行
+    if (chatType !== 'group' || mentionedBot) return 'allow';
+
+    // 群聊且没 @bot — 检查话题
+    const ts = threadId && hasThreadSession;
+    if (!ts || !isSessionCreatorOrOwner) return 'block';
+
+    // 话题内 session 创建者
+    if (hasImages || hasDocuments) return 'allow';  // 图片/文档直接放行
+    return 'semantic_check';  // 文本消息需语义判断
+  }
+
+  // --- 主聊天区（无话题）---
+
+  it('should BLOCK image in main chat without @mention', () => {
+    expect(singleBotGroupFilter({
+      chatType: 'group', mentionedBot: false,
+      hasThreadSession: false, isSessionCreatorOrOwner: false,
+      hasImages: true, hasDocuments: false,
+    })).toBe('block');
+  });
+
+  it('should BLOCK document in main chat without @mention', () => {
+    expect(singleBotGroupFilter({
+      chatType: 'group', mentionedBot: false,
+      hasThreadSession: false, isSessionCreatorOrOwner: false,
+      hasImages: false, hasDocuments: true,
+    })).toBe('block');
+  });
+
+  it('should ALLOW image in main chat WITH @mention', () => {
+    expect(singleBotGroupFilter({
+      chatType: 'group', mentionedBot: true,
+      hasThreadSession: false, isSessionCreatorOrOwner: false,
+      hasImages: true, hasDocuments: false,
+    })).toBe('allow');
+  });
+
+  // --- 话题内 session 创建者 ---
+
+  it('should ALLOW image in thread from session creator (skip semantic check)', () => {
+    expect(singleBotGroupFilter({
+      chatType: 'group', mentionedBot: false,
+      threadId: 'thread-1', hasThreadSession: true, isSessionCreatorOrOwner: true,
+      hasImages: true, hasDocuments: false,
+    })).toBe('allow');
+  });
+
+  it('should ALLOW document in thread from session creator', () => {
+    expect(singleBotGroupFilter({
+      chatType: 'group', mentionedBot: false,
+      threadId: 'thread-1', hasThreadSession: true, isSessionCreatorOrOwner: true,
+      hasImages: false, hasDocuments: true,
+    })).toBe('allow');
+  });
+
+  it('should require SEMANTIC_CHECK for text in thread from session creator', () => {
+    expect(singleBotGroupFilter({
+      chatType: 'group', mentionedBot: false,
+      threadId: 'thread-1', hasThreadSession: true, isSessionCreatorOrOwner: true,
+      hasImages: false, hasDocuments: false,
+    })).toBe('semantic_check');
+  });
+
+  // --- 话题内非 session 创建者 ---
+
+  it('should BLOCK image in thread from non-session-creator', () => {
+    expect(singleBotGroupFilter({
+      chatType: 'group', mentionedBot: false,
+      threadId: 'thread-1', hasThreadSession: true, isSessionCreatorOrOwner: false,
+      hasImages: true, hasDocuments: false,
+    })).toBe('block');
+  });
+
+  // --- 非群聊（私聊）---
+
+  it('should ALLOW image in p2p chat without @mention', () => {
+    expect(singleBotGroupFilter({
+      chatType: 'p2p', mentionedBot: false,
+      hasThreadSession: false, isSessionCreatorOrOwner: false,
+      hasImages: true, hasDocuments: false,
+    })).toBe('allow');
+  });
+});
+
+// ============================================================
 // makeQueueKey + 并行执行策略测试
 //
 // 使用生产代码导出的 makeQueueKey，测试 handleMessageEvent 中
