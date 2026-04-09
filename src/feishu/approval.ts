@@ -21,6 +21,8 @@ interface PendingApproval {
   approvalMsgId?: string;
   /** 发起审批的 bot accountId（审批通过后用于恢复正确的 feishuClient 上下文） */
   accountId: string;
+  /** 路由到的 agentId（accountId 和 agentId 在共享飞书应用时可能不同） */
+  agentId: string;
   createdAt: number;
 }
 
@@ -43,7 +45,7 @@ function generateApprovalId(): string {
 // 回调机制：避免循环依赖
 // ============================================================
 
-type OnApprovedCallback = (chatId: string, userId: string, text: string, messageId: string, accountId: string, rootId?: string, threadId?: string) => void;
+type OnApprovedCallback = (chatId: string, userId: string, text: string, messageId: string, accountId: string, agentId: string, rootId?: string, threadId?: string) => void;
 let onApprovedCallback: OnApprovedCallback | undefined;
 
 /**
@@ -95,6 +97,7 @@ export async function checkAndRequestApproval(
   text: string,
   messageId: string,
   accountId: string = 'default',
+  agentId: string = 'dev',
   rootId?: string,
   threadReplyMsgId?: string,
   threadId?: string,
@@ -141,6 +144,7 @@ export async function checkAndRequestApproval(
     rootId,
     threadReplyMsgId,
     accountId,
+    agentId,
     createdAt: Date.now(),
   };
 
@@ -248,7 +252,7 @@ export function resolveApproval(approvalId: string, approved: boolean): PendingA
 
       // 重新入队原始消息
       if (onApprovedCallback) {
-        onApprovedCallback(pending.chatId, pending.userId, pending.messagePreview, pending.messageId, pending.accountId, pending.rootId, pending.threadId || undefined);
+        onApprovedCallback(pending.chatId, pending.userId, pending.messagePreview, pending.messageId, pending.accountId, pending.agentId, pending.rootId, pending.threadId || undefined);
       }
     } else {
       const notification = '❌ 管理员已拒绝你的请求';
