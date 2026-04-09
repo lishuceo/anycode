@@ -72,10 +72,19 @@ describe('buildResultCard', () => {
     expect(outputEl.text.content).toContain('_(无输出)_');
   });
 
-  it('should use collapsible panel for very long output', () => {
+  it('should show long single-line output directly without folding', () => {
+    // 行数 ≤ 5 但字符多的情况，直接展示不折叠
     const longOutput = 'x'.repeat(5000);
     const card = buildResultCard('test', longOutput, true, '1s') as any;
-    // 长内容触发 conditionalCollapsible：预览标题 + 预览文本 + 折叠面板
+    const outputEl = card.elements[2];
+    expect(outputEl.tag).toBe('div');
+    expect(outputEl.text.content.length).toBeGreaterThan(300);
+  });
+
+  it('should use collapsible panel for multi-line long output', () => {
+    // 行数 > 5 且字符多的情况，触发折叠面板
+    const longOutput = Array.from({ length: 20 }, (_, i) => `line ${i}: ${'x'.repeat(50)}`).join('\n');
+    const card = buildResultCard('test', longOutput, true, '1s') as any;
     const previewHeader = card.elements[2];
     expect(previewHeader.text.content).toContain('💬 回复预览');
     const foldPanel = card.elements[4];

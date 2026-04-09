@@ -938,6 +938,10 @@ function conditionalCollapsible(
   // 提取摘要：前 5 行作为预览直接显示，剩余内容折叠
   const lines = rawText.split('\n');
   const SUMMARY_LINES = 5;
+  if (lines.length <= SUMMARY_LINES) {
+    // 行数少但字符多（如长单行），直接展示不折叠
+    return contentElements;
+  }
   const summaryText = lines.slice(0, SUMMARY_LINES).join('\n').trim();
   const remainingText = lines.slice(SUMMARY_LINES).join('\n').trim();
   const remainingCount = lines.length - SUMMARY_LINES;

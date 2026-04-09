@@ -777,7 +777,7 @@ async function handleMessageEvent(data: MessageEventData, accountId: string = 'd
     // 例外：话题内后续消息，需同时满足：① 发送者是 session 创建者 ② 语义判断消息在跟 bot 对话
     if (chatType === 'group' && !mentionedBot) {
       const ts = threadId ? sessionManager.getThreadSession(threadId) : undefined;
-      if (!ts || ts.userId !== userId) {
+      if (!ts || (!isOwner(userId) && ts.userId !== userId)) {
         return;
       }
       // 语义判断：与多 bot 模式对齐，用 Qwen 小模型判断消息是否在跟 bot 对话
