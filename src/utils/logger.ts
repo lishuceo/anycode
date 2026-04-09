@@ -62,7 +62,7 @@ export function cleanupOldLogs(maxDays: number = config.server.logMaxDays): numb
   try {
     const files = readdirSync(logDir);
     for (const file of files) {
-      if (!file.endsWith('.log')) continue;
+      if (!file.startsWith('anycode-') || !file.endsWith('.log')) continue;
       const filePath = join(logDir, file);
       try {
         const stat = statSync(filePath);
