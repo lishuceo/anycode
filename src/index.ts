@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import { config, validateConfig, setMultiBotMode } from './config.js';
-import { logger } from './utils/logger.js';
+import { logger, cleanupOldLogs, LOG_FILE } from './utils/logger.js';
 import { startServer, closeServer } from './server.js';
 import { sessionManager } from './session/manager.js';
 import { claudeExecutor } from './claude/executor.js';
@@ -74,9 +74,11 @@ async function main(): Promise<void> {
     reloadAgentConfig();
   });
 
-  // 启动时清理残留的 .tmp-* 临时目录和孤儿 Claude 子进程
+  // 启动时清理残留的 .tmp-* 临时目录、孤儿 Claude 子进程和过期日志
   cleanupTmpDirs();
   killOrphanedClaudeProcesses();
+  cleanupOldLogs();
+  logger.info({ logFile: LOG_FILE }, 'Log file transport active');
 
   // 异步扫描仓库 registry（不阻塞启动）
   scanAndSyncRegistry().catch(err => {
