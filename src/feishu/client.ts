@@ -918,4 +918,17 @@ export const feishuClient: FeishuClient = new Proxy({} as FeishuClient, {
     }
     return Reflect.get(_defaultClient, prop, receiver);
   },
+  set(_target, prop, value) {
+    const accountId = feishuClientContext.getStore();
+    if (accountId && accountId !== 'default' && _clientResolver) {
+      const client = _clientResolver(accountId);
+      if (client) {
+        return Reflect.set(client, prop, value);
+      }
+    }
+    if (!_defaultClient) {
+      throw new Error('FeishuClient not initialized — call initDefaultClient() first');
+    }
+    return Reflect.set(_defaultClient, prop, value);
+  },
 });
