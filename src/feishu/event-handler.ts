@@ -6,7 +6,7 @@ import { taskQueue } from '../session/queue.js';
 import { claudeExecutor } from '../claude/executor.js';
 import { DEFAULT_IMAGE_PROMPT, DEFAULT_DOCUMENT_PROMPT } from '../claude/types.js';
 import type { TurnInfo, ToolCallInfo, ImageAttachment, DocumentAttachment, ConversationTurn } from '../claude/types.js';
-import { buildResultCard, buildStatusCard, buildCancelledCard, buildPipelineCard, buildPipelineConfirmCard, buildProgressCard, buildToolProgressCard, buildTextContentCard, buildCombinedProgressCard, buildSimpleResultCard, buildWorkspaceSwitchCard, buildAskUserQuestionCard, buildAskUserAnsweredCard } from './message-builder.js';
+import { buildResultCard, buildStatusCard, buildCancelledCard, buildPipelineCard, buildPipelineConfirmCard, buildCombinedProgressCard, buildSimpleResultCard, buildWorkspaceSwitchCard, buildAskUserQuestionCard, buildAskUserAnsweredCard } from './message-builder.js';
 import type { AskUserQuestionItem } from './message-builder.js';
 import { TOTAL_PHASES } from '../pipeline/types.js';
 import { feishuClient, feishuClientContext, runWithAccountId } from './client.js';
