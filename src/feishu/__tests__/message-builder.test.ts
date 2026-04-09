@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { buildProgressCard, buildResultCard, buildStreamingCard, buildPipelineCard, buildStatusCard, buildTurnCard, buildToolProgressCard, buildTextContentCard, buildOverviewCard, buildSimpleResultCard } from '../message-builder.js';
+import { buildProgressCard, buildResultCard, buildStreamingCard, buildPipelineCard, buildStatusCard, buildTurnCard, buildToolProgressCard, buildTextContentCard, buildCombinedProgressCard, buildOverviewCard, buildSimpleResultCard } from '../message-builder.js';
+import type { CombinedCardResult } from '../message-builder.js';
 import type { TurnInfo, ToolCallInfo, ActivityStatus } from '../../claude/types.js';
 
 describe('buildProgressCard', () => {
@@ -512,6 +513,130 @@ describe('buildToolProgressCard', () => {
     const card = buildToolProgressCard([], 1) as any;
     const body = card.elements[0].text.content as string;
     expect(body).toContain('_(无工具调用)_');
+  });
+
+  it('should collapse tool calls when completed with many entries', () => {
+    const tools: ToolCallInfo[] = Array.from({ length: 8 }, (_, i) => ({
+      name: 'Read',
+      input: { file_path: `/src/file${i}.ts` },
+    }));
+    const card = buildToolProgressCard(tools, 10, undefined, true) as any;
+    // 前 3 行作为摘要直接显示
+    const summary = card.elements[0].text.content as string;
+    expect(summary).toContain('file0.ts');
+    expect(summary).toContain('file2.ts');
+    expect(summary).not.toContain('file3.ts');
+    // 剩余部分在折叠面板中
+    const panel = card.elements[1];
+    expect(panel.tag).toBe('collapsible_panel');
+    expect(panel.expanded).toBe(false);
+    const panelContent = panel.elements[0].text.content as string;
+    expect(panelContent).toContain('file3.ts');
+    expect(panelContent).toContain('file7.ts');
+  });
+});
+
+describe('buildCombinedProgressCard', () => {
+  it('should show text and tool calls panel when in progress', () => {
+    const tools: ToolCallInfo[] = [
+      { name: 'Read', input: { file_path: '/src/index.ts' } },
+      { name: 'Bash', input: { command: 'npm test' } },
+    ];
+    const card = buildCombinedProgressCard('正在分析代码...', tools, 2) as any;
+    expect(card.header).toBeUndefined();
+    // 文本区域直接展示
+    expect(card.elements[0].text.content).toContain('正在分析代码');
+    // hr 分隔
+    expect(card.elements[1].tag).toBe('hr');
+    // 工具调用在折叠面板中
+    const panel = card.elements[2];
+    expect(panel.tag).toBe('collapsible_panel');
+    expect(panel.expanded).toBe(false);
+    // 面板标题包含最新 tool call
+    expect(panel.header.title.content).toContain('npm test');
+    expect(panel.header.title.content).toContain('2');
+    // 面板内容包含所有 tool calls
+    const panelContent = panel.elements[0].text.content as string;
+    expect(panelContent).toContain('/src/index.ts');
+    expect(panelContent).toContain('npm test');
+  });
+
+  it('should show indigo header and collapsed tools when completed', () => {
+    const tools: ToolCallInfo[] = Array.from({ length: 5 }, (_, i) => ({
+      name: 'Read',
+      input: { file_path: `/src/file${i}.ts` },
+    }));
+    const card = buildCombinedProgressCard('分析完成', tools, 5, true) as any;
+    expect(card.header).toBeUndefined();
+    // 工具调用折叠面板
+    const panel = card.elements.find((e: any) => e.tag === 'collapsible_panel');
+    expect(panel).toBeDefined();
+    expect(panel.expanded).toBe(false);
+    expect(panel.header.title.content).toContain('5 条');
+    // note 无 "执行中"
+    const note = card.elements.find((e: any) => e.tag === 'note');
+    expect(note.elements[0].content).not.toContain('⏳');
+    expect(note.elements[0].content).toContain('5 轮');
+  });
+
+  it('should show only text when no tool calls', () => {
+    const card = buildCombinedProgressCard('只有文字', [], 1) as any;
+    expect(card.elements[0].text.content).toContain('只有文字');
+    // 无 collapsible_panel
+    const panel = card.elements.find((e: any) => e.tag === 'collapsible_panel');
+    expect(panel).toBeUndefined();
+  });
+
+  it('should show only tool panel when no text', () => {
+    const tools: ToolCallInfo[] = [
+      { name: 'Glob', input: { pattern: '**/*.ts' } },
+    ];
+    const card = buildCombinedProgressCard('', tools, 1) as any;
+    // 第一个元素应该是 collapsible_panel（无文本区和 hr）
+    expect(card.elements[0].tag).toBe('collapsible_panel');
+  });
+
+  it('should show placeholder when both empty', () => {
+    const card = buildCombinedProgressCard('', [], 0) as any;
+    expect(card.elements[0].text.content).toContain('正在处理');
+  });
+
+  it('should keep combined card payload under 30KB', () => {
+    const longText = '内'.repeat(12000);
+    const tools: ToolCallInfo[] = Array.from({ length: 16 }, (_, i) => ({
+      name: 'Bash',
+      input: { command: `very-long-command-number-${i} --flag=value --another=arg` },
+    }));
+    const card = buildCombinedProgressCard(longText, tools, 20, true);
+    const serialized = JSON.stringify(card);
+    expect(Buffer.byteLength(serialized, 'utf-8')).toBeLessThan(30720);
+  });
+
+  it('should show green header on success result', () => {
+    const tools: ToolCallInfo[] = [
+      { name: 'Bash', input: { command: 'npm test' } },
+    ];
+    const result: CombinedCardResult = { success: true, durationStr: '12s | 💰 $0.05' };
+    const card = buildCombinedProgressCard('All tests passed', tools, 3, true, undefined, result) as any;
+    expect(card.header).toBeUndefined();
+    const note = card.elements.find((e: any) => e.tag === 'note');
+    expect(note.elements[0].content).toContain('✅ 执行完成');
+    expect(note.elements[0].content).toContain('12s');
+  });
+
+  it('should show red header and error on failure result', () => {
+    const result: CombinedCardResult = { success: false, durationStr: '5s', error: 'Something broke' };
+    const card = buildCombinedProgressCard('', [], 1, true, undefined, result) as any;
+    expect(card.header).toBeUndefined();
+    // 错误信息应直接展示
+    const errorEl = card.elements.find((e: any) => e.text?.content?.includes('Something broke'));
+    expect(errorEl).toBeDefined();
+  });
+
+  it('should show orange header on timeout result', () => {
+    const result: CombinedCardResult = { success: false, durationStr: '300s', timedOut: true };
+    const card = buildCombinedProgressCard('partial output', [], 10, true, undefined, result) as any;
+    expect(card.header).toBeUndefined();
   });
 });
 

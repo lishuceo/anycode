@@ -532,9 +532,13 @@ export function buildToolProgressCard(
     },
   };
 
-  // 完成后根据长度决定是否折叠，执行中展开
+  // 完成后始终折叠（仅显示前 3 行），执行中展开
   const mainElements = completed
-    ? conditionalCollapsible('🔧 查看全部工具调用', [contentElement], toolContent)
+    ? conditionalCollapsible('🔧 查看全部工具调用', [contentElement], toolContent, COLLAPSIBLE_THRESHOLD, {
+        summaryLines: 3,
+        alwaysFold: true,
+        showSummaryHeader: false,
+      })
     : [contentElement];
 
   return {
@@ -632,6 +636,147 @@ export function buildTextContentCard(
         ],
       },
     ],
+  };
+}
+
+/** 合并卡片文本区域的字节上限（比独立卡片小，留空间给 tool calls） */
+const COMBINED_TEXT_MAX_BYTES = 24000;
+
+/** 合并卡片的完成结果信息 */
+export interface CombinedCardResult {
+  success: boolean;
+  durationStr: string;
+  error?: string;
+  timedOut?: boolean;
+}
+
+/** 构建合并进度卡片（文本 + 工具调用折叠面板，可选完成结果） */
+export function buildCombinedProgressCard(
+  text: string,
+  toolCalls: ToolCallInfo[],
+  turnCount: number,
+  completed: boolean = false,
+  maxDisplayed: number = 16,
+  result?: CombinedCardResult,
+): Record<string, unknown> {
+  // 无 header，通过底部状态栏区分状态
+
+  const elements: Record<string, unknown>[] = [];
+  const hasText = !!text.trim();
+  const hasTools = toolCalls.length > 0;
+
+  // --- 文本区域 ---
+  if (hasText) {
+    const { text: displayText, truncated } = truncateToByteLimit(text, COMBINED_TEXT_MAX_BYTES);
+    const displayContent = truncated
+      ? `_(前部分内容已省略)_\n\n${displayText}`
+      : displayText;
+
+    if (completed) {
+      // 完成后: 条件折叠长文本
+      const contentElement: Record<string, unknown> = {
+        tag: 'div',
+        text: { tag: 'lark_md', content: displayContent },
+      };
+      elements.push(...conditionalCollapsible('📋 查看完整内容', [contentElement], displayContent));
+    } else {
+      elements.push({
+        tag: 'div',
+        text: { tag: 'lark_md', content: displayContent },
+      });
+    }
+  }
+
+  // --- 工具调用折叠面板 ---
+  if (hasTools) {
+    if (hasText) elements.push({ tag: 'hr' });
+
+    // 截断旧条目
+    const truncatedTools = toolCalls.length > maxDisplayed;
+    const displayed = truncatedTools ? toolCalls.slice(-maxDisplayed) : toolCalls;
+
+    const lines: string[] = [];
+    if (truncatedTools) {
+      lines.push(`_(前 ${toolCalls.length - maxDisplayed} 条已省略)_`);
+    }
+    lines.push(...displayed.map(formatToolCall));
+    const toolContent = lines.join('\n');
+
+    // 面板标题
+    let panelTitle: string;
+    if (completed) {
+      panelTitle = `🔧 工具调用 (${toolCalls.length} 条)`;
+    } else {
+      // 执行中: 显示计数 + 最新 tool call 摘要
+      const lastTool = displayed[displayed.length - 1];
+      const lastToolSummary = lastTool
+        ? formatToolCall(lastTool).replace(/\*\*/g, '').replace(/`/g, '')
+        : '';
+      panelTitle = `🔧 工具调用 (${toolCalls.length}) — ${lastToolSummary}`;
+    }
+
+    elements.push({
+      tag: 'collapsible_panel',
+      expanded: false,
+      background_color: 'grey',
+      border: { color: 'grey', corner_radius: '5px' },
+      header: {
+        title: { tag: 'plain_text', content: panelTitle },
+        vertical_align: 'center',
+        icon: { tag: 'standard_icon', token: 'down-small-ccm_outlined', size: '16px 16px' },
+        icon_position: 'right',
+        icon_expanded_angle: -180,
+      },
+      elements: [{
+        tag: 'div',
+        text: { tag: 'lark_md', content: toolContent },
+      }],
+    });
+  }
+
+  // --- 空状态 ---
+  if (!hasText && !hasTools) {
+    elements.push({
+      tag: 'div',
+      text: { tag: 'lark_md', content: '⏳ 正在处理...' },
+    });
+  }
+
+  // --- 错误信息（失败时直接展示，不折叠） ---
+  if (result && !result.success && result.error) {
+    elements.push({ tag: 'hr' });
+    elements.push({
+      tag: 'div',
+      text: { tag: 'lark_md', content: truncate(result.error, 1000) },
+    });
+  }
+
+  // --- 底部状态栏 ---
+  elements.push({ tag: 'hr' });
+  const footerParts: string[] = [];
+  if (result) {
+    const icon = result.timedOut ? '⏱️' : result.success ? '✅' : '❌';
+    const status = result.timedOut ? '执行超时' : result.success ? '执行完成' : '执行失败';
+    footerParts.push(`${icon} ${status}`);
+  } else if (!completed) {
+    footerParts.push('⏳ 执行中');
+  }
+  footerParts.push(`🔄 ${turnCount} 轮`);
+  if (result) footerParts.push(`⏱️ ${result.durationStr}`);
+
+  elements.push({
+    tag: 'note',
+    elements: [
+      {
+        tag: 'plain_text',
+        content: footerParts.join(' | '),
+      },
+    ],
+  });
+
+  return {
+    config: { wide_screen_mode: true },
+    elements,
   };
 }
 
@@ -930,34 +1075,44 @@ function conditionalCollapsible(
   contentElements: Record<string, unknown>[],
   rawText: string,
   threshold: number = COLLAPSIBLE_THRESHOLD,
+  options?: { summaryLines?: number; alwaysFold?: boolean; showSummaryHeader?: boolean },
 ): Record<string, unknown>[] {
-  if (rawText.length <= threshold) {
+  const summaryLineCount = options?.summaryLines ?? 5;
+  const alwaysFold = options?.alwaysFold ?? false;
+  const showSummaryHeader = options?.showSummaryHeader ?? true;
+
+  if (!alwaysFold && rawText.length <= threshold) {
     return contentElements;
   }
 
-  // 提取摘要：前 5 行作为预览直接显示，剩余内容折叠
+  // 提取摘要：前 N 行作为预览直接显示，剩余内容折叠
   const lines = rawText.split('\n');
-  const SUMMARY_LINES = 5;
-  if (lines.length <= SUMMARY_LINES) {
-    // 行数少但字符多（如长单行），直接展示不折叠
+  if (lines.length <= summaryLineCount) {
+    // 行数不足，没有内容可折叠
     return contentElements;
   }
-  const summaryText = lines.slice(0, SUMMARY_LINES).join('\n').trim();
-  const remainingText = lines.slice(SUMMARY_LINES).join('\n').trim();
-  const remainingCount = lines.length - SUMMARY_LINES;
+  const summaryText = lines.slice(0, summaryLineCount).join('\n').trim();
+  const remainingText = lines.slice(summaryLineCount).join('\n').trim();
+  const remainingCount = lines.length - summaryLineCount;
 
-  // 摘要标题 + 预览内容
-  const summaryHeader: Record<string, unknown> = {
-    tag: 'div',
-    text: { tag: 'lark_md', content: '**💬 回复预览**' },
-  };
-  const summaryElement: Record<string, unknown> = {
+  const result: Record<string, unknown>[] = [];
+
+  // 摘要标题（可选）
+  if (showSummaryHeader) {
+    result.push({
+      tag: 'div',
+      text: { tag: 'lark_md', content: '**💬 回复预览**' },
+    });
+  }
+
+  // 预览内容
+  result.push({
     tag: 'div',
     text: { tag: 'lark_md', content: summaryText },
-  };
+  });
 
   // 剩余部分放入折叠面板
-  const foldElement: Record<string, unknown> = {
+  result.push({
     tag: 'collapsible_panel',
     expanded: false,
     background_color: 'grey',
@@ -973,9 +1128,9 @@ function conditionalCollapsible(
       tag: 'div',
       text: { tag: 'lark_md', content: remainingText },
     }],
-  };
+  });
 
-  return [summaryHeader, summaryElement, foldElement];
+  return result;
 }
 
 function escapeMarkdown(text: string): string {
