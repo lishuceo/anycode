@@ -383,14 +383,19 @@ function buildWorkspaceSystemPrompt(workingDir?: string, options?: { isRestart?:
 
 **重要：\`${cacheDir}\` 下的是 bare clone（无文件树），仅用于定位仓库 URL。不要在 bare repo 中直接工作（\`git show\`/\`git grep\` 等）。** 找到仓库后，如果项目不在 \`${projectsDir}\` 下，必须调用 setup_workspace 创建完整工作区，这样才能正确加载 CLAUDE.md、使用搜索工具、获得完整的代码上下文。
 
-**绝对不要用 setup_workspace 来切换当前工作区。** 当前工作区已经配置好了正确的权限，直接在当前目录工作即可。
+**setup_workspace 后不要再次调用，除非发现进错了仓库。** 当前工作区已经配置好了正确的权限，直接在当前目录工作即可。
 
 **重要：调用 setup_workspace 后，系统将自动重启以加载项目配置（CLAUDE.md 等）。
 请在调用后仅输出简短确认（如"工作区已就绪，正在重新加载项目配置..."），不要继续执行后续任务。**`;
   }
 
+  // restart 后虽然跳过仓库探索，但仍需告知 agent 发现进错仓库时可以纠正
+  const switchNote = isRestart
+    ? `\n\n如果发现当前仓库不对（setup 错了），可以再次调用 setup_workspace 切换到正确的仓库。`
+    : '';
+
   const basePrompt = `你正在通过飞书消息与用户交互。请保持回复简洁，适合在聊天消息中阅读。
-${explorationSection}
+${explorationSection}${switchNote}
 
 ## 自动开发流程
 
