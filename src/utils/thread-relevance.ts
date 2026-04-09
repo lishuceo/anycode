@@ -38,10 +38,10 @@ export async function checkThreadRelevance(
   message: string,
   botName: string,
 ): Promise<boolean> {
-  if (!config.quickAck.enabled) return true; // 未配置小模型，默认回复
+  if (!config.quickAck.enabled) return false; // 未配置小模型，宁可不回，用户可 @bot 明确触发
 
   const client = await getClient();
-  if (!client) return true;
+  if (!client) return false;
 
   try {
     const result = await Promise.race([
