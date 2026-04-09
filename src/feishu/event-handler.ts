@@ -775,19 +775,24 @@ async function handleMessageEvent(data: MessageEventData, accountId: string = 'd
   } else {
     // 单 bot 模式：群聊中需要 @机器人 才响应
     // 例外：话题内后续消息，需同时满足：① 发送者是 session 创建者 ② 语义判断消息在跟 bot 对话
-    if (chatType === 'group' && !mentionedBot && !images?.length && !documents?.length) {
+    if (chatType === 'group' && !mentionedBot) {
       const ts = threadId ? sessionManager.getThreadSession(threadId) : undefined;
       if (!ts || (!isOwner(userId) && ts.userId !== userId)) {
         return;
       }
-      // 语义判断：与多 bot 模式对齐，用 Qwen 小模型判断消息是否在跟 bot 对话
-      const botDisplayName = agentRegistry.get(agentId)?.displayName ?? 'bot';
-      const relevant = await checkThreadRelevance(text, botDisplayName);
-      if (!relevant) {
-        logger.info({ messageId, threadId, text: text?.slice(0, 100) }, 'Single-bot thread bypass skipped — message not directed at bot');
-        return;
+      // 纯图片/文档消息没有文本可做语义判断，话题内 session 创建者直接放行
+      if (images?.length || documents?.length) {
+        logger.debug({ messageId, threadId }, 'Message allowed in group thread: image/doc from session creator');
+      } else {
+        // 语义判断：与多 bot 模式对齐，用 Qwen 小模型判断消息是否在跟 bot 对话
+        const botDisplayName = agentRegistry.get(agentId)?.displayName ?? 'bot';
+        const relevant = await checkThreadRelevance(text, botDisplayName);
+        if (!relevant) {
+          logger.info({ messageId, threadId, text: text?.slice(0, 100) }, 'Single-bot thread bypass skipped — message not directed at bot');
+          return;
+        }
+        logger.debug({ messageId, threadId }, 'Message allowed in group thread: sender is session creator + semantically relevant');
       }
-      logger.debug({ messageId, threadId }, 'Message allowed in group thread: sender is session creator + semantically relevant');
     }
   }
 
