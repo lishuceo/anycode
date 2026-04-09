@@ -193,6 +193,10 @@ export const config = {
     port: parseInt(process.env.PORT || '3000', 10),
     nodeEnv: process.env.NODE_ENV || 'development',
     logLevel: process.env.LOG_LEVEL || 'info',
+    /** 日志文件目录 (Pino file transport 写入位置) */
+    logDir: process.env.LOG_DIR || './logs',
+    /** 日志文件保留天数 (超过后启动时自动清理) */
+    logMaxDays: parseInt(process.env.LOG_MAX_DAYS || '7', 10),
   },
 };
 
