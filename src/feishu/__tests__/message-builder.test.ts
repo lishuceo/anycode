@@ -72,12 +72,15 @@ describe('buildResultCard', () => {
     expect(outputEl.text.content).toContain('_(无输出)_');
   });
 
-  it('should truncate very long output', () => {
+  it('should use collapsible panel for very long output', () => {
     const longOutput = 'x'.repeat(5000);
     const card = buildResultCard('test', longOutput, true, '1s') as any;
-    const outputEl = card.elements[2];
-    expect(outputEl.text.content).toContain('_(输出过长，已截断)_');
-    expect(outputEl.text.content.length).toBeLessThan(5000);
+    // 长内容触发 conditionalCollapsible：预览标题 + 预览文本 + 折叠面板
+    const previewHeader = card.elements[2];
+    expect(previewHeader.text.content).toContain('💬 回复预览');
+    const foldPanel = card.elements[4];
+    expect(foldPanel.tag).toBe('collapsible_panel');
+    expect(foldPanel.expanded).toBe(false);
   });
 });
 
