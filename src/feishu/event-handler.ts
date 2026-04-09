@@ -2179,11 +2179,26 @@ export async function executeClaudeTask(
       const { existsSync: dirExists } = await import('node:fs');
       if (!dirExists(result.newWorkingDir)) {
         logger.error({ newWorkingDir: result.newWorkingDir }, 'Restart cancelled: newWorkingDir does not exist');
-        await sendResultCard(
-          prompt, { ...result, success: false, output: '', error: '工作区准备失败，目录不存在' },
-          result.durationMs, result.costUsd,
-          threadReplyMsgId, chatId,
-        );
+        if (progressCardMsgId) {
+          const allToolCalls = pendingTurn
+            ? [...accumulatedToolCalls, ...pendingTurn.toolCalls]
+            : accumulatedToolCalls;
+          if (pendingTurn?.textContent) appendText(pendingTurn.textContent);
+          await feishuClient.updateCard(
+            progressCardMsgId,
+            buildCombinedProgressCard(accumulatedText, allToolCalls, turnCount, true, undefined, {
+              success: false,
+              durationStr: formatDuration(result.durationMs),
+              error: '工作区准备失败，目录不存在',
+            }),
+          );
+        } else {
+          await sendResultCard(
+            prompt, { ...result, success: false, output: '', error: '工作区准备失败，目录不存在' },
+            result.durationMs, result.costUsd,
+            threadReplyMsgId, chatId,
+          );
+        }
         return;
       }
 
@@ -2266,21 +2281,27 @@ export async function executeClaudeTask(
       const totalDurationMs = result.durationMs + restartResult.durationMs;
       const totalCostUsd = (result.costUsd ?? 0) + (restartResult.costUsd ?? 0);
 
-      // 合并卡片切换为完成态（含最后一轮的 tool calls，文本不含 last turn — 由结果卡片展示）
+      // 合并卡片切换为完成态（含最后一轮的全部内容）
       if (progressCardMsgId) {
         const allToolCalls = pendingTurn
           ? [...accumulatedToolCalls, ...pendingTurn.toolCalls]
           : accumulatedToolCalls;
+        if (pendingTurn?.textContent) appendText(pendingTurn.textContent);
+        const costInfo = totalCostUsd ? ` | 💰 $${totalCostUsd.toFixed(4)}` : '';
         await feishuClient.updateCard(
           progressCardMsgId,
-          buildCombinedProgressCard(accumulatedText, allToolCalls, turnCount, true),
+          buildCombinedProgressCard(accumulatedText, allToolCalls, turnCount, true, undefined, {
+            success: restartResult.success,
+            durationStr: formatDuration(totalDurationMs) + costInfo,
+            error: restartResult.error,
+          }),
+        );
+      } else {
+        await sendResultCard(
+          prompt, restartResult, totalDurationMs, totalCostUsd,
+          threadReplyMsgId, chatId, undefined, turnCount,
         );
       }
-
-      await sendResultCard(
-        prompt, restartResult, totalDurationMs, totalCostUsd,
-        threadReplyMsgId, chatId, threadReplyMsgId ? pendingTurn : undefined, turnCount,
-      );
 
       // 记忆抽取 (fire-and-forget, restart 路径)
       if (config.memory.enabled && restartResult.success && restartResult.output) {
@@ -2332,21 +2353,27 @@ export async function executeClaudeTask(
       sessionManager.setConversationId(chatId, userId, result.sessionId, workingDir, agentId, result.systemPromptHash);
     }
 
-    // 合并卡片切换为完成态
+    // 合并卡片切换为完成态（含最后一轮的全部内容）
     if (progressCardMsgId) {
       const allToolCalls = pendingTurn
         ? [...accumulatedToolCalls, ...pendingTurn.toolCalls]
         : accumulatedToolCalls;
+      if (pendingTurn?.textContent) appendText(pendingTurn.textContent);
+      const costInfo = result.costUsd ? ` | 💰 $${result.costUsd.toFixed(4)}` : '';
       await feishuClient.updateCard(
         progressCardMsgId,
-        buildCombinedProgressCard(accumulatedText, allToolCalls, turnCount, true),
+        buildCombinedProgressCard(accumulatedText, allToolCalls, turnCount, true, undefined, {
+          success: result.success,
+          durationStr: formatDuration(result.durationMs) + costInfo,
+          error: result.error,
+        }),
+      );
+    } else {
+      await sendResultCard(
+        prompt, result, result.durationMs, result.costUsd,
+        threadReplyMsgId, chatId, undefined, turnCount,
       );
     }
-
-    await sendResultCard(
-      prompt, result, result.durationMs, result.costUsd,
-      threadReplyMsgId, chatId, threadReplyMsgId ? pendingTurn : undefined, turnCount,
-    );
 
     // 记忆抽取 (fire-and-forget)
     if (config.memory.enabled && result.success && result.output) {
@@ -2358,24 +2385,27 @@ export async function executeClaudeTask(
 
   } catch (err) {
     logger.error({ err }, 'Error executing Claude Agent SDK query');
-    // 合并卡片切换为完成态（best-effort，错误路径需含 pendingTurn 文本，因为没有 result card 展示它）
+    // 合并卡片切换为失败态（best-effort，含 pendingTurn 内容）
     if (progressCardMsgId) {
       const allToolCalls = pendingTurn
         ? [...accumulatedToolCalls, ...pendingTurn.toolCalls]
         : accumulatedToolCalls;
-      const errorText = pendingTurn?.textContent
-        ? accumulatedText + (accumulatedText ? '\n\n' : '') + pendingTurn.textContent
-        : accumulatedText;
+      if (pendingTurn?.textContent) appendText(pendingTurn.textContent);
       await feishuClient.updateCard(
         progressCardMsgId,
-        buildCombinedProgressCard(errorText, allToolCalls, turnCount, true),
+        buildCombinedProgressCard(accumulatedText, allToolCalls, turnCount, true, undefined, {
+          success: false,
+          durationStr: '—',
+          error: (err as Error).message,
+        }),
       ).catch(() => {});
-    }
-    const errorReply = `❌ 执行出错: ${(err as Error).message}`;
-    if (threadReplyMsgId) {
-      await feishuClient.replyTextInThread(threadReplyMsgId, errorReply);
     } else {
-      await feishuClient.replyText(messageId, errorReply);
+      const errorReply = `❌ 执行出错: ${(err as Error).message}`;
+      if (threadReplyMsgId) {
+        await feishuClient.replyTextInThread(threadReplyMsgId, errorReply);
+      } else {
+        await feishuClient.replyText(messageId, errorReply);
+      }
     }
   } finally {
     try {

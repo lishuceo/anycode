@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { buildProgressCard, buildResultCard, buildStreamingCard, buildPipelineCard, buildStatusCard, buildTurnCard, buildToolProgressCard, buildTextContentCard, buildCombinedProgressCard, buildOverviewCard, buildSimpleResultCard } from '../message-builder.js';
+import type { CombinedCardResult } from '../message-builder.js';
 import type { TurnInfo, ToolCallInfo, ActivityStatus } from '../../claude/types.js';
 
 describe('buildProgressCard', () => {
@@ -611,6 +612,36 @@ describe('buildCombinedProgressCard', () => {
     const card = buildCombinedProgressCard(longText, tools, 20, true);
     const serialized = JSON.stringify(card);
     expect(Buffer.byteLength(serialized, 'utf-8')).toBeLessThan(30720);
+  });
+
+  it('should show green header on success result', () => {
+    const tools: ToolCallInfo[] = [
+      { name: 'Bash', input: { command: 'npm test' } },
+    ];
+    const result: CombinedCardResult = { success: true, durationStr: '12s | 💰 $0.05' };
+    const card = buildCombinedProgressCard('All tests passed', tools, 3, true, undefined, result) as any;
+    expect(card.header.template).toBe('green');
+    expect(card.header.title.content).toContain('执行完成');
+    const note = card.elements.find((e: any) => e.tag === 'note');
+    expect(note.elements[0].content).toContain('✅ 执行完成');
+    expect(note.elements[0].content).toContain('12s');
+  });
+
+  it('should show red header and error on failure result', () => {
+    const result: CombinedCardResult = { success: false, durationStr: '5s', error: 'Something broke' };
+    const card = buildCombinedProgressCard('', [], 1, true, undefined, result) as any;
+    expect(card.header.template).toBe('red');
+    expect(card.header.title.content).toContain('执行失败');
+    // 错误信息应直接展示
+    const errorEl = card.elements.find((e: any) => e.text?.content?.includes('Something broke'));
+    expect(errorEl).toBeDefined();
+  });
+
+  it('should show orange header on timeout result', () => {
+    const result: CombinedCardResult = { success: false, durationStr: '300s', timedOut: true };
+    const card = buildCombinedProgressCard('partial output', [], 10, true, undefined, result) as any;
+    expect(card.header.template).toBe('orange');
+    expect(card.header.title.content).toContain('执行超时');
   });
 });
 

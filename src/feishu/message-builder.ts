@@ -642,18 +642,38 @@ export function buildTextContentCard(
 /** 合并卡片文本区域的字节上限（比独立卡片小，留空间给 tool calls） */
 const COMBINED_TEXT_MAX_BYTES = 24000;
 
-/** 构建合并进度卡片（文本 + 工具调用折叠面板） */
+/** 合并卡片的完成结果信息 */
+export interface CombinedCardResult {
+  success: boolean;
+  durationStr: string;
+  error?: string;
+  timedOut?: boolean;
+}
+
+/** 构建合并进度卡片（文本 + 工具调用折叠面板，可选完成结果） */
 export function buildCombinedProgressCard(
   text: string,
   toolCalls: ToolCallInfo[],
   turnCount: number,
   completed: boolean = false,
   maxDisplayed: number = 16,
+  result?: CombinedCardResult,
 ): Record<string, unknown> {
-  const headerTitle = completed
-    ? '🤖 Coding Agent - 活动记录'
-    : '🤖 Coding Agent - 执行中';
-  const headerTemplate = completed ? 'indigo' : 'blue';
+  let headerTitle: string;
+  let headerTemplate: string;
+
+  if (result) {
+    const icon = result.timedOut ? '⏱️' : result.success ? '✅' : '❌';
+    const status = result.timedOut ? '执行超时' : result.success ? '执行完成' : '执行失败';
+    headerTitle = `🤖 Coding Agent - ${status}`;
+    headerTemplate = result.timedOut ? 'orange' : result.success ? 'green' : 'red';
+  } else if (completed) {
+    headerTitle = '🤖 Coding Agent - 活动记录';
+    headerTemplate = 'indigo';
+  } else {
+    headerTitle = '🤖 Coding Agent - 执行中';
+    headerTemplate = 'blue';
+  }
 
   const elements: Record<string, unknown>[] = [];
   const hasText = !!text.trim();
@@ -734,11 +754,27 @@ export function buildCombinedProgressCard(
     });
   }
 
+  // --- 错误信息（失败时直接展示，不折叠） ---
+  if (result && !result.success && result.error) {
+    elements.push({ tag: 'hr' });
+    elements.push({
+      tag: 'div',
+      text: { tag: 'lark_md', content: truncate(result.error, 1000) },
+    });
+  }
+
   // --- 底部状态栏 ---
   elements.push({ tag: 'hr' });
   const footerParts: string[] = [];
-  if (!completed) footerParts.push('⏳ 执行中');
+  if (result) {
+    const icon = result.timedOut ? '⏱️' : result.success ? '✅' : '❌';
+    const status = result.timedOut ? '执行超时' : result.success ? '执行完成' : '执行失败';
+    footerParts.push(`${icon} ${status}`);
+  } else if (!completed) {
+    footerParts.push('⏳ 执行中');
+  }
   footerParts.push(`🔄 ${turnCount} 轮`);
+  if (result) footerParts.push(`⏱️ ${result.durationStr}`);
 
   elements.push({
     tag: 'note',
