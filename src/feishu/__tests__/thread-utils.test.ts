@@ -30,6 +30,7 @@ vi.mock('../client.js', () => ({
 
 vi.mock('../message-builder.js', () => ({
   buildGreetingCard: vi.fn(() => ({ type: 'greeting' })),
+  buildCombinedProgressCard: vi.fn(() => ({ type: 'combined_progress' })),
 }));
 
 vi.mock('../../utils/logger.js', () => ({
