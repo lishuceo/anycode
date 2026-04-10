@@ -30,6 +30,7 @@ vi.mock('../client.js', () => ({
 
 vi.mock('../message-builder.js', () => ({
   buildGreetingCard: vi.fn(() => ({ type: 'greeting' })),
+  buildCombinedProgressCard: vi.fn(() => ({ type: 'combined_progress' })),
 }));
 
 vi.mock('../../utils/logger.js', () => ({
@@ -73,7 +74,7 @@ describe('ensureThread', () => {
       // Should create a new thread, not throw
       const result = await ensureThread('chat1', 'user1', 'msg-1', 'om_root_msg_id', undefined);
 
-      expect(mockCreateThreadWithCard).toHaveBeenCalledWith('msg-1', { type: 'greeting' });
+      expect(mockCreateThreadWithCard).toHaveBeenCalledWith('msg-1', { type: 'combined_progress' });
       expect(result.greetingMsgId).toBe('bot-card-msg-1');
     });
 
@@ -88,7 +89,7 @@ describe('ensureThread', () => {
     it('should create a new thread and return greeting message ID', async () => {
       const result = await ensureThread('chat1', 'user1', 'msg-new');
 
-      expect(mockCreateThreadWithCard).toHaveBeenCalledWith('msg-new', { type: 'greeting' });
+      expect(mockCreateThreadWithCard).toHaveBeenCalledWith('msg-new', { type: 'combined_progress' });
       expect(mockSessionSetThread).toHaveBeenCalledWith(
         'chat1', 'user1',
         'omt_new_thread',  // threadId from createThreadWithCard

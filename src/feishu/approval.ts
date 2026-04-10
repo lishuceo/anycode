@@ -224,11 +224,15 @@ export function resolveApproval(approvalId: string, approved: boolean): PendingA
     }
 
     // 持久化审批状态
-    if (approved && pending.threadId) {
-      sessionManager.setThreadApproved(pending.threadId, true);
-    } else if (approved && !pending.threadId) {
-      // Thread 尚未创建，存入预审批集合（带 TTL）
+    if (approved) {
+      // 始终设置 preApproved 兜底：首次审批时 thread session 行可能尚未创建，
+      // setThreadApproved (UPDATE) 会静默影响 0 行导致 approved 标记丢失。
+      // thread-context.ts 的 consumePreApproved 会在行创建后将标记持久化到 DB。
       preApprovedUsers.set(`${pending.chatId}:${pending.userId}`, Date.now());
+      // 同时尝试直接更新（行已存在时直接生效，避免依赖后续消费）
+      if (pending.threadId) {
+        sessionManager.setThreadApproved(pending.threadId, true);
+      }
     }
 
     // 更新审批卡片
