@@ -56,6 +56,13 @@ export class SessionManager {
   }
 
   /**
+   * 通过原始 key 获取会话（用于 shutdown 保存中断 session 时直接查询）
+   */
+  getByKey(key: string): Readonly<Session> | undefined {
+    return this.db.get(key);
+  }
+
+  /**
    * 更新会话工作目录
    */
   setWorkingDir(chatId: string, userId: string, dir: string, agentId: string = 'dev'): void {
