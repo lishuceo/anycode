@@ -1289,31 +1289,62 @@ async function buildChatHistoryContext(
   selfBotOpenIds?: Set<string>,
 ): Promise<HistoryResult> {
   try {
-    const containerId = threadId ?? chatId;
-    const containerType = threadId ? 'thread' as const : 'chat' as const;
-    const messages = await feishuClient.fetchRecentMessages(containerId, containerType, config.chat.historyMaxCount, threadId ? chatId : undefined);
+    type HistoryMsg = { messageId: string; senderId: string; senderType: 'user' | 'app'; content: string; msgType: string; createTime?: string; imageRefs?: Array<{ imageKey: string }> };
+    let messages: HistoryMsg[];
+    let parentMsgCount = 0;
 
-    // 过滤掉当前消息
-    let filtered = currentMessageId
-      ? messages.filter(m => m.messageId !== currentMessageId)
-      : messages;
+    if (!threadId) {
+      // 主聊天区：直接取父群最近消息
+      messages = await feishuClient.fetchRecentMessages(chatId, 'chat', config.chat.historyMaxCount);
+    } else {
+      // 话题模式：fork 语义（与 buildDirectTaskHistory 一致）
+      const threadMsgs = await feishuClient.fetchRecentMessages(threadId, 'thread', 50, chatId);
+      const filtered = currentMessageId
+        ? threadMsgs.filter(m => m.messageId !== currentMessageId)
+        : threadMsgs;
+
+      if (filtered.length === 0) {
+        // 话题为空，从父群 fork
+        messages = await feishuClient.fetchRecentMessages(chatId, 'chat', config.chat.historyMaxCount);
+      } else if (filtered.length <= config.chat.historyMaxCount) {
+        // 话题消息不足 max，补充父群消息
+        const remaining = config.chat.historyMaxCount - filtered.length;
+        if (remaining > 0) {
+          const parentMsgs = await feishuClient.fetchRecentMessages(chatId, 'chat', remaining);
+          parentMsgCount = parentMsgs.length;
+          messages = [...parentMsgs, ...filtered];
+        } else {
+          messages = filtered;
+        }
+      } else {
+        // 话题消息 > max：首条 + 最近 (max - 1) 条
+        const first = filtered[0];
+        const latest = filtered.slice(-(config.chat.historyMaxCount - 1));
+        messages = [first, ...latest];
+      }
+    }
+
+    // 过滤当前消息（主聊天区路径，话题路径已在上面过滤）
+    if (!threadId && currentMessageId) {
+      messages = messages.filter(m => m.messageId !== currentMessageId);
+    }
 
     // 记录最新 messageId（去重锚点，在过滤 afterMsgId 之前取）
-    const newestMsgId = filtered.length > 0 ? filtered[filtered.length - 1].messageId : undefined;
+    const newestMsgId = messages.length > 0 ? messages[messages.length - 1].messageId : undefined;
 
     // 增量去重：只保留 afterMsgId 之后的新消息
-    if (afterMsgId && filtered.length > 0) {
-      const idx = filtered.findIndex(m => m.messageId === afterMsgId);
+    if (afterMsgId && messages.length > 0) {
+      const idx = messages.findIndex(m => m.messageId === afterMsgId);
       if (idx >= 0) {
-        filtered = filtered.slice(idx + 1);
+        messages = messages.slice(idx + 1);
       }
       // afterMsgId 不在列表中 → 可能消息已过期滚动，注入全部
     }
 
     const [text, images, historyFiles] = await Promise.all([
-      formatHistoryMessages(filtered, chatId, selfBotOpenIds),
-      downloadHistoryImages(filtered),
-      downloadHistoryFiles(filtered),
+      formatHistoryMessages(messages, chatId, selfBotOpenIds, parentMsgCount > 0 ? { parentMsgCount } : undefined),
+      downloadHistoryImages(messages),
+      downloadHistoryFiles(messages),
     ]);
     return {
       text: text ?? undefined,
