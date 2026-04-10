@@ -2253,6 +2253,8 @@ export async function executeClaudeTask(
         isRestart: true,
         priorContext: formatConversationTrace(result.conversationTrace),
         agentId,
+        threadId,
+        threadRootMessageId: threadReplyMsgId,
         ...(customSystemPrompt ? { systemPromptOverride: customSystemPrompt } : {}),
       });
 
