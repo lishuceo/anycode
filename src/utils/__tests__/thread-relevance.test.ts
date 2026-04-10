@@ -34,16 +34,20 @@ describe('parseRelevanceResponse', () => {
     expect(parseRelevanceResponse('respond: false')).toBe(false);
   });
 
-  it('should default to true for unparseable response', () => {
-    expect(parseRelevanceResponse('不确定')).toBe(true);
+  it('should fallback to true when raw contains "true" keyword', () => {
+    expect(parseRelevanceResponse('respond: true')).toBe(true);
   });
 
-  it('should default to true for empty string', () => {
-    expect(parseRelevanceResponse('')).toBe(true);
+  it('should default to false for unparseable response (宁可不回)', () => {
+    expect(parseRelevanceResponse('不确定')).toBe(false);
   });
 
-  it('should handle malformed JSON gracefully', () => {
-    expect(parseRelevanceResponse('{respond: true')).toBe(true);
+  it('should default to false for empty string (宁可不回)', () => {
+    expect(parseRelevanceResponse('')).toBe(false);
+  });
+
+  it('should default to false for malformed JSON without keywords', () => {
+    expect(parseRelevanceResponse('{respond: ???}')).toBe(false);
   });
 });
 
@@ -104,6 +108,54 @@ describe('checkThreadRelevance', () => {
     const userMsg = mockCreate.mock.calls[0][0].messages[1].content;
     expect(userMsg).toContain('DevBot');
     expect(userMsg).toContain('测试消息');
+  });
+
+  it('should include recent context with sender names when provided', async () => {
+    mockCreate.mockResolvedValue({
+      choices: [{ message: { content: '{"respond": false}' } }],
+    });
+
+    const recentMessages = [
+      { senderType: 'app' as const, senderName: '大师', content: '好的，我来帮你看看' },
+      { senderType: 'user' as const, senderName: '林美辰', content: '不给偷鸡' },
+    ];
+
+    await checkThreadRelevance('你不是应该用SkillHub么？', '大师', recentMessages);
+
+    const userMsg = mockCreate.mock.calls[0][0].messages[1].content;
+    expect(userMsg).toContain('最近对话');
+    expect(userMsg).toContain('[大师(bot)]: 好的，我来帮你看看');
+    expect(userMsg).toContain('[林美辰]: 不给偷鸡');
+    expect(userMsg).toContain('新消息：你不是应该用SkillHub么？');
+  });
+
+  it('should fallback to [bot]/[user] tag when senderName is missing', async () => {
+    mockCreate.mockResolvedValue({
+      choices: [{ message: { content: '{"respond": true}' } }],
+    });
+
+    const recentMessages = [
+      { senderType: 'app' as const, content: '收到' },
+      { senderType: 'user' as const, content: '帮我看看' },
+    ];
+
+    await checkThreadRelevance('继续', 'bot', recentMessages);
+
+    const userMsg = mockCreate.mock.calls[0][0].messages[1].content;
+    expect(userMsg).toContain('[bot]: 收到');
+    expect(userMsg).toContain('[user]: 帮我看看');
+  });
+
+  it('should work without recent context (backward compatible)', async () => {
+    mockCreate.mockResolvedValue({
+      choices: [{ message: { content: '{"respond": true}' } }],
+    });
+
+    await checkThreadRelevance('帮我查一下', 'bot');
+
+    const userMsg = mockCreate.mock.calls[0][0].messages[1].content;
+    expect(userMsg).not.toContain('最近对话');
+    expect(userMsg).toContain('新消息：帮我查一下');
   });
 
   it('should default to false on API error', async () => {
