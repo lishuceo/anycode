@@ -240,11 +240,24 @@ async function main(): Promise<void> {
       const data = JSON.parse(raw) as { sessions?: Array<{ chatId: string }>; timestamp?: number };
 
       if (data.sessions?.length) {
-        const uniqueChatIds = [...new Set(data.sessions.map((s) => s.chatId))];
-        logger.info({ chatIds: uniqueChatIds, interruptedAt: data.timestamp }, 'Notifying interrupted sessions after restart');
-        for (const chatId of uniqueChatIds) {
-          feishuClient.sendText(chatId, '服务已重启完成，之前正在执行的任务被中断。如需继续，请重新发送消息。').catch((err) => {
-            logger.warn({ err, chatId }, 'Failed to notify interrupted session');
+        // 按 chatId + threadRootMessageId 去重（同一话题只通知一次）
+        const seen = new Set<string>();
+        const uniqueSessions: Array<{ chatId: string; threadRootMessageId?: string }> = [];
+        for (const s of data.sessions as Array<{ chatId: string; threadRootMessageId?: string }>) {
+          const dedup = s.threadRootMessageId ?? s.chatId;
+          if (!seen.has(dedup)) {
+            seen.add(dedup);
+            uniqueSessions.push(s);
+          }
+        }
+        logger.info({ count: uniqueSessions.length, interruptedAt: data.timestamp }, 'Notifying interrupted sessions after restart');
+        const notifyText = '服务已重启完成，之前正在执行的任务被中断。如需继续，请重新发送消息。';
+        for (const { chatId, threadRootMessageId } of uniqueSessions) {
+          const p = threadRootMessageId
+            ? feishuClient.replyTextInThread(threadRootMessageId, notifyText)
+            : feishuClient.sendText(chatId, notifyText);
+          p.catch((err) => {
+            logger.warn({ err, chatId, threadRootMessageId }, 'Failed to notify interrupted session');
           });
         }
       }
@@ -290,7 +303,9 @@ async function main(): Promise<void> {
         const parts = key.split(':');
         // 新格式 "agent:{agentId}:{chatId}:{userId}" 或旧格式 "chatId:userId"
         const chatId = parts.length >= 4 ? parts[2] : parts[0];
-        return { chatId, sessionKey: key };
+        // 从 session 中获取 threadRootMessageId，重启后通知发到话题内而非主聊天
+        const session = sessionManager.getByKey(key);
+        return { chatId, sessionKey: key, threadRootMessageId: session?.threadRootMessageId };
       }).filter((s) => s.chatId);
 
       try {
