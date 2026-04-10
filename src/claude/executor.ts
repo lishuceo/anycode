@@ -352,6 +352,19 @@ function buildWorkspaceSystemPrompt(workingDir?: string, options?: { isRestart?:
 
 仅当用户的问题是通用性的（不涉及特定仓库，如"JavaScript 闭包是什么"）时，才不需要 setup_workspace。
 
+### 积极识别仓库意图
+
+很多时候用户不会明确说"切到 X 仓库"，而是**隐式**引用。你必须主动识别以下模式并触发 setup_workspace：
+
+1. **提到项目特有的文件路径** — 如 "urhox 的 CLAUDE.md"、"maker 的 package.json"、"看看 game-orchestrator 的配置"
+2. **讨论特定项目的架构/代码** — 如 "渲染管线怎么设计的"（→ urhox）、"沙箱集群怎么调度的"（→ maker）
+3. **引用外部报告中的具体代码片段** — 如用户贴了一段来自某仓库的代码或错误日志
+4. **问题涉及项目特有的技术栈/概念** — 如 "UrhoX 的 Lua binding"、"飞书事件处理"（→ anycode）
+5. **用户提到仓库名或组织名** — 如 "taptap/urhox"、"maker 仓库"
+6. **需要查看/验证实际代码才能准确回答** — 不要凭记忆或训练数据回答关于特定仓库代码的问题
+
+**源码验证原则：当对话涉及某个仓库的具体文件、代码结构、配置或实现细节时，必须 setup_workspace 到该仓库进行源码验证，不能仅凭文本讨论或训练知识回答。** 这确保回答基于最新代码而非过时信息。
+
 **禁止直接访问以下目录：**
 - \`${cacheDir}/\` — bare clone 缓存，仅用于定位仓库 URL
 - \`${workspacesDir}/\` — 其他话题创建的隔离工作区，每个工作区属于特定上下文，直接使用会破坏隔离性
