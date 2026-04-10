@@ -197,22 +197,7 @@ gh api graphql -f query='{
 **对于真实问题：**
 - 修复代码，使用最小改动，不做不相关的重构
 - `git add` 修改的文件
-- 回复评论确认修复：
-
-```bash
-gh api repos/OWNER/REPO/pulls/PR_NUMBER/comments/COMMENT_DATABASE_ID/replies \
-  -f body="Fixed — <简述修改内容>"
-```
-
-- Resolve 该 thread：
-
-```bash
-gh api graphql -f query='mutation {
-  resolveReviewThread(input:{threadId:"THREAD_NODE_ID"}) {
-    thread { isResolved }
-  }
-}'
-```
+- 不要回复或 resolve thread — commit diff 本身就是回复。review action 会在 push 后重新运行，自行验证修复并 resolve。
 
 **对于误报：**
 
