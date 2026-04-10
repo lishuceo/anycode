@@ -9,7 +9,7 @@
  * - Structured sections (parentMsgCount) passed to formatHistoryMessages
  */
 // @ts-nocheck — test file
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 
 // ============================================================
 // Mocks
