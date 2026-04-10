@@ -6,7 +6,7 @@ import { taskQueue } from '../session/queue.js';
 import { claudeExecutor } from '../claude/executor.js';
 import { DEFAULT_IMAGE_PROMPT, DEFAULT_DOCUMENT_PROMPT } from '../claude/types.js';
 import type { TurnInfo, ToolCallInfo, ImageAttachment, DocumentAttachment, ConversationTurn } from '../claude/types.js';
-import { buildResultCard, buildStatusCard, buildCancelledCard, buildPipelineCard, buildPipelineConfirmCard, buildCombinedProgressCard, buildSimpleResultCard, buildWorkspaceSwitchCard, buildAskUserQuestionCard, buildAskUserAnsweredCard } from './message-builder.js';
+import { buildResultCard, buildStatusCard, buildCancelledCard, buildPipelineCard, buildPipelineConfirmCard, buildCombinedProgressCard, buildSimpleResultCard, buildAskUserQuestionCard, buildAskUserAnsweredCard } from './message-builder.js';
 import type { AskUserQuestionItem } from './message-builder.js';
 import { TOTAL_PHASES } from '../pipeline/types.js';
 import { feishuClient, feishuClientContext, runWithAccountId } from './client.js';
@@ -1904,7 +1904,7 @@ export async function executeClaudeTask(
 
   if (resolved.status !== 'resolved') return;
 
-  const { threadReplyMsgId, greetingMsgId, workingDir, threadId, threadSession, prompt } = resolved.ctx;
+  const { threadReplyMsgId, workingDir, threadId, threadSession, prompt } = resolved.ctx;
   const session = sessionManager.getOrCreate(chatId, userId, agentId);
 
   // 如果本次处理新建了话题（eventThreadId 为空但 threadId 已存在），
@@ -1930,25 +1930,6 @@ export async function executeClaudeTask(
     if (!progressCardMsgId) progressCardFailed = true;
   } else {
     await feishuClient.replyText(messageId, '🤖 处理中...');
-  }
-
-  // 更新问候卡片：从"正在启动"切换为工作区信息（fire-and-forget）
-  // 后续 setup_workspace 触发 restart 时会再次覆盖为新工作区信息
-  if (greetingMsgId) {
-    const { basename: bn } = await import('node:path');
-    const repoName = parseRepoNameFromWorkspaceDir(bn(workingDir));
-    let greetingBranch: string | undefined;
-    try {
-      const { execFileSync } = await import('node:child_process');
-      greetingBranch = execFileSync('git', ['-C', workingDir, 'branch', '--show-current'],
-        { encoding: 'utf-8', timeout: 3000 }).trim() || undefined;
-    } catch { /* best-effort */ }
-    feishuClient.updateCard(
-      greetingMsgId,
-      buildWorkspaceSwitchCard(repoName, workingDir, greetingBranch, '📂 工作区'),
-    ).catch(err => {
-      logger.warn({ err }, 'Failed to update greeting card');
-    });
   }
 
   // 标记会话为忙碌
@@ -2060,6 +2041,25 @@ export async function executeClaudeTask(
   const appendText = (text: string) => {
     accumulatedText += (accumulatedText ? '\n\n' : '') + text;
   };
+
+  // 工作区信息写入合并卡片文本区域（不再单独发工作区卡片）
+  {
+    const { basename: bn } = await import('node:path');
+    const repoName = parseRepoNameFromWorkspaceDir(bn(workingDir));
+    let wsBranch: string | undefined;
+    try {
+      const { execFileSync } = await import('node:child_process');
+      wsBranch = execFileSync('git', ['-C', workingDir, 'branch', '--show-current'],
+        { encoding: 'utf-8', timeout: 3000 }).trim() || undefined;
+    } catch { /* best-effort */ }
+    appendText(`📂 ${repoName}${wsBranch ? ' · ' + wsBranch : ''}`);
+    if (progressCardMsgId && !progressCardFailed) {
+      feishuClient.updateCard(
+        progressCardMsgId,
+        buildCombinedProgressCard(accumulatedText, accumulatedToolCalls, turnCount),
+      ).catch(() => {});
+    }
+  }
 
   const onTurn = async (turn: TurnInfo) => {
     turnCount = turn.turnIndex;
@@ -2209,7 +2209,7 @@ export async function executeClaudeTask(
       }
       sessionManager.setConversationId(chatId, userId, '', undefined, agentId);
 
-      // 发送工作区切换卡片（更新 greeting 卡片或独立发送）
+      // 工作区切换信息写入合并卡片文本区域
       {
         const { basename } = await import('node:path');
         const repoName = parseRepoNameFromWorkspaceDir(basename(result.newWorkingDir));
@@ -2218,18 +2218,12 @@ export async function executeClaudeTask(
           const { execFileSync } = await import('node:child_process');
           branch = execFileSync('git', ['-C', result.newWorkingDir, 'branch', '--show-current'], { encoding: 'utf-8', timeout: 3000 }).trim() || undefined;
         } catch { /* best-effort */ }
-
-        const switchCard = buildWorkspaceSwitchCard(repoName, result.newWorkingDir, branch);
-        if (greetingMsgId) {
-          // 更新 greeting 卡片为工作区切换信息
-          feishuClient.updateCard(greetingMsgId, switchCard).catch(err => {
-            logger.warn({ err }, 'Failed to update greeting card with workspace switch');
-          });
-        } else if (threadReplyMsgId) {
-          // 没有 greeting 卡片时，在话题中独立发送
-          feishuClient.replyCardInThread(threadReplyMsgId, switchCard).catch(err => {
-            logger.warn({ err }, 'Failed to send workspace switch card');
-          });
+        appendText(`📂 ${repoName}${branch ? ' · ' + branch : ''}`);
+        if (progressCardMsgId && !progressCardFailed) {
+          feishuClient.updateCard(
+            progressCardMsgId,
+            buildCombinedProgressCard(accumulatedText, accumulatedToolCalls, turnCount),
+          ).catch(() => {});
         }
       }
 
