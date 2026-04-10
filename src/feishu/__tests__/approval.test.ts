@@ -73,59 +73,6 @@ describe('approval', () => {
   });
 
   describe('resolveApproval — preApproved fallback (Bug 1 regression)', () => {
-    it('should set preApprovedUsers even when threadId is present', async () => {
-      // Simulate: user sends first message in thread → approval requested
-      // At this point, thread session row does NOT exist in DB
-      mockGetThreadSession.mockReturnValue(undefined);
-
-      // Request approval (creates pending entry)
-      const result = await checkAndRequestApproval(
-        'user-1',
-        'chat-1',
-        'group',
-        'hello bot',
-        'msg-1',
-        'default',
-        'dev',
-        undefined, // rootId
-        undefined, // threadReplyMsgId
-        'thread-1', // threadId — present but row doesn't exist
-      );
-      expect(result).toBe(false); // blocked, waiting for approval
-
-      // Register callback to capture re-queue
-      const onApproved = vi.fn();
-      setOnApproved(onApproved);
-
-      // Owner approves — this is where the bug was:
-      // setThreadApproved (UPDATE) runs on non-existent row → 0 rows affected
-      // Without the fix, preApprovedUsers would NOT be set (old code: else-if)
-      // With the fix, preApprovedUsers IS set as fallback
-      const pending = resolveApproval(
-        // We need to find the approvalId — it was logged. Let's extract from mockSetThreadApproved
-        // Actually, checkAndRequestApproval stores the approvalId internally.
-        // The approvalId format is: approval_{timestamp}_{counter}
-        // We can get it from the pending map by checking the mock calls
-        // Simpler: we know sendCard was called for the approval card, so approval was created.
-        // Let's just find the ID from the mock calls...
-        // Actually the simplest approach: look at what resolveApproval returns
-        // But we need the approvalId. Let's use a different approach.
-        // We'll manually construct and use the internal state.
-        // Actually, there's a simpler way — the approval ID is deterministic based on Date.now() + counter.
-        // But that's fragile. Let me use a different approach: we can check checkPreApproved after resolve.
-        'nonexistent-id', // will return undefined
-        true,
-      );
-      // That won't work since we don't know the ID. Let me take a different approach.
-      expect(pending).toBeUndefined(); // expected — wrong ID
-
-      // Better approach: verify that after approval is requested and resolved,
-      // checkPreApproved returns true for this user+chat combo.
-      // We need to get the actual approvalId.
-      // Since we can't access the internal map directly, let's test via the
-      // handleApprovalCardAction path which is how it works in production.
-    });
-
     it('should persist approval via preApproved when thread session row does not exist', async () => {
       // Setup: no thread session in DB
       mockGetThreadSession.mockReturnValue(undefined);
