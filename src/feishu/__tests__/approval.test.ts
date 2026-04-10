@@ -58,7 +58,7 @@ vi.mock('../message-builder.js', () => ({
 // Import after mocks
 const {
   checkAndRequestApproval,
-  resolveApproval,
+  resolveApproval: _resolveApproval,
   checkPreApproved,
   setOnApproved,
 } = await import('../approval.js');
