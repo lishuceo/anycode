@@ -94,7 +94,7 @@ export function createWorkspaceMcpServer(onWorkspaceChanged?: SessionUpdater) {
           '- 用户提到了已知的项目名（参考 system prompt 中的可用项目列表）',
           '- 用户描述的代码/功能明显属于另一个仓库',
           '- 用户说"切换到 X"、"去 X 仓库"',
-          '- 用户提到特定项目的文件（如 "urhox 的 CLAUDE.md"、"maker 的配置"）',
+          '- 用户提到某个项目的文件（如 "X 项目的 CLAUDE.md"、"Y 的配置"）',
           '- 用户讨论特定项目的架构、代码或实现细节',
           '- 需要查看实际源码才能准确回答用户问题（不要凭记忆回答代码问题）',
           '',
