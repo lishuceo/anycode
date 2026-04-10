@@ -1,7 +1,7 @@
 import { logger } from '../utils/logger.js';
 import { sessionManager } from '../session/manager.js';
 import { feishuClient } from './client.js';
-import { buildGreetingCard } from './message-builder.js';
+import { buildCombinedProgressCard } from './message-builder.js';
 
 /** ensureThread 的返回结果 */
 export interface EnsureThreadResult {
@@ -40,7 +40,7 @@ export async function ensureThread(
   // 2. 用户在主聊天区发消息（无 rootId）— 新会话意图
   //    如果想继续旧话题，用户应在话题内回复；在主区发消息 = 新对话
   //    发送卡片作为首条消息，后续可原地更新显示话题和工作目录信息
-  const card = buildGreetingCard();
+  const card = buildCombinedProgressCard('', [], 0);
   const { messageId: botMsgId, threadId: newThreadId } = await feishuClient.createThreadWithCard(
     messageId,
     card,
