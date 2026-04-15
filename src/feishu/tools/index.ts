@@ -41,9 +41,6 @@ export function createFeishuToolsMcpServer(chatId?: string, userId?: string) {
   // 消息文件按需下载工具：配合 lazy loading，agent 可按需获取历史消息中的文件
   tools.push(feishuMessageFileTool());
 
-  // 边界条件修复 (review 反馈): 所有子开关全 false 时不注入空 MCP 服务器
-  if (tools.length === 0) return undefined;
-
   return createSdkMcpServer({
     name: 'feishu-tools',
     version: '1.0.0',

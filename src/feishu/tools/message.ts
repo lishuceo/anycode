@@ -73,9 +73,9 @@ export function feishuMessageFileTool() {
     },
     {
       annotations: {
-        readOnlyHint: true,
+        readOnlyHint: false,
         destructiveHint: false,
-        openWorldHint: false,
+        openWorldHint: true,
       },
     },
   );
