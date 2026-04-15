@@ -9,6 +9,7 @@ import { feishuTaskTool } from './task.js';
 import { feishuContactTool } from './contact.js';
 import { feishuCalendarTool } from './calendar.js';
 import { feishuMainChatTool } from './main-chat.js';
+import { feishuMessageFileTool } from './message.js';
 import { getValidUserToken } from '../oauth.js';
 
 /**
@@ -36,6 +37,9 @@ export function createFeishuToolsMcpServer(chatId?: string, userId?: string) {
 
   // 主聊天发送工具：agent 在话题内时可自主决定将重要结果发到群主聊天
   if (chatId) tools.push(feishuMainChatTool(chatId));
+
+  // 消息文件按需下载工具：配合 lazy loading，agent 可按需获取历史消息中的文件
+  tools.push(feishuMessageFileTool());
 
   // 边界条件修复 (review 反馈): 所有子开关全 false 时不注入空 MCP 服务器
   if (tools.length === 0) return undefined;
