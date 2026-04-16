@@ -1511,7 +1511,7 @@ async function buildChatHistoryContext(
     const [text, images, historyFiles] = await Promise.all([
       formatHistoryMessages(messages, chatId, selfBotOpenIds, parentMsgCount > 0 ? { parentMsgCount } : undefined),
       downloadHistoryImages(messages),
-      downloadHistoryFiles(messages),
+      downloadHistoryFiles(messages, parentMsgCount),
     ]);
     return {
       text: text ?? undefined,
