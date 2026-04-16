@@ -15,8 +15,7 @@ import { getValidUserToken } from '../oauth.js';
 /**
  * 创建飞书工具 MCP 服务器
  *
- * 根据配置子开关组装工具列表。
- * 四个子开关全 false 时返回 undefined（不注入空 MCP 服务器）。
+ * 根据配置子开关组装工具列表，始终包含消息文件按需下载工具。
  *
  * @param chatId  当前会话的群 chat_id，用于创建文档后自动授权群成员
  * @param userId  当前用户的 open_id，用于获取 user_access_token
