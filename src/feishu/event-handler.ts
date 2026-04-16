@@ -1504,6 +1504,8 @@ async function buildChatHistoryContext(
       const idx = messages.findIndex(m => m.messageId === afterMsgId);
       if (idx >= 0) {
         messages = messages.slice(idx + 1);
+        // afterMsgId 去重后，被移除的消息可能包含 parent 消息，需重新计算
+        parentMsgCount = Math.max(0, parentMsgCount - (idx + 1));
       }
       // afterMsgId 不在列表中 → 可能消息已过期滚动，注入全部
     }
@@ -2841,6 +2843,8 @@ async function buildDirectTaskHistory(
       const idx = messages.findIndex(m => m.messageId === afterMsgId);
       if (idx >= 0) {
         messages = messages.slice(idx + 1);
+        // afterMsgId 去重后，被移除的消息可能包含 parent 消息，需重新计算
+        parentMsgCount = Math.max(0, parentMsgCount - (idx + 1));
       }
       // afterMsgId 不在列表中 → 可能消息已过期滚动，注入全部
       logger.info(
