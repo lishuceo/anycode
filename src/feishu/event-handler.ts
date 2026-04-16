@@ -1373,12 +1373,15 @@ export function deduplicateDocuments(docs: DocumentAttachment[]): DocumentAttach
  */
 async function downloadHistoryFiles(
   messages: Array<{ messageId: string; fileRefs?: Array<{ fileKey: string; fileName: string }> }>,
+  parentMsgCount = 0,
 ): Promise<{ documents: DocumentAttachment[]; fileTexts: string[] }> {
-  const refs: Array<{ messageId: string; fileKey: string; fileName: string }> = [];
-  for (const msg of messages) {
+  const refs: Array<{ messageId: string; fileKey: string; fileName: string; fromParent: boolean }> = [];
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i];
     if (msg.fileRefs) {
+      const fromParent = i < parentMsgCount;
       for (const ref of msg.fileRefs) {
-        refs.push({ messageId: msg.messageId, ...ref });
+        refs.push({ messageId: msg.messageId, ...ref, fromParent });
       }
     }
   }
@@ -1392,14 +1395,23 @@ async function downloadHistoryFiles(
     return true;
   });
 
-  const toDownload = uniqueRefs.slice(-MAX_HISTORY_FILES);
+  const toProcess = uniqueRefs.slice(-MAX_HISTORY_FILES);
   const MAX_PDF_SIZE = 30 * 1024 * 1024;
   const MAX_TEXT_SIZE = 1 * 1024 * 1024;
 
   const documents: DocumentAttachment[] = [];
   const fileTexts: string[] = [];
 
-  await Promise.all(toDownload.map(async (ref) => {
+  await Promise.all(toProcess.map(async (ref) => {
+    // 父群消息的文件：只输出元数据，不下载实际内容（lazy loading）
+    if (ref.fromParent) {
+      fileTexts.push(
+        `[群聊历史文件: ${ref.fileName}] — 未自动加载。如需查看，可调用 feishu_download_message_file 工具（参数: message_id="${ref.messageId}", file_key="${ref.fileKey}"）`,
+      );
+      logger.info({ messageId: ref.messageId, fileName: ref.fileName }, 'Parent chat file skipped (lazy loading), metadata injected');
+      return;
+    }
+
     try {
       if (ref.fileName.toLowerCase().endsWith('.pdf')) {
         const buf = await feishuClient.downloadMessageFile(ref.messageId, ref.fileKey);
@@ -1421,7 +1433,7 @@ async function downloadHistoryFiles(
   }));
 
   if (documents.length > 0 || fileTexts.length > 0) {
-    logger.info({ docCount: documents.length, textCount: fileTexts.length, totalRefs: refs.length }, 'Downloaded history files');
+    logger.info({ docCount: documents.length, textCount: fileTexts.length, totalRefs: refs.length, parentSkipped: toProcess.filter(r => r.fromParent).length }, 'Downloaded history files');
   }
 
   return { documents, fileTexts };
@@ -1492,6 +1504,8 @@ async function buildChatHistoryContext(
       const idx = messages.findIndex(m => m.messageId === afterMsgId);
       if (idx >= 0) {
         messages = messages.slice(idx + 1);
+        // afterMsgId 去重后，被移除的消息可能包含 parent 消息，需重新计算
+        parentMsgCount = Math.max(0, parentMsgCount - (idx + 1));
       }
       // afterMsgId 不在列表中 → 可能消息已过期滚动，注入全部
     }
@@ -1499,7 +1513,7 @@ async function buildChatHistoryContext(
     const [text, images, historyFiles] = await Promise.all([
       formatHistoryMessages(messages, chatId, selfBotOpenIds, parentMsgCount > 0 ? { parentMsgCount } : undefined),
       downloadHistoryImages(messages),
-      downloadHistoryFiles(messages),
+      downloadHistoryFiles(messages, parentMsgCount),
     ]);
     return {
       text: text ?? undefined,
@@ -1607,6 +1621,9 @@ export const _testFormatCreateTime = formatCreateTime;
 
 /** 仅测试用：导出 formatHistoryMessages */
 export const _testFormatHistoryMessages = formatHistoryMessages;
+
+/** 仅测试用：导出 downloadHistoryFiles */
+export const _testDownloadHistoryFiles = downloadHistoryFiles;
 
 /**
  * 格式化历史消息为上下文文本（共享逻辑）。
@@ -2826,6 +2843,8 @@ async function buildDirectTaskHistory(
       const idx = messages.findIndex(m => m.messageId === afterMsgId);
       if (idx >= 0) {
         messages = messages.slice(idx + 1);
+        // afterMsgId 去重后，被移除的消息可能包含 parent 消息，需重新计算
+        parentMsgCount = Math.max(0, parentMsgCount - (idx + 1));
       }
       // afterMsgId 不在列表中 → 可能消息已过期滚动，注入全部
       logger.info(
@@ -2854,7 +2873,7 @@ async function buildDirectTaskHistory(
     const [text, images, historyFiles] = await Promise.all([
       formatHistoryMessages(messages, chatId, selfBotOpenIds, parentMsgCount > 0 ? { parentMsgCount } : undefined),
       downloadHistoryImages(messages),
-      downloadHistoryFiles(messages),
+      downloadHistoryFiles(messages, parentMsgCount),
     ]);
     return {
       text: text ?? undefined,

@@ -9,13 +9,13 @@ import { feishuTaskTool } from './task.js';
 import { feishuContactTool } from './contact.js';
 import { feishuCalendarTool } from './calendar.js';
 import { feishuMainChatTool } from './main-chat.js';
+import { feishuMessageFileTool } from './message.js';
 import { getValidUserToken } from '../oauth.js';
 
 /**
  * 创建飞书工具 MCP 服务器
  *
- * 根据配置子开关组装工具列表。
- * 四个子开关全 false 时返回 undefined（不注入空 MCP 服务器）。
+ * 根据配置子开关组装工具列表，始终包含消息文件按需下载工具。
  *
  * @param chatId  当前会话的群 chat_id，用于创建文档后自动授权群成员
  * @param userId  当前用户的 open_id，用于获取 user_access_token
@@ -37,8 +37,8 @@ export function createFeishuToolsMcpServer(chatId?: string, userId?: string) {
   // 主聊天发送工具：agent 在话题内时可自主决定将重要结果发到群主聊天
   if (chatId) tools.push(feishuMainChatTool(chatId));
 
-  // 边界条件修复 (review 反馈): 所有子开关全 false 时不注入空 MCP 服务器
-  if (tools.length === 0) return undefined;
+  // 消息文件按需下载工具：配合 lazy loading，agent 可按需获取历史消息中的文件
+  tools.push(feishuMessageFileTool());
 
   return createSdkMcpServer({
     name: 'feishu-tools',
