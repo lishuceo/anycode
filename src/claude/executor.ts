@@ -28,6 +28,7 @@ import type { ClaudeResult, ExecuteOptions, ProgressCallback, TurnInfo, ToolCall
 // Anthropic API 定价（per million tokens）
 // https://docs.anthropic.com/en/docs/about-claude/pricing
 const MODEL_PRICING: Record<string, { input: number; output: number; cacheWrite: number; cacheRead: number }> = {
+  'claude-opus-4-7':          { input: 5,   output: 25,  cacheWrite: 6.25,  cacheRead: 0.50 },
   'claude-opus-4-6':          { input: 5,   output: 25,  cacheWrite: 6.25,  cacheRead: 0.50 },
   'claude-opus-4-5-20250620': { input: 5,   output: 25,  cacheWrite: 6.25,  cacheRead: 0.50 },
   'claude-sonnet-4-6':        { input: 3,   output: 15,  cacheWrite: 3.75,  cacheRead: 0.30 },
@@ -775,16 +776,9 @@ export class ClaudeExecutor {
         abortController,
         stderr: (data: string) => logger.warn({ stderr: data.trim() }, 'Claude Code stderr'),
 
-        // 清除嵌套检测环境变量，允许从 Claude Code 会话内启动子进程
-        // 注入 ANTHROPIC_BASE_URL 供 SDK 子进程使用自定义 API 端点
-        env: (() => {
-          const e = { ...process.env };
-          delete e.CLAUDECODE;
-          if (config.claude.apiBaseUrl) {
-            e.ANTHROPIC_BASE_URL = config.claude.apiBaseUrl;
-          }
-          return e;
-        })(),
+        // SDK 0.2.111+: env 覆盖 process.env 而非替换，只需传差异项
+        // CLAUDECODE 嵌套检测变量由 SDK 自动清除，无需手动处理
+        ...(config.claude.apiBaseUrl ? { env: { ANTHROPIC_BASE_URL: config.claude.apiBaseUrl } } : {}),
 
         // 权限：acceptEdits 自动接受文件编辑，canUseTool 自动批准其余工具调用
         // 注意：不使用 bypassPermissions，因为 root 用户下会被拒绝
@@ -1026,7 +1020,7 @@ export class ClaudeExecutor {
                   turnTools.push({ name: block.name as string, input: block.input as Record<string, unknown> });
                   // 记录工具调用到对话轨迹，通过 id 关联后续的 tool_result
                   const trace: ToolCallTrace = {
-                    id: (block as Record<string, unknown>).id as string ?? '',
+                    id: (block as unknown as Record<string, unknown>).id as string ?? '',
                     name: block.name as string,
                     input: block.input as Record<string, unknown>,
                   };
@@ -1189,9 +1183,13 @@ export class ClaudeExecutor {
         ? calculateCostFromUsage(resultMessage.usage as Parameters<typeof calculateCostFromUsage>[0], resultMessage.modelUsage)
         : resultMessage.total_cost_usd;
 
+      // terminal_reason: SDK 0.2.91+ 暴露 query 终止原因
+      const terminalReason = resultMessage.terminal_reason;
+
       logger.info({
         sessionKey,
         subtype: resultMessage.subtype,
+        terminalReason,
         sdkTotalCostUsd: resultMessage.total_cost_usd,
         queryCostUsd,
         numTurns: resultMessage.num_turns,
@@ -1222,12 +1220,13 @@ export class ClaudeExecutor {
           newWorkingDir,
         };
       } else {
-        // 错误结果
+        // 错误结果：附加 terminal_reason 帮助诊断
         const errors = 'errors' in resultMessage ? resultMessage.errors : [];
+        const reasonSuffix = terminalReason ? ` (reason: ${terminalReason})` : '';
         return {
           success: false,
           output,
-          error: errors.join('\n') || `Query ended with: ${resultMessage.subtype}`,
+          error: (errors.join('\n') || `Query ended with: ${resultMessage.subtype}`) + reasonSuffix,
           sessionId: resultMessage.session_id ?? sessionId,
           systemPromptHash,
           durationMs: resultMessage.duration_ms ?? durationMs,
