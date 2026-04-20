@@ -38,7 +38,7 @@ import { handleMemoryCommand, handleMemoryCardAction } from '../memory/commands.
 import { getRepoIdentity } from '../workspace/identity.js';
 import { parseRepoNameFromWorkspaceDir } from '../workspace/manager.js';
 import { generateQuickAck } from '../utils/quick-ack.js';
-import { checkThreadRelevance } from '../utils/thread-relevance.js';
+import { checkThreadRelevance, type RecentMessage } from '../utils/thread-relevance.js';
 import { compressImage, compressImageForHistory } from '../utils/image-compress.js';
 
 // 注册审批通过后的消息重新入队回调（避免 approval.ts → event-handler.ts 循环依赖）
@@ -462,6 +462,60 @@ function isThreadCreatorAgent(threadId: string, agentId: string): boolean {
   return true;
 }
 
+/** 每条消息文本在上下文中的最大长度 */
+const RELEVANCE_CONTEXT_MAX_LEN = 100;
+
+/**
+ * 获取最近消息作为 Qwen 话题相关性判断的上下文。
+ * 只取文本摘要，跳过纯附件消息，每条截断以控制 token 用量。
+ * 带上发言人真名，帮助 Qwen 判断"你"指的是谁。
+ */
+async function fetchRelevanceContext(
+  threadId: string,
+  chatId: string,
+  currentMessageId: string,
+  botDisplayName: string,
+): Promise<RecentMessage[]> {
+  try {
+    const messages = await feishuClient.fetchRecentMessages(threadId, 'thread', 8, chatId);
+    const result: Array<RecentMessage & { senderId?: string }> = [];
+    for (const m of messages) {
+      // 跳过当前消息
+      if (m.messageId === currentMessageId) continue;
+      // 跳过无文本的消息（纯图片/文件/卡片）
+      const text = m.content?.trim();
+      if (!text || text === '[图片]') continue;
+      result.push({
+        senderType: m.senderType,
+        senderName: m.senderType === 'app' ? botDisplayName : undefined, // bot 用 displayName，user 后面批量解析
+        content: text.slice(0, RELEVANCE_CONTEXT_MAX_LEN),
+        senderId: m.senderId,
+      });
+    }
+    // 只保留最近 5 条有效消息
+    const recent = result.slice(-5);
+
+    // 批量解析人类用户的真名（利用 _userNameCache 缓存，避免重复调 API）
+    const userIds = recent
+      .filter(m => m.senderType === 'user' && m.senderId)
+      .map(m => m.senderId!);
+    if (userIds.length > 0) {
+      await resolveUserNames(userIds, chatId);
+      for (const m of recent) {
+        if (m.senderType === 'user' && m.senderId) {
+          m.senderName = _userNameCache.get(m.senderId);
+        }
+      }
+    }
+
+    // 清除 senderId（不需要传给 Qwen）
+    return recent.map(({ senderId: _, ...rest }) => rest);
+  } catch {
+    // 获取失败不影响主流程，退化为无上下文
+    return [];
+  }
+}
+
 // ============================================================
 // 队列驱动：同一 thread 内串行执行，不同 thread 间可并行
 // queueKey = threadId 存在时用 `chatId:threadId`，否则用 `chatId`
@@ -759,7 +813,8 @@ async function handleMessageEvent(data: MessageEventData, accountId: string = 'd
       if (ts && (isOwner(userId) || ts.userId === userId)) {
         // 语义判断：用 Qwen 小模型判断无 @mention 的消息是否在跟 bot 对话
         const botDisplayName = agentRegistry.get(agentId)?.displayName ?? 'bot';
-        const relevant = await checkThreadRelevance(text, botDisplayName);
+        const recentCtx = await fetchRelevanceContext(threadId, chatId, messageId, botDisplayName);
+        const relevant = await checkThreadRelevance(text, botDisplayName, recentCtx);
         if (relevant) {
           threadBypass = true;
           logger.debug({ threadId, agentId, accountId }, 'Thread creator bypass: responding without @mention');
@@ -786,7 +841,8 @@ async function handleMessageEvent(data: MessageEventData, accountId: string = 'd
       } else {
         // 语义判断：与多 bot 模式对齐，用 Qwen 小模型判断消息是否在跟 bot 对话
         const botDisplayName = agentRegistry.get(agentId)?.displayName ?? 'bot';
-        const relevant = await checkThreadRelevance(text, botDisplayName);
+        const recentCtx = threadId ? await fetchRelevanceContext(threadId, chatId, messageId, botDisplayName) : [];
+        const relevant = await checkThreadRelevance(text, botDisplayName, recentCtx);
         if (!relevant) {
           logger.info({ messageId, threadId, text: text?.slice(0, 100) }, 'Single-bot thread bypass skipped — message not directed at bot');
           return;
