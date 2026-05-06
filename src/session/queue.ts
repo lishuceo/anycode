@@ -29,6 +29,7 @@ export class TaskQueue {
     createTime?: string,
     forceThread?: boolean,
     messageType?: string,
+    accountId?: string,
   ): Promise<string> {
     return new Promise((resolve, reject) => {
       const task: QueueTask = {
@@ -44,6 +45,7 @@ export class TaskQueue {
         messageType,
         createTime,
         forceThread,
+        accountId,
         resolve,
         reject,
         createdAt: new Date(),

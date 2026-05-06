@@ -47,7 +47,7 @@ setOnApproved((chatId, userId, text, messageId, accountId, agentId, rootId, thre
   // accountId 用于恢复正确的 feishuClient 上下文（哪个 bot 收到的消息就由哪个 bot 处理）
   const queueKey = makeQueueKey(chatId, threadId, agentId as AgentId);
   runWithAccountId(accountId, () => {
-    taskQueue.enqueue(queueKey, chatId, userId, text, messageId, rootId, threadId).catch(() => {});
+    taskQueue.enqueue(queueKey, chatId, userId, text, messageId, rootId, threadId, undefined, undefined, undefined, undefined, undefined, accountId).catch(() => {});
     processQueue(queueKey, agentId as AgentId);
   });
 });
@@ -576,25 +576,30 @@ function processQueue(queueKey: string, agentId: AgentId = 'dev'): void {
   const task = taskQueue.dequeue(queueKey);
   if (!task) return;
 
-  const agentCfg = agentRegistry.get(agentId);
-  // direct 模式 → executeDirectTask（话题内也走 direct 路径）
-  const useDirectMode = agentCfg?.replyMode === 'direct';
+  // 恢复 task 入队时的 feishuClient 上下文（accountId），
+  // 防止 .finally() 回调继承前一个 task 的 AsyncLocalStorage 上下文
+  const taskAccountId = task.accountId ?? 'default';
 
-  const executeFn = useDirectMode
-    ? executeDirectTask(task.message, task.chatId, task.userId, task.messageId, task.images, task.documents, agentId, task.threadId, task.rootId, task.createTime, { forceThread: task.forceThread }, task.messageType)
-    : executeClaudeTask(task.message, task.chatId, task.userId, task.messageId, task.rootId, task.threadId, task.images, task.documents, agentId, task.createTime, task.messageType);
+  const execute = () => {
+    const agentCfg = agentRegistry.get(agentId);
+    const useDirectMode = agentCfg?.replyMode === 'direct';
 
-  // 注册 task promise：graceful shutdown 时等待结果卡片发送完成
-  claudeExecutor.registerTask(executeFn);
+    const executeFn = useDirectMode
+      ? executeDirectTask(task.message, task.chatId, task.userId, task.messageId, task.images, task.documents, agentId, task.threadId, task.rootId, task.createTime, { forceThread: task.forceThread }, task.messageType)
+      : executeClaudeTask(task.message, task.chatId, task.userId, task.messageId, task.rootId, task.threadId, task.images, task.documents, agentId, task.createTime, task.messageType);
 
-  executeFn
-    .then(() => task.resolve('done'))
-    .catch((err) => task.reject(err instanceof Error ? err : new Error(String(err))))
-    .finally(() => {
-      taskQueue.complete(queueKey);
-      // 处理队列中的下一个任务
-      processQueue(queueKey, agentId);
-    });
+    claudeExecutor.registerTask(executeFn);
+
+    executeFn
+      .then(() => task.resolve('done'))
+      .catch((err) => task.reject(err instanceof Error ? err : new Error(String(err))))
+      .finally(() => {
+        taskQueue.complete(queueKey);
+        processQueue(queueKey, agentId);
+      });
+  };
+
+  runWithAccountId(taskAccountId, execute);
 }
 
 // ============================================================
@@ -879,7 +884,7 @@ async function handleMessageEvent(data: MessageEventData, accountId: string = 'd
   // 斜杠命令、管道确认、审批命令仅对文本消息有效
   if (text && !forceThread) {
     // 处理斜杠命令（在 agent 角色确定后执行）
-    const commandResult = await handleSlashCommand(text, chatId, userId, messageId, rootId, effectiveThreadId, agentId);
+    const commandResult = await handleSlashCommand(text, chatId, userId, messageId, rootId, effectiveThreadId, agentId, accountId);
     if (commandResult) return;
 
     // 处理管道消息确认（卡片按钮的文本 fallback）
@@ -921,7 +926,7 @@ async function handleMessageEvent(data: MessageEventData, accountId: string = 'd
   const queueKey = perMessageParallel
     ? makeQueueKey(chatId, undefined, agentId, messageId)
     : makeQueueKey(chatId, effectiveThreadId, agentId, isDirectMode ? userId : undefined);
-  taskQueue.enqueue(queueKey, chatId, userId, effectiveText, messageId, rootId, effectiveThreadId, images, documents, createTime, forceThread, messageType).catch(() => {});
+  taskQueue.enqueue(queueKey, chatId, userId, effectiveText, messageId, rootId, effectiveThreadId, images, documents, createTime, forceThread, messageType, accountId).catch(() => {});
   processQueue(queueKey, agentId);
 }
 
@@ -936,6 +941,7 @@ async function handleSlashCommand(
   rootId?: string,
   effectiveThreadId?: string,
   agentId: AgentId = 'dev',
+  accountId: string = 'default',
 ): Promise<boolean> {
   const trimmed = text.trim();
 
@@ -1111,7 +1117,7 @@ async function handleSlashCommand(
       const queueKey = editThreadId
         ? makeQueueKey(chatId, editThreadId, agentId)
         : makeQueueKey(chatId, undefined, agentId);
-      taskQueue.enqueue(queueKey, chatId, userId, editPrompt, messageId, editThreadReplyMsgId || rootId, editThreadId).catch(() => {});
+      taskQueue.enqueue(queueKey, chatId, userId, editPrompt, messageId, editThreadReplyMsgId || rootId, editThreadId, undefined, undefined, undefined, undefined, undefined, accountId).catch(() => {});
       processQueue(queueKey, agentId);
     }
 
