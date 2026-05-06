@@ -23,7 +23,7 @@ import {
   cancelPipeline,
   retryPipeline,
 } from '../pipeline/runner.js';
-import { resolveAgent, shouldRespond } from '../agent/router.js';
+import { resolveAgent, getRespondReason } from '../agent/router.js';
 import { agentRegistry } from '../agent/registry.js';
 import { accountManager } from './multi-account.js';
 import { chatBotRegistry } from './bot-registry.js';
@@ -443,7 +443,91 @@ async function handlePipelineRetry(pipelineId: string): Promise<Record<string, u
 }
 
 // ============================================================
-// 话题创建者判定：option B — 只有话题创建者 bot 自动响应无 @mention 的后续消息
+// @mention 白名单过滤 — 必须返回明确理由才放行
+// ============================================================
+
+interface MentionGateInput {
+  chatType: string;
+  mentionedBot: boolean;
+  mentions: Array<{ id: { open_id?: string } }>;
+  threadId?: string;
+  messageId: string;
+  text: string;
+  userId: string;
+  chatId: string;
+  agentId: string;
+  accountId: string;
+  images?: ImageAttachment[];
+  documents?: DocumentAttachment[];
+}
+
+async function resolveMentionGate(input: MentionGateInput): Promise<string | undefined> {
+  const { chatType, mentionedBot, mentions, threadId, messageId, text, userId, chatId, agentId, accountId, images, documents } = input;
+
+  // 私聊始终放行
+  if (chatType === 'p2p') return 'p2p';
+
+  if (isMultiBotMode()) {
+    const botOpenId = accountManager.getBotOpenId(accountId) ?? '';
+    const allBotOpenIds = accountManager.getAllBotOpenIds();
+    const groupConfig = config.agent.groupConfigs[chatId];
+    const commanderOpenId = groupConfig?.commander
+      ? accountManager.getBotOpenId(groupConfig.commander)
+      : undefined;
+
+    // 补充 chatBotRegistry 中跨 app bot open_id
+    const registryBotIds = chatBotRegistry.getBots(chatId).map(b => b.openId);
+    const knownBotIds = new Set([...allBotOpenIds, ...registryBotIds]);
+    const anyBotMentioned = mentions.some(m => knownBotIds.has(m.id.open_id ?? ''));
+
+    // 话题内 thread bypass：话题创建者 bot 无需 @mention
+    if (threadId && !anyBotMentioned && isThreadCreatorAgent(threadId, agentId)) {
+      const ts = sessionManager.getThreadSession(threadId, agentId);
+      if (ts && (isOwner(userId) || ts.userId === userId)) {
+        const botDisplayName = agentRegistry.get(agentId)?.displayName ?? 'bot';
+        const relevant = await checkThreadRelevance(text, botDisplayName);
+        if (relevant) {
+          return 'thread_bypass';
+        }
+        logger.info({ threadId, agentId, text: text.slice(0, 100) }, 'Thread bypass skipped — message not directed at bot');
+      }
+    }
+
+    // @mention / commander 路由
+    const reason = getRespondReason(chatType, mentions, botOpenId, knownBotIds, commanderOpenId);
+    if (reason) return reason;
+
+    return undefined;
+  }
+
+  // 单 bot 模式
+  if (mentionedBot) return 'mentioned';
+  if (chatType !== 'group') return 'non_group';
+
+  // 群聊未 @mention：仅话题内 session 创建者可放行
+  const ts = threadId ? sessionManager.getThreadSession(threadId) : undefined;
+  if (!ts || (!isOwner(userId) && ts.userId !== userId)) {
+    return undefined;
+  }
+
+  if (images?.length || documents?.length) {
+    logger.info({ messageId, threadId }, 'Thread session owner: image/doc bypass');
+    return 'thread_session_media';
+  }
+
+  const botDisplayName = agentRegistry.get(agentId)?.displayName ?? 'bot';
+  const relevant = await checkThreadRelevance(text, botDisplayName);
+  if (!relevant) {
+    logger.info({ messageId, threadId, text: text?.slice(0, 100) }, 'Thread session owner: semantically not directed at bot');
+    return undefined;
+  }
+
+  logger.info({ messageId, threadId }, 'Thread session owner: semantically relevant');
+  return 'thread_session_owner';
+}
+
+// ============================================================
+// 话题创建者判定
 // ============================================================
 
 /**
@@ -619,7 +703,7 @@ interface ParsedMessage {
   chatType: string;
   /** 单 bot 模式下的 @mention 检测结果 */
   mentionedBot: boolean;
-  /** 原始 mentions 数组（多 bot 模式 shouldRespond 使用） */
+  /** 原始 mentions 数组（多 bot 模式 @mention 过滤使用） */
   mentions: Array<{ id: { open_id?: string } }>;
   /** message.root_id — 回复链根消息 ID */
   rootId?: string;
@@ -641,7 +725,7 @@ interface ParsedMessage {
  * 处理消息事件 (由 EventDispatcher 回调)
  *
  * 多 Agent 模式处理流程：
- * ① shouldRespond — @mention 过滤
+ * ① resolveMentionGate — @mention 白名单过滤
  * ② Binding Router — 选 agent 角色
  * ③ Slash command — 在 agent 角色确定后执行
  * ④ Workspace Router — 选工作目录（在 resolveThreadContext 中）
@@ -735,66 +819,16 @@ async function handleMessageEvent(data: MessageEventData, accountId: string = 'd
     }
   }
 
-  // ── @mention 过滤（必须在所有副作用之前，避免对不该响应的消息发送错误提示） ──
-  if (isMultiBotMode()) {
-    const botOpenId = accountManager.getBotOpenId(accountId) ?? '';
-    const allBotOpenIds = accountManager.getAllBotOpenIds();
-    const groupConfig = config.agent.groupConfigs[chatId];
-    const commanderOpenId = groupConfig?.commander
-      ? accountManager.getBotOpenId(groupConfig.commander)
-      : undefined;
-
-    // 话题内消息：话题创建者 bot 无需 @mention 即可响应后续消息
-    // 前提：消息没有 @任何 bot —— 显式 @bot 是明确的意图信号
-    // @人类用户的情况由下游 Qwen 语义判断处理（可能是指代引用，不一定是跟人说话）
-    // allBotOpenIds 仅包含各 bot 自身 fetchBotInfo 返回的 open_id（同一 app 视角）。
-    // 但飞书 open_id 是 app 级别的：pm-bot 收到的 @dev-bot mention 的 open_id ≠ dev-bot 自己的 open_id。
-    // 补充 chatBotRegistry 中通过被动收集（sender_type=app）记录的跨 app bot open_id。
-    const registryBotIds = chatBotRegistry.getBots(chatId).map(b => b.openId);
-    const knownBotIds = new Set([...allBotOpenIds, ...registryBotIds]);
-    const anyBotMentioned = mentions.some(m => knownBotIds.has(m.id.open_id ?? ''));
-    let threadBypass = false;
-    if (threadId && !anyBotMentioned && isThreadCreatorAgent(threadId, agentId)) {
-      const ts = sessionManager.getThreadSession(threadId, agentId);
-      if (ts && (isOwner(userId) || ts.userId === userId)) {
-        // 语义判断：用 Qwen 小模型判断无 @mention 的消息是否在跟 bot 对话
-        const botDisplayName = agentRegistry.get(agentId)?.displayName ?? 'bot';
-        const relevant = await checkThreadRelevance(text, botDisplayName);
-        if (relevant) {
-          threadBypass = true;
-          logger.debug({ threadId, agentId, accountId }, 'Thread creator bypass: responding without @mention');
-        } else {
-          logger.info({ threadId, agentId, text: text.slice(0, 100) }, 'Thread bypass skipped — message not directed at bot');
-        }
-      }
-    }
-
-    if (!threadBypass && !shouldRespond(chatType, mentions, botOpenId, knownBotIds, commanderOpenId)) {
-      return;
-    }
-  } else {
-    // 单 bot 模式：群聊中需要 @机器人 才响应
-    // 例外：话题内后续消息，需同时满足：① 发送者是 session 创建者 ② 语义判断消息在跟 bot 对话
-    if (chatType === 'group' && !mentionedBot) {
-      const ts = threadId ? sessionManager.getThreadSession(threadId) : undefined;
-      if (!ts || (!isOwner(userId) && ts.userId !== userId)) {
-        return;
-      }
-      // 纯图片/文档消息没有文本可做语义判断，话题内 session 创建者直接放行
-      if (images?.length || documents?.length) {
-        logger.debug({ messageId, threadId }, 'Message allowed in group thread: image/doc from session creator');
-      } else {
-        // 语义判断：与多 bot 模式对齐，用 Qwen 小模型判断消息是否在跟 bot 对话
-        const botDisplayName = agentRegistry.get(agentId)?.displayName ?? 'bot';
-        const relevant = await checkThreadRelevance(text, botDisplayName);
-        if (!relevant) {
-          logger.info({ messageId, threadId, text: text?.slice(0, 100) }, 'Single-bot thread bypass skipped — message not directed at bot');
-          return;
-        }
-        logger.debug({ messageId, threadId }, 'Message allowed in group thread: sender is session creator + semantically relevant');
-      }
-    }
+  // ── @mention 过滤（白名单模式：必须有明确放行理由，否则一律拦截） ──
+  const passReason = await resolveMentionGate({
+    chatType, mentionedBot, mentions, threadId, messageId, text,
+    userId, chatId, agentId, accountId, images, documents,
+  });
+  if (!passReason) {
+    logger.info({ messageId, chatId, threadId, agentId, accountId, chatType }, '@mention gate: blocked — no pass reason');
+    return;
   }
+  logger.info({ messageId, chatId, threadId, agentId, accountId, passReason }, '@mention gate: passed');
 
   // root_id 单独出现（无 thread_id）= 主面板引用回复，不是话题内消息，正常处理即可
 
@@ -3510,7 +3544,7 @@ function handleBotDeletedEvent(data: Record<string, unknown>, accountId: string)
 }
 
 /** @internal 测试用导出 */
-export const _testing = { handleBotAddedEvent, handleBotDeletedEvent, makeQueueKey, injectQuotedMessage };
+export const _testing = { handleBotAddedEvent, handleBotDeletedEvent, makeQueueKey, injectQuotedMessage, resolveMentionGate };
 
 function formatDuration(ms: number): string {
   if (ms < 1000) return `${ms}ms`;

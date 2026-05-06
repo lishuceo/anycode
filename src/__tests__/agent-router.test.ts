@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { resolveAgent, shouldRespond, validateBindings } from '../agent/router.js';
+import { resolveAgent, shouldRespond, getRespondReason, validateBindings } from '../agent/router.js';
 import type { AgentBinding, InboundContext } from '../agent/types.js';
 
 describe('resolveAgent', () => {
@@ -121,5 +121,73 @@ describe('validateBindings', () => {
 
   it('returns empty for no bindings', () => {
     expect(validateBindings([])).toEqual([]);
+  });
+});
+
+describe('getRespondReason', () => {
+  const botA = 'bot_open_id_a';
+  const botB = 'bot_open_id_b';
+  const allBots = new Set([botA, botB]);
+  const userMention = { id: { open_id: 'user_123' } };
+
+  it('returns "p2p" for private chats', () => {
+    expect(getRespondReason('p2p', [], botA, allBots)).toBe('p2p');
+    expect(getRespondReason('p2p', [], botA, new Set())).toBe('p2p');
+  });
+
+  it('returns "mentioned" when bot is @mentioned', () => {
+    const mentions = [{ id: { open_id: botA } }];
+    expect(getRespondReason('group', mentions, botA, allBots)).toBe('mentioned');
+  });
+
+  it('returns undefined when other bot is @mentioned but not this one', () => {
+    const mentions = [{ id: { open_id: botB } }];
+    expect(getRespondReason('group', mentions, botA, allBots)).toBeUndefined();
+  });
+
+  it('returns "commander" when no bot @mentioned and this bot is commander', () => {
+    expect(getRespondReason('group', [], botA, allBots, botA)).toBe('commander');
+  });
+
+  it('returns undefined when no bot @mentioned and this bot is NOT commander', () => {
+    expect(getRespondReason('group', [], botB, allBots, botA)).toBeUndefined();
+  });
+
+  it('returns undefined when no @mention and no commander', () => {
+    expect(getRespondReason('group', [], botA, allBots)).toBeUndefined();
+    expect(getRespondReason('group', [], botB, allBots)).toBeUndefined();
+  });
+
+  it('ignores human-only mentions (no commander)', () => {
+    expect(getRespondReason('group', [userMention], botA, allBots)).toBeUndefined();
+  });
+
+  it('commander responds when only human mentions present', () => {
+    expect(getRespondReason('group', [userMention], botA, allBots, botA)).toBe('commander');
+  });
+
+  it('explicit @mention overrides commander', () => {
+    const mentions = [{ id: { open_id: botB } }];
+    expect(getRespondReason('group', mentions, botA, allBots, botA)).toBeUndefined();
+    expect(getRespondReason('group', mentions, botB, allBots, botA)).toBe('mentioned');
+  });
+
+  it('handles empty allBotOpenIds gracefully', () => {
+    const emptyBots = new Set<string>();
+    expect(getRespondReason('group', [], botA, emptyBots)).toBeUndefined();
+    const mentions = [{ id: { open_id: botA } }];
+    expect(getRespondReason('group', mentions, botA, emptyBots)).toBeUndefined();
+  });
+
+  it('handles mentions with missing open_id', () => {
+    const mentions = [{ id: {} }, { id: { open_id: undefined } }];
+    expect(getRespondReason('group', mentions, botA, allBots)).toBeUndefined();
+  });
+
+  it('shouldRespond wrapper matches getRespondReason', () => {
+    expect(shouldRespond('p2p', [], botA, allBots)).toBe(true);
+    expect(shouldRespond('group', [], botA, allBots)).toBe(false);
+    expect(shouldRespond('group', [{ id: { open_id: botA } }], botA, allBots)).toBe(true);
+    expect(shouldRespond('group', [], botA, allBots, botA)).toBe(true);
   });
 });
