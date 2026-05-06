@@ -243,4 +243,32 @@ describe('TaskQueue', () => {
       expect(queue.pendingCount('chat2:threadB')).toBe(1);
     });
   });
+
+  describe('accountId', () => {
+    it('should store accountId on enqueued task', () => {
+      queue.enqueue('q1', 'chat1', 'user1', 'msg', 'mid1', undefined, undefined, undefined, undefined, undefined, undefined, undefined, 'pm');
+      const task = queue.dequeue('q1');
+      expect(task).toBeDefined();
+      expect(task!.accountId).toBe('pm');
+    });
+
+    it('should default accountId to undefined when not provided', () => {
+      queue.enqueue('q1', 'chat1', 'user1', 'msg', 'mid1');
+      const task = queue.dequeue('q1');
+      expect(task).toBeDefined();
+      expect(task!.accountId).toBeUndefined();
+    });
+
+    it('should preserve different accountIds for sequential tasks in same queue', () => {
+      queue.enqueue('q1', 'chat1', 'user1', 'msg1', 'mid1', undefined, undefined, undefined, undefined, undefined, undefined, undefined, 'dev');
+      queue.enqueue('q1', 'chat1', 'user1', 'msg2', 'mid2', undefined, undefined, undefined, undefined, undefined, undefined, undefined, 'pm');
+
+      const t1 = queue.dequeue('q1');
+      expect(t1!.accountId).toBe('dev');
+
+      queue.complete('q1');
+      const t2 = queue.dequeue('q1');
+      expect(t2!.accountId).toBe('pm');
+    });
+  });
 });
