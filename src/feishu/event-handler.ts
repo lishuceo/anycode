@@ -484,12 +484,20 @@ async function resolveMentionGate(input: MentionGateInput): Promise<string | und
     if (threadId && !anyBotMentioned && isThreadCreatorAgent(threadId, agentId)) {
       const ts = sessionManager.getThreadSession(threadId, agentId);
       if (ts && (isOwner(userId) || ts.userId === userId)) {
+        const recentMsgs = await feishuClient.fetchRecentMessages(threadId, 'thread', 10);
+        const humanSenders = new Set(recentMsgs.filter(m => m.senderType === 'user').map(m => m.senderId));
+
+        if (humanSenders.size <= 1) {
+          return 'thread_bypass_exclusive';
+        }
+
         const botDisplayName = agentRegistry.get(agentId)?.displayName ?? 'bot';
-        const relevant = await checkThreadRelevance(text, botDisplayName);
+        const context = await formatThreadContext(recentMsgs, botDisplayName, chatId);
+        const relevant = await checkThreadRelevance(text, botDisplayName, context);
         if (relevant) {
           return 'thread_bypass';
         }
-        logger.info({ threadId, agentId, text: text.slice(0, 100) }, 'Thread bypass skipped — message not directed at bot');
+        logger.info({ threadId, agentId, text: text.slice(0, 100), humanCount: humanSenders.size }, 'Thread bypass skipped — message not directed at bot');
       }
     }
 
@@ -515,15 +523,50 @@ async function resolveMentionGate(input: MentionGateInput): Promise<string | und
     return 'thread_session_media';
   }
 
+  const recentMsgs = threadId ? await feishuClient.fetchRecentMessages(threadId, 'thread', 10) : [];
+  const humanSenders = new Set(recentMsgs.filter(m => m.senderType === 'user').map(m => m.senderId));
+
+  if (humanSenders.size <= 1) {
+    return 'thread_session_owner';
+  }
+
   const botDisplayName = agentRegistry.get(agentId)?.displayName ?? 'bot';
-  const relevant = await checkThreadRelevance(text, botDisplayName);
+  const context = await formatThreadContext(recentMsgs, botDisplayName, chatId);
+  const relevant = await checkThreadRelevance(text, botDisplayName, context);
   if (!relevant) {
-    logger.info({ messageId, threadId, text: text?.slice(0, 100) }, 'Thread session owner: semantically not directed at bot');
+    logger.info({ messageId, threadId, text: text?.slice(0, 100), humanCount: humanSenders.size }, 'Thread session owner: semantically not directed at bot');
     return undefined;
   }
 
   logger.info({ messageId, threadId }, 'Thread session owner: semantically relevant');
   return 'thread_session_owner';
+}
+
+/**
+ * 将话题最近消息格式化为 Qwen 可读的对话记录。
+ * 用于多人话题场景的语义判断，让 Qwen 看清谁在跟谁说话。
+ */
+async function formatThreadContext(
+  messages: Array<{ senderId: string; senderType: string; content: string }>,
+  botName: string,
+  chatId: string,
+): Promise<string> {
+  const userIds = [...new Set(messages.filter(m => m.senderType === 'user').map(m => m.senderId))];
+  await resolveUserNames(userIds, chatId);
+
+  const lines: string[] = [];
+  let totalLen = 0;
+  for (const m of messages) {
+    const name = m.senderType === 'app'
+      ? `${botName}(bot)`
+      : (_userNameCache.get(m.senderId) ?? '用户');
+    const content = m.senderType === 'app' ? m.content.slice(0, 100) : m.content;
+    const line = `[${name}]: ${content}`;
+    if (totalLen + line.length > 1500) break;
+    lines.push(line);
+    totalLen += line.length;
+  }
+  return lines.join('\n');
 }
 
 // ============================================================

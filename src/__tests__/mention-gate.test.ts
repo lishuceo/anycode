@@ -189,16 +189,22 @@ describe('resolveMentionGate', () => {
       })).toBe('thread_session_media');
     });
 
-    it('allows semantically relevant message from thread session creator', async () => {
+    it('allows message from thread session creator when only two participants', async () => {
       mockGetThreadSession.mockReturnValue({ userId: 'ou_user_1', createdAt: new Date().toISOString() });
-      mockCheckThreadRelevance.mockResolvedValue(true);
+      // fetchRecentMessages returns [] → humanSenders.size=0 → dual-person bypass
       expect(await resolveMentionGate({ ...baseInput, threadId: 'omt_123' })).toBe('thread_session_owner');
     });
 
-    it('blocks semantically irrelevant message from thread session creator', async () => {
+    it('uses Qwen when third person present in thread', async () => {
       mockGetThreadSession.mockReturnValue({ userId: 'ou_user_1', createdAt: new Date().toISOString() });
+      const { feishuClient: fc } = await import('../feishu/client.js');
+      vi.mocked(fc.fetchRecentMessages).mockResolvedValue([
+        { messageId: 'm1', senderId: 'ou_user_1', senderType: 'user', content: 'hello', msgType: 'text' },
+        { messageId: 'm2', senderId: 'ou_user_2', senderType: 'user', content: 'hi', msgType: 'text' },
+      ] as any);
       mockCheckThreadRelevance.mockResolvedValue(false);
       expect(await resolveMentionGate({ ...baseInput, threadId: 'omt_123' })).toBeUndefined();
+      vi.mocked(fc.fetchRecentMessages).mockResolvedValue([]);
     });
 
     it('allows owner in thread even if not session creator', async () => {
@@ -264,29 +270,51 @@ describe('resolveMentionGate', () => {
       })).toBeUndefined();
     });
 
-    it('allows thread_bypass when all conditions met', async () => {
-      // isThreadCreatorAgent needs: session exists + earliest
-      mockGetThreadSession.mockImplementation((threadId: string, agentId?: string) => {
+    it('allows thread_bypass_exclusive when only creator and bot', async () => {
+      mockGetThreadSession.mockImplementation((_: string, agentId?: string) => {
         if (agentId === 'dev') return { userId: 'ou_user_1', createdAt: '2026-01-01T00:00:00Z' };
         return undefined;
       });
+      // fetchRecentMessages returns [] → only creator + bot → exclusive bypass
+      expect(await resolveMentionGate({
+        ...baseInput, threadId: 'omt_existing_topic',
+      })).toBe('thread_bypass_exclusive');
+    });
+
+    it('allows thread_bypass when third person present and Qwen says yes', async () => {
+      mockGetThreadSession.mockImplementation((_: string, agentId?: string) => {
+        if (agentId === 'dev') return { userId: 'ou_user_1', createdAt: '2026-01-01T00:00:00Z' };
+        return undefined;
+      });
+      const { feishuClient: fc } = await import('../feishu/client.js');
+      vi.mocked(fc.fetchRecentMessages).mockResolvedValue([
+        { messageId: 'm1', senderId: 'ou_user_1', senderType: 'user', content: 'hi', msgType: 'text' },
+        { messageId: 'm2', senderId: 'ou_user_other', senderType: 'user', content: 'yo', msgType: 'text' },
+      ] as any);
       mockCheckThreadRelevance.mockResolvedValue(true);
 
       expect(await resolveMentionGate({
         ...baseInput, threadId: 'omt_existing_topic',
       })).toBe('thread_bypass');
+      vi.mocked(fc.fetchRecentMessages).mockResolvedValue([]);
     });
 
-    it('blocks thread_bypass when semantic check fails', async () => {
+    it('blocks thread_bypass when third person present and Qwen says no', async () => {
       mockGetThreadSession.mockImplementation((_: string, agentId?: string) => {
         if (agentId === 'dev') return { userId: 'ou_user_1', createdAt: '2026-01-01T00:00:00Z' };
         return undefined;
       });
+      const { feishuClient: fc } = await import('../feishu/client.js');
+      vi.mocked(fc.fetchRecentMessages).mockResolvedValue([
+        { messageId: 'm1', senderId: 'ou_user_1', senderType: 'user', content: 'hi', msgType: 'text' },
+        { messageId: 'm2', senderId: 'ou_user_other', senderType: 'user', content: 'yo', msgType: 'text' },
+      ] as any);
       mockCheckThreadRelevance.mockResolvedValue(false);
 
       expect(await resolveMentionGate({
         ...baseInput, threadId: 'omt_existing_topic',
       })).toBeUndefined();
+      vi.mocked(fc.fetchRecentMessages).mockResolvedValue([]);
     });
 
     it('blocks thread_bypass when user is not session creator or owner', async () => {
@@ -371,12 +399,17 @@ describe('resolveMentionGate', () => {
       expect(result).toBeUndefined();
     });
 
-    it('multi-bot: @human in topic WITH bot session but semantic=false → blocked', async () => {
+    it('multi-bot: @human in topic WITH bot session, third person present, semantic=false → blocked', async () => {
       mockIsMultiBotMode.mockReturnValue(true);
       mockGetThreadSession.mockImplementation((_: string, agentId?: string) => {
         if (agentId === 'dev') return { userId: 'ou_user_1', createdAt: '2026-01-01T00:00:00Z' };
         return undefined;
       });
+      const { feishuClient: fc } = await import('../feishu/client.js');
+      vi.mocked(fc.fetchRecentMessages).mockResolvedValue([
+        { messageId: 'm1', senderId: 'ou_user_1', senderType: 'user', content: 'hi', msgType: 'text' },
+        { messageId: 'm2', senderId: 'ou_relic_product_xz', senderType: 'user', content: 'ok', msgType: 'text' },
+      ] as any);
       mockCheckThreadRelevance.mockResolvedValue(false);
 
       const humanMention = { id: { open_id: 'ou_relic_product_xz' } };
@@ -388,6 +421,7 @@ describe('resolveMentionGate', () => {
       });
 
       expect(result).toBeUndefined();
+      vi.mocked(fc.fetchRecentMessages).mockResolvedValue([]);
     });
 
     it('single-bot: group message without @mention → blocked', async () => {
