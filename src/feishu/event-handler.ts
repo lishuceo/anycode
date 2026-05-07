@@ -492,7 +492,7 @@ async function resolveMentionGate(input: MentionGateInput): Promise<string | und
         }
 
         const botDisplayName = agentRegistry.get(agentId)?.displayName ?? 'bot';
-        const context = await formatThreadContext(recentMsgs, botDisplayName, chatId);
+        const context = await formatThreadContext(recentMsgs, botDisplayName, chatId, accountId);
         const relevant = await checkThreadRelevance(text, botDisplayName, context);
         if (relevant) {
           return 'thread_bypass';
@@ -531,7 +531,7 @@ async function resolveMentionGate(input: MentionGateInput): Promise<string | und
   }
 
   const botDisplayName = agentRegistry.get(agentId)?.displayName ?? 'bot';
-  const context = await formatThreadContext(recentMsgs, botDisplayName, chatId);
+  const context = await formatThreadContext(recentMsgs, botDisplayName, chatId, accountId);
   const relevant = await checkThreadRelevance(text, botDisplayName, context);
   if (!relevant) {
     logger.info({ messageId, threadId, text: text?.slice(0, 100), humanCount: humanSenders.size }, 'Thread session owner: semantically not directed at bot');
@@ -550,16 +550,21 @@ async function formatThreadContext(
   messages: Array<{ senderId: string; senderType: string; content: string }>,
   botName: string,
   chatId: string,
+  accountId: string,
 ): Promise<string> {
   const userIds = [...new Set(messages.filter(m => m.senderType === 'user').map(m => m.senderId))];
   await resolveUserNames(userIds, chatId);
 
+  const selfBotOpenId = accountManager.getBotOpenId(accountId) ?? '';
   const lines: string[] = [];
   let totalLen = 0;
   for (const m of messages) {
-    const name = m.senderType === 'app'
-      ? `${botName}(bot)`
-      : (_userNameCache.get(m.senderId) ?? '用户');
+    let name: string;
+    if (m.senderType === 'app') {
+      name = m.senderId === selfBotOpenId ? `${botName}(bot)` : '其他bot';
+    } else {
+      name = _userNameCache.get(m.senderId) ?? '用户';
+    }
     const content = m.senderType === 'app' ? m.content.slice(0, 100) : m.content;
     const line = `[${name}]: ${content}`;
     if (totalLen + line.length > 1500) break;
