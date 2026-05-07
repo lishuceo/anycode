@@ -2205,34 +2205,21 @@ export async function executeClaudeTask(
     if (history.newestMsgId) {
       _historyDedup.set(sessionKey, history.newestMsgId);
     }
-    // Resume 时跳过历史文件附件：SDK 会重放所有前序 turn，文件已在对话中，
-    // 重复附加会导致 payload 累积膨胀（N turns × PDF size → 超 30MB 限制）
-    if (activeConversationId) {
-      if (history.images?.length || history.documents?.length) {
-        logger.info(
-          { historyImages: history.images?.length ?? 0, historyDocs: history.documents?.length ?? 0 },
-          'Skipping history file attachments on resume — already in conversation',
-        );
-      }
-      // 当前消息非文件上传时，documents 来自引用父消息，resume 时同样已在对话中
-      if (documents?.length && messageType !== 'file') {
-        logger.info(
-          { docCount: documents.length, fileNames: documents.map(d => d.fileName) },
-          'Clearing quoted-parent documents on resume — already sent in previous turn',
-        );
-        documents = undefined;
-      }
-    } else {
-      // 非 resume：正常合并历史文件
-      // 合并历史消息中的图片
-      if (history.images && history.images.length > 0) {
-        images = [...(history.images), ...(images ?? [])];
-      }
-      // 合并历史消息中的文档（PDF），按 fileName 去重 + 大小截断
-      if (history.documents && history.documents.length > 0) {
-        // 当前消息的文档优先（放前面），历史文档补充
-        documents = deduplicateDocuments([...(documents ?? []), ...(history.documents)]);
-      }
+    // Resume 时清理引用父消息的 documents：那是上一个 turn 已发送的文件，重复附加会膨胀 payload
+    if (activeConversationId && documents?.length && messageType !== 'file') {
+      logger.info(
+        { docCount: documents.length, fileNames: documents.map(d => d.fileName) },
+        'Clearing quoted-parent documents on resume — already sent in previous turn',
+      );
+      documents = undefined;
+    }
+    // 历史消息中的图片/文档：afterMsgId 已确保只返回上次注入之后的新消息，可安全合并
+    // （非 resume 时 afterMsgId=undefined，返回完整历史窗口；resume 时只返回新消息）
+    if (history.images && history.images.length > 0) {
+      images = [...(history.images), ...(images ?? [])];
+    }
+    if (history.documents && history.documents.length > 0) {
+      documents = deduplicateDocuments([...(documents ?? []), ...(history.documents)]);
     }
     // 合并历史消息中的文本文件内容到 prompt（文本内容不占多模态空间，始终注入）
     if (history.fileTexts && history.fileTexts.length > 0) {
@@ -2779,33 +2766,21 @@ export async function executeDirectTask(
     if (history.newestMsgId) {
       _historyDedup.set(sessionKey, history.newestMsgId);
     }
-    // Resume 时跳过历史文件附件：SDK 会重放所有前序 turn，文件已在对话中，
-    // 重复附加会导致 payload 累积膨胀（N turns × PDF size → 超 30MB 限制）
-    if (canResume) {
-      if (history.images?.length || history.documents?.length) {
-        logger.info(
-          { historyImages: history.images?.length ?? 0, historyDocs: history.documents?.length ?? 0 },
-          'Skipping history file attachments on resume — already in conversation',
-        );
-      }
-      // 当前消息非文件上传时，documents 来自引用父消息，resume 时同样已在对话中
-      if (documents?.length && messageType !== 'file') {
-        logger.info(
-          { docCount: documents.length, fileNames: documents.map(d => d.fileName) },
-          'Clearing quoted-parent documents on resume — already sent in previous turn',
-        );
-        documents = undefined;
-      }
-    } else {
-      // 非 resume：正常合并历史文件
-      // 合并历史消息中的图片
-      if (history.images && history.images.length > 0) {
-        images = [...(history.images), ...(images ?? [])];
-      }
-      // 合并历史消息中的文档（PDF），按 fileName 去重 + 大小截断
-      if (history.documents && history.documents.length > 0) {
-        documents = deduplicateDocuments([...(documents ?? []), ...(history.documents)]);
-      }
+    // Resume 时清理引用父消息的 documents：那是上一个 turn 已发送的文件，重复附加会膨胀 payload
+    if (canResume && documents?.length && messageType !== 'file') {
+      logger.info(
+        { docCount: documents.length, fileNames: documents.map(d => d.fileName) },
+        'Clearing quoted-parent documents on resume — already sent in previous turn',
+      );
+      documents = undefined;
+    }
+    // 历史消息中的图片/文档：afterMsgId 已确保只返回上次注入之后的新消息，可安全合并
+    // （非 resume 时 afterMsgId=undefined，返回完整历史窗口；resume 时只返回新消息）
+    if (history.images && history.images.length > 0) {
+      images = [...(history.images), ...(images ?? [])];
+    }
+    if (history.documents && history.documents.length > 0) {
+      documents = deduplicateDocuments([...(documents ?? []), ...(history.documents)]);
     }
     // 合并历史消息中的文本文件内容到 prompt（文本内容不占多模态空间，始终注入）
     if (history.fileTexts && history.fileTexts.length > 0) {
