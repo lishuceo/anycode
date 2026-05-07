@@ -1561,6 +1561,124 @@ async function downloadHistoryFiles(
 }
 
 /**
+ * buildHistoryContext 的可选行为参数。
+ *
+ * 两个公开入口（buildChatHistoryContext / buildDirectTaskHistory）共用同一份
+ * fork + 去重 + 附件下载逻辑，只通过 options 区分诊断细节。
+ */
+interface BuildHistoryOptions {
+  /** direct 任务路径打印额外的 pipeline 日志，便于排查上下文注入问题 */
+  verboseLogging?: boolean;
+  /** 出错时的日志 message,便于在日志里区分入口 */
+  errorLabel?: string;
+}
+
+/**
+ * 统一的飞书聊天历史构建实现。
+ *
+ * 逻辑：fork 语义 + 增量去重 + 父群懒加载附件，详见 buildChatHistoryContext / buildDirectTaskHistory 的 doc。
+ */
+async function buildHistoryContext(
+  chatId: string,
+  threadId?: string,
+  currentMessageId?: string,
+  afterMsgId?: string,
+  selfBotOpenIds?: Set<string>,
+  options: BuildHistoryOptions = {},
+): Promise<HistoryResult> {
+  const { verboseLogging = false, errorLabel = 'Failed to build chat history context' } = options;
+  try {
+    type HistoryMsg = { messageId: string; senderId: string; senderType: 'user' | 'app'; content: string; msgType: string; createTime?: string; imageRefs?: Array<{ imageKey: string }> };
+    let messages: HistoryMsg[];
+    let parentMsgCount = 0;
+
+    if (!threadId) {
+      messages = await feishuClient.fetchRecentMessages(chatId, 'chat', config.chat.historyMaxCount);
+    } else {
+      const threadMsgs = await feishuClient.fetchRecentMessages(threadId, 'thread', 50, chatId);
+      const filtered = currentMessageId
+        ? threadMsgs.filter(m => m.messageId !== currentMessageId)
+        : threadMsgs;
+
+      if (filtered.length === 0) {
+        messages = await feishuClient.fetchRecentMessages(chatId, 'chat', config.chat.historyMaxCount);
+      } else if (filtered.length <= config.chat.historyMaxCount) {
+        const remaining = config.chat.historyMaxCount - filtered.length;
+        if (remaining > 0) {
+          const parentMsgs = await feishuClient.fetchRecentMessages(chatId, 'chat', remaining);
+          parentMsgCount = parentMsgs.length;
+          messages = [...parentMsgs, ...filtered];
+        } else {
+          messages = filtered;
+        }
+      } else {
+        const first = filtered[0];
+        const latest = filtered.slice(-(config.chat.historyMaxCount - 1));
+        messages = [first, ...latest];
+      }
+    }
+
+    const beforeCurrentFilter = messages.length;
+    if (!threadId && currentMessageId) {
+      messages = messages.filter(m => m.messageId !== currentMessageId);
+    }
+
+    const newestMsgId = messages.length > 0 ? messages[messages.length - 1].messageId : undefined;
+
+    const beforeDedupFilter = messages.length;
+    if (afterMsgId && messages.length > 0) {
+      const idx = messages.findIndex(m => m.messageId === afterMsgId);
+      if (idx >= 0) {
+        messages = messages.slice(idx + 1);
+        parentMsgCount = Math.max(0, parentMsgCount - (idx + 1));
+      }
+      if (verboseLogging) {
+        logger.info(
+          { chatId, afterMsgId, foundIdx: messages.length !== beforeDedupFilter ? 'found' : 'not_found', beforeDedup: beforeDedupFilter, afterDedup: messages.length },
+          'History afterMsgId dedup applied',
+        );
+      }
+    }
+
+    if (verboseLogging) {
+      logger.info(
+        {
+          chatId,
+          threadId,
+          currentMessageId,
+          afterMsgId,
+          newestMsgId,
+          fetchedCount: beforeCurrentFilter,
+          afterCurrentFilter: beforeDedupFilter,
+          afterDedupFilter: messages.length,
+          msgIds: messages.map(m => m.messageId),
+          msgTypes: messages.map(m => m.msgType),
+          msgContentLens: messages.map(m => m.content.length),
+        },
+        'buildDirectTaskHistory message pipeline',
+      );
+    }
+
+    const [text, imagesResult, historyFiles] = await Promise.all([
+      formatHistoryMessages(messages, chatId, selfBotOpenIds, parentMsgCount > 0 ? { parentMsgCount } : undefined),
+      downloadHistoryImages(messages, parentMsgCount),
+      downloadHistoryFiles(messages, parentMsgCount),
+    ]);
+    const fileTexts = [...historyFiles.fileTexts, ...imagesResult.lazyHints];
+    return {
+      text: text ?? undefined,
+      newestMsgId,
+      ...(imagesResult.images.length > 0 ? { images: imagesResult.images } : {}),
+      ...(historyFiles.documents.length > 0 ? { documents: historyFiles.documents } : {}),
+      ...(fileTexts.length > 0 ? { fileTexts } : {}),
+    };
+  } catch (err) {
+    logger.error({ err, chatId, threadId }, errorLabel);
+    return {};
+  }
+}
+
+/**
  * 构建飞书聊天历史上下文（首次 @bot 时注入，帮助 Claude 理解对话背景）
  *
  * @param chatId - 群聊 ID
@@ -1576,79 +1694,7 @@ async function buildChatHistoryContext(
   afterMsgId?: string,
   selfBotOpenIds?: Set<string>,
 ): Promise<HistoryResult> {
-  try {
-    type HistoryMsg = { messageId: string; senderId: string; senderType: 'user' | 'app'; content: string; msgType: string; createTime?: string; imageRefs?: Array<{ imageKey: string }> };
-    let messages: HistoryMsg[];
-    let parentMsgCount = 0;
-
-    if (!threadId) {
-      // 主聊天区：直接取父群最近消息
-      messages = await feishuClient.fetchRecentMessages(chatId, 'chat', config.chat.historyMaxCount);
-    } else {
-      // 话题模式：fork 语义（与 buildDirectTaskHistory 一致）
-      const threadMsgs = await feishuClient.fetchRecentMessages(threadId, 'thread', 50, chatId);
-      const filtered = currentMessageId
-        ? threadMsgs.filter(m => m.messageId !== currentMessageId)
-        : threadMsgs;
-
-      if (filtered.length === 0) {
-        // 话题为空，从父群 fork
-        messages = await feishuClient.fetchRecentMessages(chatId, 'chat', config.chat.historyMaxCount);
-      } else if (filtered.length <= config.chat.historyMaxCount) {
-        // 话题消息不足 max，补充父群消息
-        const remaining = config.chat.historyMaxCount - filtered.length;
-        if (remaining > 0) {
-          const parentMsgs = await feishuClient.fetchRecentMessages(chatId, 'chat', remaining);
-          parentMsgCount = parentMsgs.length;
-          messages = [...parentMsgs, ...filtered];
-        } else {
-          messages = filtered;
-        }
-      } else {
-        // 话题消息 > max：首条 + 最近 (max - 1) 条
-        const first = filtered[0];
-        const latest = filtered.slice(-(config.chat.historyMaxCount - 1));
-        messages = [first, ...latest];
-      }
-    }
-
-    // 过滤当前消息（主聊天区路径，话题路径已在上面过滤）
-    if (!threadId && currentMessageId) {
-      messages = messages.filter(m => m.messageId !== currentMessageId);
-    }
-
-    // 记录最新 messageId（去重锚点，在过滤 afterMsgId 之前取）
-    const newestMsgId = messages.length > 0 ? messages[messages.length - 1].messageId : undefined;
-
-    // 增量去重：只保留 afterMsgId 之后的新消息
-    if (afterMsgId && messages.length > 0) {
-      const idx = messages.findIndex(m => m.messageId === afterMsgId);
-      if (idx >= 0) {
-        messages = messages.slice(idx + 1);
-        // afterMsgId 去重后，被移除的消息可能包含 parent 消息，需重新计算
-        parentMsgCount = Math.max(0, parentMsgCount - (idx + 1));
-      }
-      // afterMsgId 不在列表中 → 可能消息已过期滚动，注入全部
-    }
-
-    const [text, imagesResult, historyFiles] = await Promise.all([
-      formatHistoryMessages(messages, chatId, selfBotOpenIds, parentMsgCount > 0 ? { parentMsgCount } : undefined),
-      downloadHistoryImages(messages, parentMsgCount),
-      downloadHistoryFiles(messages, parentMsgCount),
-    ]);
-    // 父群图片的 lazy 提示与父群文件的 lazy 提示合并到 fileTexts，统一注入 prompt
-    const fileTexts = [...historyFiles.fileTexts, ...imagesResult.lazyHints];
-    return {
-      text: text ?? undefined,
-      newestMsgId,
-      ...(imagesResult.images.length > 0 ? { images: imagesResult.images } : {}),
-      ...(historyFiles.documents.length > 0 ? { documents: historyFiles.documents } : {}),
-      ...(fileTexts.length > 0 ? { fileTexts } : {}),
-    };
-  } catch (err) {
-    logger.error({ err, chatId, threadId }, 'Failed to build chat history context');
-    return {};
-  }
+  return buildHistoryContext(chatId, threadId, currentMessageId, afterMsgId, selfBotOpenIds);
 }
 
 /** 用户名缓存：open_id → 用户名（TTL 由 Map 生命周期管理，进程重启清空） */
@@ -2907,6 +2953,8 @@ interface HistoryResult {
  *   - 话题消息 M ≥ max → 首条 + 最近 (max - 1) 条
  *   - 话题为空 → 从父群 fork
  *
+ * 与 buildChatHistoryContext 共用同一份实现，仅多打印一份 pipeline 诊断日志。
+ *
  * @param afterMsgId 上次注入的最新 messageId，有值时只返回比它更新的消息
  */
 async function buildDirectTaskHistory(
@@ -2916,102 +2964,10 @@ async function buildDirectTaskHistory(
   afterMsgId?: string,
   selfBotOpenIds?: Set<string>,
 ): Promise<HistoryResult> {
-  try {
-    type HistoryMsg = { messageId: string; senderId: string; senderType: 'user' | 'app'; content: string; msgType: string; createTime?: string; imageRefs?: Array<{ imageKey: string }> };
-    let messages: HistoryMsg[];
-    let parentMsgCount = 0;  // 父群补充消息数量，用于结构化分区
-
-    if (!threadId) {
-      // 主聊天区：直接取父群最近消息
-      messages = await feishuClient.fetchRecentMessages(chatId, 'chat', config.chat.historyMaxCount);
-    } else {
-      // 话题模式：fork 语义
-      const threadMsgs = await feishuClient.fetchRecentMessages(threadId, 'thread', 50, chatId);
-      const filtered = currentMessageId
-        ? threadMsgs.filter(m => m.messageId !== currentMessageId)
-        : threadMsgs;
-
-      if (filtered.length === 0) {
-        // 话题为空，从父群 fork
-        messages = await feishuClient.fetchRecentMessages(chatId, 'chat', config.chat.historyMaxCount);
-      } else if (filtered.length <= config.chat.historyMaxCount) {
-        // 话题消息不足 max，补充父群消息
-        const remaining = config.chat.historyMaxCount - filtered.length;
-        if (remaining > 0) {
-          const parentMsgs = await feishuClient.fetchRecentMessages(chatId, 'chat', remaining);
-          parentMsgCount = parentMsgs.length;
-          messages = [...parentMsgs, ...filtered];
-        } else {
-          messages = filtered;
-        }
-      } else {
-        // 话题消息 > max：首条 + 最近 (max - 1) 条
-        const first = filtered[0];
-        const latest = filtered.slice(-(config.chat.historyMaxCount - 1));
-        messages = [first, ...latest];
-      }
-    }
-
-    // 过滤当前消息（主聊天区路径，话题路径已在上面过滤）
-    const beforeCurrentFilter = messages.length;
-    if (!threadId && currentMessageId) {
-      messages = messages.filter(m => m.messageId !== currentMessageId);
-    }
-
-    // 记录最新 messageId（去重锚点，在过滤 afterMsgId 之前取）
-    const newestMsgId = messages.length > 0 ? messages[messages.length - 1].messageId : undefined;
-
-    // 增量去重：只保留 afterMsgId 之后的新消息
-    const beforeDedupFilter = messages.length;
-    if (afterMsgId && messages.length > 0) {
-      const idx = messages.findIndex(m => m.messageId === afterMsgId);
-      if (idx >= 0) {
-        messages = messages.slice(idx + 1);
-        // afterMsgId 去重后，被移除的消息可能包含 parent 消息，需重新计算
-        parentMsgCount = Math.max(0, parentMsgCount - (idx + 1));
-      }
-      // afterMsgId 不在列表中 → 可能消息已过期滚动，注入全部
-      logger.info(
-        { chatId, afterMsgId, foundIdx: messages.length !== beforeDedupFilter ? 'found' : 'not_found', beforeDedup: beforeDedupFilter, afterDedup: messages.length },
-        'History afterMsgId dedup applied',
-      );
-    }
-
-    logger.info(
-      {
-        chatId,
-        threadId,
-        currentMessageId,
-        afterMsgId,
-        newestMsgId,
-        fetchedCount: beforeCurrentFilter,
-        afterCurrentFilter: beforeDedupFilter,
-        afterDedupFilter: messages.length,
-        msgIds: messages.map(m => m.messageId),
-        msgTypes: messages.map(m => m.msgType),
-        msgContentLens: messages.map(m => m.content.length),
-      },
-      'buildDirectTaskHistory message pipeline',
-    );
-
-    const [text, imagesResult, historyFiles] = await Promise.all([
-      formatHistoryMessages(messages, chatId, selfBotOpenIds, parentMsgCount > 0 ? { parentMsgCount } : undefined),
-      downloadHistoryImages(messages, parentMsgCount),
-      downloadHistoryFiles(messages, parentMsgCount),
-    ]);
-    // 父群图片的 lazy 提示与父群文件的 lazy 提示合并到 fileTexts，统一注入 prompt
-    const fileTexts = [...historyFiles.fileTexts, ...imagesResult.lazyHints];
-    return {
-      text: text ?? undefined,
-      newestMsgId,
-      ...(imagesResult.images.length > 0 ? { images: imagesResult.images } : {}),
-      ...(historyFiles.documents.length > 0 ? { documents: historyFiles.documents } : {}),
-      ...(fileTexts.length > 0 ? { fileTexts } : {}),
-    };
-  } catch (err) {
-    logger.error({ err, chatId, threadId }, 'Failed to build direct task history');
-    return {};
-  }
+  return buildHistoryContext(chatId, threadId, currentMessageId, afterMsgId, selfBotOpenIds, {
+    verboseLogging: true,
+    errorLabel: 'Failed to build direct task history',
+  });
 }
 
 /**
