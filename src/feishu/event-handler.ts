@@ -556,12 +556,18 @@ async function formatThreadContext(
   await resolveUserNames(userIds, chatId);
 
   const selfBotOpenId = accountManager.getBotOpenId(accountId) ?? '';
+  const botNameMap = new Map<string, string>();
+  for (const acc of accountManager.allAccounts()) {
+    if (acc.botOpenId) botNameMap.set(acc.botOpenId, acc.botName);
+  }
   const lines: string[] = [];
   let totalLen = 0;
   for (const m of messages) {
     let name: string;
     if (m.senderType === 'app') {
-      name = m.senderId === selfBotOpenId ? `${botName}(bot)` : '其他bot';
+      name = m.senderId === selfBotOpenId
+        ? `${botName}(bot)`
+        : `${botNameMap.get(m.senderId) ?? chatBotRegistry.getBots(chatId).find(b => b.openId === m.senderId)?.name ?? '其他bot'}(bot)`;
     } else {
       name = _userNameCache.get(m.senderId) ?? '用户';
     }
