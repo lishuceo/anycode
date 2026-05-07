@@ -1357,22 +1357,49 @@ const MAX_HISTORY_IMAGES = 5;
 /**
  * 从历史消息中下载图片（最多 MAX_HISTORY_IMAGES 张，使用更激进的压缩）。
  * 优先取最新的图片（消息列表已按时间正序排列，从末尾取）。
+ *
+ * 父群消息中的图片不自动下载，仅注入元数据提示供 LLM 按需调用工具加载，
+ * 防止话题外的图片（如其他人发的简历）干扰话题内的分析。
+ *
+ * @param parentMsgCount 父群补充消息数量（messages 数组前 N 条来自父群）
+ * @returns { images, lazyHints } images 直接嵌入多模态，lazyHints 拼入 prompt 文本
  */
-async function downloadHistoryImages(
+export async function downloadHistoryImages(
   messages: Array<{ messageId: string; imageRefs?: Array<{ imageKey: string }> }>,
-): Promise<ImageAttachment[]> {
-  // 收集所有图片引用（最新的在后面），取最近 N 张
-  const refs: Array<{ messageId: string; imageKey: string }> = [];
-  for (const msg of messages) {
+  parentMsgCount = 0,
+): Promise<{ images: ImageAttachment[]; lazyHints: string[] }> {
+  // 收集所有图片引用，标记是否来自父群
+  const refs: Array<{ messageId: string; imageKey: string; fromParent: boolean }> = [];
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i];
     if (msg.imageRefs) {
+      const fromParent = i < parentMsgCount;
       for (const ref of msg.imageRefs) {
-        refs.push({ messageId: msg.messageId, imageKey: ref.imageKey });
+        refs.push({ messageId: msg.messageId, imageKey: ref.imageKey, fromParent });
       }
     }
   }
-  if (refs.length === 0) return [];
+  if (refs.length === 0) return { images: [], lazyHints: [] };
 
-  const toDownload = refs.slice(-MAX_HISTORY_IMAGES);
+  // 父群图片：lazy loading（注入元数据，不下载）
+  const lazyHints: string[] = [];
+  const downloadable = refs.filter(ref => {
+    if (ref.fromParent) {
+      lazyHints.push(
+        `[群聊历史图片] — 未自动加载。如需查看，可调用 feishu_download_message_image 工具（参数: message_id="${ref.messageId}", image_key="${ref.imageKey}"）`,
+      );
+      return false;
+    }
+    return true;
+  });
+
+  if (lazyHints.length > 0) {
+    logger.info({ parentImageCount: lazyHints.length }, 'Parent chat images skipped (lazy loading), metadata injected');
+  }
+
+  if (downloadable.length === 0) return { images: [], lazyHints };
+
+  const toDownload = downloadable.slice(-MAX_HISTORY_IMAGES);
 
   const results = await Promise.all(toDownload.map(async (ref) => {
     try {
@@ -1395,10 +1422,10 @@ async function downloadHistoryImages(
   const images = results.filter((img): img is ImageAttachment => img !== null);
 
   if (images.length > 0) {
-    logger.info({ count: images.length, totalRefs: refs.length }, 'Downloaded history images');
+    logger.info({ count: images.length, totalRefs: refs.length, parentSkipped: lazyHints.length }, 'Downloaded history images');
   }
 
-  return images;
+  return { images, lazyHints };
 }
 
 /** 支持下载并嵌入 prompt 的文本类文件扩展名 */
@@ -1604,17 +1631,19 @@ async function buildChatHistoryContext(
       // afterMsgId 不在列表中 → 可能消息已过期滚动，注入全部
     }
 
-    const [text, images, historyFiles] = await Promise.all([
+    const [text, imagesResult, historyFiles] = await Promise.all([
       formatHistoryMessages(messages, chatId, selfBotOpenIds, parentMsgCount > 0 ? { parentMsgCount } : undefined),
-      downloadHistoryImages(messages),
+      downloadHistoryImages(messages, parentMsgCount),
       downloadHistoryFiles(messages, parentMsgCount),
     ]);
+    // 父群图片的 lazy 提示与父群文件的 lazy 提示合并到 fileTexts，统一注入 prompt
+    const fileTexts = [...historyFiles.fileTexts, ...imagesResult.lazyHints];
     return {
       text: text ?? undefined,
       newestMsgId,
-      ...(images.length > 0 ? { images } : {}),
+      ...(imagesResult.images.length > 0 ? { images: imagesResult.images } : {}),
       ...(historyFiles.documents.length > 0 ? { documents: historyFiles.documents } : {}),
-      ...(historyFiles.fileTexts.length > 0 ? { fileTexts: historyFiles.fileTexts } : {}),
+      ...(fileTexts.length > 0 ? { fileTexts } : {}),
     };
   } catch (err) {
     logger.error({ err, chatId, threadId }, 'Failed to build chat history context');
@@ -2964,17 +2993,19 @@ async function buildDirectTaskHistory(
       'buildDirectTaskHistory message pipeline',
     );
 
-    const [text, images, historyFiles] = await Promise.all([
+    const [text, imagesResult, historyFiles] = await Promise.all([
       formatHistoryMessages(messages, chatId, selfBotOpenIds, parentMsgCount > 0 ? { parentMsgCount } : undefined),
-      downloadHistoryImages(messages),
+      downloadHistoryImages(messages, parentMsgCount),
       downloadHistoryFiles(messages, parentMsgCount),
     ]);
+    // 父群图片的 lazy 提示与父群文件的 lazy 提示合并到 fileTexts，统一注入 prompt
+    const fileTexts = [...historyFiles.fileTexts, ...imagesResult.lazyHints];
     return {
       text: text ?? undefined,
       newestMsgId,
-      ...(images.length > 0 ? { images } : {}),
+      ...(imagesResult.images.length > 0 ? { images: imagesResult.images } : {}),
       ...(historyFiles.documents.length > 0 ? { documents: historyFiles.documents } : {}),
-      ...(historyFiles.fileTexts.length > 0 ? { fileTexts: historyFiles.fileTexts } : {}),
+      ...(fileTexts.length > 0 ? { fileTexts } : {}),
     };
   } catch (err) {
     logger.error({ err, chatId, threadId }, 'Failed to build direct task history');
