@@ -1364,7 +1364,7 @@ const MAX_HISTORY_IMAGES = 5;
  * @param parentMsgCount 父群补充消息数量（messages 数组前 N 条来自父群）
  * @returns { images, lazyHints } images 直接嵌入多模态，lazyHints 拼入 prompt 文本
  */
-export async function downloadHistoryImages(
+async function downloadHistoryImages(
   messages: Array<{ messageId: string; imageRefs?: Array<{ imageKey: string }> }>,
   parentMsgCount = 0,
 ): Promise<{ images: ImageAttachment[]; lazyHints: string[] }> {
@@ -1747,6 +1747,7 @@ export const _testFormatHistoryMessages = formatHistoryMessages;
 
 /** 仅测试用：导出 downloadHistoryFiles */
 export const _testDownloadHistoryFiles = downloadHistoryFiles;
+export const _testDownloadHistoryImages = downloadHistoryImages;
 
 /**
  * 格式化历史消息为上下文文本（共享逻辑）。
