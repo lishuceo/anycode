@@ -92,6 +92,8 @@ export interface QueueTask {
   rootId?: string;
   /** 飞书话题 ID (message.thread_id)，用于话题标识 */
   threadId?: string;
+  /** bot 账号标识，用于恢复 feishuClient 上下文 */
+  accountId?: string;
   /** 图片附件列表 (用户发送图片消息时) */
   images?: import('../claude/types.js').ImageAttachment[];
   /** 文档附件列表 (用户发送 PDF 等文件时) */

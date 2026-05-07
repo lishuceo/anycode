@@ -2,6 +2,7 @@
  * 飞书消息卡片构建器
  * 用于构建执行状态卡片、结果卡片等
  */
+import { hostname } from 'os';
 
 import { PHASE_META } from '../pipeline/types.js';
 import type { PipelinePhase } from '../pipeline/types.js';
@@ -130,7 +131,7 @@ export function buildResultCard(
       elements: [
         {
           tag: 'plain_text',
-          content: `${icon} ${status} | ⏱️ ${durationStr}`,
+          content: `${icon} ${status} | ⏱️ ${durationStr} | 🖥️ ${hostname()}:${process.pid}`,
         },
       ],
     },
