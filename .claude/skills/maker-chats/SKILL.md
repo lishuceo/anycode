@@ -15,7 +15,6 @@ argument-hint: "<app_id> [prod|fuping|both]"
 | prod | `https://maker.taptap.cn/api/v1/gmtools/apps/<app_id>/chats` | `https://maker.taptap.cn/app/<app_id>?chatId=<chat_id>&bypassAuth=true` |
 | fuping | `https://fuping.agnt.xd.com/api/v1/gmtools/apps/<app_id>/chats` | `https://fuping.agnt.xd.com/app/<app_id>?chatId=<chat_id>&bypassAuth=true` |
 
-**分页参数**：`?limit=<N>&offset=<M>`。响应顶层 `hasMore: true` 表示还有下一页。默认页大小 `limit=50`。
 **分页参数**：`?limit=<N>&offset=<M>`。响应顶层 `hasMore: true` 表示还有下一页。默认页大小 `limit=20`。
 无需鉴权，直接 GET。响应示例：
 
