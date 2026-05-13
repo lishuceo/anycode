@@ -76,16 +76,18 @@ curl -s '<base>/api/v1/gmtools/apps/<app_id>/chats?limit=<limit>&offset=<next_of
 
 ```markdown
 ## Maker Chats — `<app_id>`
-
-### Production (`maker.taptap.cn`) — N 条
+### Production (`maker.taptap.cn`) — 第 1 页 (offset 0, N 条)
 
 | URL | Title | Last Activity |
 |-----|-------|---------------|
 | https://maker.taptap.cn/app/<app_id>?chatId=<chat_id>&bypassAuth=true | <title> | <lastActivity> |
 | ... | ... | ... |
 
-### Fuping (`fuping.agnt.xd.com`) — N 条
+### Fuping (`fuping.agnt.xd.com`) — 第 1 页 (offset 0, N 条)
 
+| URL | Title | Last Activity |
+|-----|-------|---------------|
+| https://fuping.agnt.xd.com/app/<app_id>?chatId=<chat_id>&bypassAuth=true | <title> | <lastActivity> |
 | URL | Title | Last Activity |
 |-----|-------|---------------|
 | https://fuping.agnt.xd.com/app/<app_id>?chatId=<chat_id>&bypassAuth=true | <title> | <lastActivity> |
