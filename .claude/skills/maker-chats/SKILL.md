@@ -1,6 +1,7 @@
 ---
 name: maker-chats
-description: "根据 Maker App ID 拉取该应用的 chat 列表，并生成可直接打开的 maker/fuping URL 表格。当用户提供 Maker App ID（UUID 形式，如 99b00f3e-e64a-455a-b000-9ec2c95297d7）并想查看该应用下所有 chat 会话、复盘历史对话、获取带 bypassAuth 的直达链接时使用。默认先查生产，生产无数据时回落到 fuping；也可显式指定 prod/fuping/both。用法：app_id [prod|fuping|both]"
+description: "根据 Maker App ID 拉取该应用的 chat 列表，并生成可直接打开的 maker/fuping URL 表格。当用户提供 Maker App ID（UUID 形式，如 99b00f3e-e64a-455a-b000-9ec2c95297d7）并想查看该应用下所有 chat 会话、复盘历史对话、获取带 bypassAuth 的直达链接时使用。默认先查生产，生产无数据时回落到 fuping；也可显式指定 prod/fuping/both。"
+argument-hint: "<app_id> [prod|fuping|both]"
 ---
 
 # Maker Chats
