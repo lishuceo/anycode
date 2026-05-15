@@ -501,6 +501,17 @@ describe('buildCombinedProgressCard', () => {
     expect(card.elements[0].text.content).toContain('正在处理');
   });
 
+  it('should NOT show "正在处理" placeholder on completed failure with no text/tools', () => {
+    // 回归：失败 + 无 output 时，不能同时出现 "⏳ 正在处理..." 和 "❌ 执行失败"
+    const result: CombinedCardResult = { success: false, durationStr: '5s', error: 'Boom' };
+    const card = buildCombinedProgressCard('', [], 1, true, undefined, result) as any;
+    const placeholder = card.elements.find((e: any) => e.text?.content?.includes('正在处理'));
+    expect(placeholder).toBeUndefined();
+    // 错误信息仍应直接展示
+    const errorEl = card.elements.find((e: any) => e.text?.content?.includes('Boom'));
+    expect(errorEl).toBeDefined();
+  });
+
   it('should keep combined card payload under 30KB', () => {
     const longText = '内'.repeat(12000);
     const tools: ToolCallInfo[] = Array.from({ length: 16 }, (_, i) => ({

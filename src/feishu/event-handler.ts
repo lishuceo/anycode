@@ -2991,9 +2991,10 @@ async function sendDirectReply(
   if (progressCardMsgId) {
     const durationStr = formatDuration(result.durationMs);
     const costInfo = result.costUsd ? ` | 💰 $${result.costUsd.toFixed(4)}` : '';
+    // 失败时也保留 partial output（执行器可能在 timeout/budget 触发前已产出文本）
     const text = result.success
       ? (result.output || '_(无输出)_')
-      : '';
+      : (result.output || '');
     const card = buildCombinedProgressCard(text, [], 1, true, undefined, {
       success: result.success,
       durationStr: durationStr + costInfo,

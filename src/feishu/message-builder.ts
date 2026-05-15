@@ -681,7 +681,8 @@ export function buildCombinedProgressCard(
   }
 
   // --- 空状态 ---
-  if (!hasText && !hasTools) {
+  // 完成态且带 result 时跳过：否则会与下方的错误块/状态栏矛盾（"⏳ 正在处理..." + "❌ 执行失败" 同框）
+  if (!hasText && !hasTools && !(completed && result)) {
     elements.push({
       tag: 'div',
       text: { tag: 'lark_md', content: '⏳ 正在处理...' },
