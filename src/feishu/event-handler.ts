@@ -2412,7 +2412,7 @@ export async function executeClaudeTask(
           );
         } else {
           await sendResultCard(
-            prompt, { ...result, success: false, output: '', error: '工作区准备失败，目录不存在' },
+            { ...result, success: false, output: '', error: '工作区准备失败，目录不存在' },
             result.durationMs, result.costUsd,
             threadReplyMsgId, chatId,
           );
@@ -2512,7 +2512,7 @@ export async function executeClaudeTask(
         );
       } else {
         await sendResultCard(
-          prompt, restartResult, totalDurationMs, totalCostUsd,
+          restartResult, totalDurationMs, totalCostUsd,
           threadReplyMsgId, chatId, undefined, turnCount,
         );
       }
@@ -2584,7 +2584,7 @@ export async function executeClaudeTask(
       );
     } else {
       await sendResultCard(
-        prompt, result, result.durationMs, result.costUsd,
+        result, result.durationMs, result.costUsd,
         threadReplyMsgId, chatId, undefined, turnCount,
       );
     }
@@ -3044,7 +3044,7 @@ async function sendDirectReply(
     const durationStr = formatDuration(result.durationMs);
     const costInfo = result.costUsd ? ` | 💰 $${result.costUsd.toFixed(4)}` : '';
     const card = buildCombinedProgressCard(output, [], 1, true, undefined, {
-      success: true,
+      success: result.success,
       durationStr: durationStr + costInfo,
     });
     if (threadReplyMsgId) {
@@ -3062,7 +3062,6 @@ async function sendDirectReply(
  * 统一使用合并卡片样式，与原地更新路径保持一致。
  */
 async function sendResultCard(
-  _prompt: string,
   result: import('../claude/types.js').ClaudeResult,
   totalDurationMs: number,
   totalCostUsd: number | undefined,
