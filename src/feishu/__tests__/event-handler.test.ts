@@ -89,8 +89,8 @@ vi.mock('../message-builder.js', () => ({
   buildProgressCard: vi.fn((prompt: string, status?: string) => ({
     type: 'progress', prompt, status: status || '正在处理...',
   })),
-  buildResultCard: vi.fn((_prompt: string, output: string, success: boolean) => ({
-    type: 'result', output, success,
+  buildCombinedProgressCard: vi.fn((text: string, _tools: unknown[], _turnCount: number, completed?: boolean, _max?: unknown, result?: { success?: boolean }) => ({
+    type: 'combined', text, completed: !!completed, success: result?.success ?? null,
   })),
   buildStatusCard: vi.fn(),
 }));
