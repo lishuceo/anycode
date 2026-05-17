@@ -862,6 +862,44 @@ describe('formatConversationTrace', () => {
 });
 
 // ============================================================
+// formatRestartImageHints 测试 — 工作区切换重启时图片落盘路径注入
+// ============================================================
+
+const { formatRestartImageHints } = await import('../event-handler.js');
+
+describe('formatRestartImageHints', () => {
+  it('should return empty string for empty paths', () => {
+    expect(formatRestartImageHints([])).toBe('');
+  });
+
+  it('should emit hint with single path', () => {
+    const result = formatRestartImageHints(['/tmp/feishu-downloads/abc-image.png']);
+    expect(result).toContain('[历史聊天图片]');
+    expect(result).toContain('- /tmp/feishu-downloads/abc-image.png');
+    expect(result).toContain('Read 工具');
+  });
+
+  it('should dedupe duplicate paths', () => {
+    const result = formatRestartImageHints([
+      '/tmp/feishu-downloads/a.png',
+      '/tmp/feishu-downloads/a.png',
+      '/tmp/feishu-downloads/b.png',
+    ]);
+    const matches = result.match(/\/tmp\/feishu-downloads\/a\.png/g);
+    expect(matches?.length).toBe(1);
+    expect(result).toContain('/tmp/feishu-downloads/b.png');
+  });
+
+  it('should list multiple distinct paths', () => {
+    const result = formatRestartImageHints([
+      '/tmp/feishu-downloads/x.jpg',
+      '/tmp/feishu-downloads/y.png',
+    ]);
+    expect(result.split('\n').filter(l => l.startsWith('- ')).length).toBe(2);
+  });
+});
+
+// ============================================================
 // parseMessage empty @mention 测试
 //
 // 验证：纯 @bot 消息（无附带文字）不应被丢弃。

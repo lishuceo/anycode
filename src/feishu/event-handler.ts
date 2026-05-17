@@ -90,6 +90,22 @@ export function formatConversationTrace(trace?: ConversationTurn[]): string {
   return joined.length > MAX_TOTAL ? joined.slice(-MAX_TOTAL) : joined;
 }
 
+/**
+ * 工作区切换 restart 时：把已落盘的图片路径拼成文本提示，让 agent 用 Read 工具按需查看。
+ * 由于 restart query 不重传多模态 images 参数（避免重复消耗 token），需以文本路径作为 fallback。
+ * 返回空字符串表示没有可附加的图片提示。
+ */
+export function formatRestartImageHints(paths: string[]): string {
+  if (!paths.length) return '';
+  // 去重后保持原顺序
+  const unique = Array.from(new Set(paths));
+  const lines = unique.map(p => `- ${p}`);
+  return [
+    '[历史聊天图片] 工作区切换前已加载的图片已落盘到本地，如需查看请使用 Read 工具读取：',
+    ...lines,
+  ].join('\n');
+}
+
 // ============================================================
 // AskUserQuestion 待回答存储
 // 当 Claude 调用 AskUserQuestion 时，canUseTool 拦截并发送飞书卡片，
@@ -641,7 +657,7 @@ function processQueue(queueKey: string, agentId: AgentId = 'dev'): void {
 
     const executeFn = useDirectMode
       ? executeDirectTask(task.message, task.chatId, task.userId, task.messageId, task.images, task.documents, agentId, task.threadId, task.rootId, task.createTime, { forceThread: task.forceThread }, task.messageType)
-      : executeClaudeTask(task.message, task.chatId, task.userId, task.messageId, task.rootId, task.threadId, task.images, task.documents, agentId, task.createTime, task.messageType);
+      : executeClaudeTask(task.message, task.chatId, task.userId, task.messageId, task.rootId, task.threadId, task.images, task.documents, agentId, task.createTime, task.messageType, task.currentImagePaths);
 
     claudeExecutor.registerTask(executeFn);
 
@@ -779,6 +795,8 @@ interface ParsedMessage {
   senderType?: string;
   /** 消息创建时间（毫秒级时间戳字符串，来自飞书 message.create_time） */
   createTime?: string;
+  /** 当前消息内图片的落盘路径（workspace 切换后 restart 不重传多模态 images，用此作为文本 fallback） */
+  currentImagePaths?: string[];
 }
 
 /**
@@ -828,7 +846,7 @@ async function handleMessageEvent(data: MessageEventData, accountId: string = 'd
   const parsed = await parseMessage(data);
   if (!parsed) return;
 
-  const { text, messageId, userId, chatId, chatType, mentionedBot, rootId, threadId, images, documents, messageType, mentions, createTime } = parsed;
+  const { text, messageId, userId, chatId, chatType, mentionedBot, rootId, threadId, images, documents, messageType, mentions, createTime, currentImagePaths } = parsed;
 
   logger.info({ userId, chatId, chatType, rootId, threadId, accountId, text: text.slice(0, 100), hasImages: !!images?.length }, 'Received message');
 
@@ -981,7 +999,7 @@ async function handleMessageEvent(data: MessageEventData, accountId: string = 'd
   const queueKey = perMessageParallel
     ? makeQueueKey(chatId, undefined, agentId, messageId)
     : makeQueueKey(chatId, effectiveThreadId, agentId, isDirectMode ? userId : undefined);
-  taskQueue.enqueue(queueKey, chatId, userId, effectiveText, messageId, rootId, effectiveThreadId, images, documents, createTime, forceThread, messageType, accountId).catch(() => {});
+  taskQueue.enqueue(queueKey, chatId, userId, effectiveText, messageId, rootId, effectiveThreadId, images, documents, createTime, forceThread, messageType, accountId, currentImagePaths).catch(() => {});
   processQueue(queueKey, agentId);
 }
 
@@ -1368,7 +1386,7 @@ const MAX_HISTORY_IMAGES = 5;
 async function downloadHistoryImages(
   messages: Array<{ messageId: string; imageRefs?: Array<{ imageKey: string }> }>,
   parentMsgCount = 0,
-): Promise<{ images: ImageAttachment[]; lazyHints: string[] }> {
+): Promise<{ images: ImageAttachment[]; lazyHints: string[]; savedImagePaths: string[] }> {
   // 收集所有图片引用，标记是否来自父群
   const refs: Array<{ messageId: string; imageKey: string; fromParent: boolean }> = [];
   for (let i = 0; i < messages.length; i++) {
@@ -1380,7 +1398,7 @@ async function downloadHistoryImages(
       }
     }
   }
-  if (refs.length === 0) return { images: [], lazyHints: [] };
+  if (refs.length === 0) return { images: [], lazyHints: [], savedImagePaths: [] };
 
   // 父群图片：lazy loading（注入元数据，不下载）
   const lazyHints: string[] = [];
@@ -1398,7 +1416,7 @@ async function downloadHistoryImages(
     logger.info({ parentImageCount: lazyHints.length }, 'Parent chat images skipped (lazy loading), metadata injected');
   }
 
-  if (downloadable.length === 0) return { images: [], lazyHints };
+  if (downloadable.length === 0) return { images: [], lazyHints, savedImagePaths: [] };
 
   const toDownload = downloadable.slice(-MAX_HISTORY_IMAGES);
 
@@ -1411,22 +1429,51 @@ async function downloadHistoryImages(
       }
       const mediaType = detectImageMediaType(buf);
       const compressed = await compressImageForHistory(buf, mediaType);
+      // 同时落盘原图，方便 workspace 切换后 agent 通过 Read 工具按需重新加载
+      // （restart query 不重传多模态 images 参数，避免重复消耗 token；落盘路径作为文本兜底）
+      let savedPath: string | undefined;
+      try {
+        savedPath = await saveMessageFileToCache(
+          ref.messageId,
+          ref.imageKey,
+          buf,
+          `image${mediaTypeToExt(mediaType)}`,
+        );
+      } catch (saveErr) {
+        logger.debug({ err: saveErr, messageId: ref.messageId, imageKey: ref.imageKey }, 'Failed to persist history image to cache (non-fatal)');
+      }
       return {
-        data: compressed.data.toString('base64'),
-        mediaType: compressed.mediaType,
-      } as ImageAttachment;
+        image: {
+          data: compressed.data.toString('base64'),
+          mediaType: compressed.mediaType,
+        } as ImageAttachment,
+        savedPath,
+      };
     } catch (err) {
       logger.warn({ err, messageId: ref.messageId, imageKey: ref.imageKey }, 'Failed to download history image, skipping');
       return null;
     }
   }));
-  const images = results.filter((img): img is ImageAttachment => img !== null);
+  const successful = results.filter((r): r is { image: ImageAttachment; savedPath: string | undefined } => r !== null);
+  const images = successful.map(r => r.image);
+  const savedImagePaths = successful.map(r => r.savedPath).filter((p): p is string => !!p);
 
   if (images.length > 0) {
-    logger.info({ count: images.length, totalRefs: refs.length, parentSkipped: lazyHints.length }, 'Downloaded history images');
+    logger.info({ count: images.length, totalRefs: refs.length, parentSkipped: lazyHints.length, savedCount: savedImagePaths.length }, 'Downloaded history images');
   }
 
-  return { images, lazyHints };
+  return { images, lazyHints, savedImagePaths };
+}
+
+/** mediaType → 文件扩展名（与 detectImageMediaType 配对） */
+function mediaTypeToExt(mediaType: ImageAttachment['mediaType']): string {
+  switch (mediaType) {
+    case 'image/jpeg': return '.jpg';
+    case 'image/png': return '.png';
+    case 'image/gif': return '.gif';
+    case 'image/webp': return '.webp';
+    default: return '.png';
+  }
 }
 
 /** 支持下载并嵌入 prompt 的文本类文件扩展名 */
@@ -1682,6 +1729,7 @@ async function buildHistoryContext(
       ...(imagesResult.images.length > 0 ? { images: imagesResult.images } : {}),
       ...(historyFiles.documents.length > 0 ? { documents: historyFiles.documents } : {}),
       ...(fileTexts.length > 0 ? { fileTexts } : {}),
+      ...(imagesResult.savedImagePaths.length > 0 ? { savedImagePaths: imagesResult.savedImagePaths } : {}),
     };
   } catch (err) {
     logger.error({ err, chatId, threadId }, errorLabel);
@@ -1934,7 +1982,7 @@ async function injectQuotedMessage(
   messageId: string,
   chatId: string,
   existingImages?: ImageAttachment[],
-): Promise<{ prompt: string; images?: ImageAttachment[] }> {
+): Promise<{ prompt: string; images?: ImageAttachment[]; savedImagePath?: string }> {
   if (!rootId || rootId === messageId) return { prompt: effectivePrompt, images: existingImages };
 
   try {
@@ -1947,6 +1995,7 @@ async function injectQuotedMessage(
     const rootMsgType = rootMsg.msg_type || 'text';
     let rootContent = '';
     let quotedImage: ImageAttachment | undefined;
+    let quotedSavedPath: string | undefined;
 
     if (rootMsgType === 'image') {
       // 图片消息：下载图片并追加到 images
@@ -1961,6 +2010,17 @@ async function injectQuotedMessage(
             quotedImage = { data: compressed.data.toString('base64'), mediaType: compressed.mediaType };
             rootContent = '[用户引用了一张图片]';
             logger.info({ rootId, imageSize: buf.length, compressedSize: compressed.data.length }, 'Downloaded quoted image');
+            // 同时落盘原图，工作区切换 restart 时通过 Read 工具兜底加载
+            try {
+              quotedSavedPath = await saveMessageFileToCache(
+                rootId,
+                imageKey,
+                buf,
+                `image${mediaTypeToExt(mediaType)}`,
+              );
+            } catch (saveErr) {
+              logger.debug({ err: saveErr, rootId, imageKey }, 'Failed to persist quoted image to cache (non-fatal)');
+            }
           } else {
             rootContent = '[用户引用了一张图片，但图片过大无法加载]';
           }
@@ -2006,7 +2066,7 @@ async function injectQuotedMessage(
       const mergedImages = quotedImage
         ? [...(existingImages || []), quotedImage]
         : existingImages;
-      return { prompt: newPrompt, images: mergedImages };
+      return { prompt: newPrompt, images: mergedImages, savedImagePath: quotedSavedPath };
     }
   } catch (err) {
     logger.warn({ err, rootId }, 'Failed to fetch rootId message for injection');
@@ -2119,6 +2179,7 @@ export async function executeClaudeTask(
   agentId: AgentId = 'dev',
   createTime?: string,
   messageType?: string,
+  currentImagePaths?: string[],
 ): Promise<void> {
   // 1. 解析话题上下文（thread + workingDir + greeting）
   const resolved = await resolveThreadContext({
@@ -2203,6 +2264,9 @@ export async function executeClaudeTask(
   // resume 时通过 afterMsgId 去重，只注入上次交互后新增的消息
   // 确保 dev-bot 能看到中间 @其他bot 的对话等未直接参与的消息
   let effectivePrompt = promptWithTime;
+  // workspace 切换 restart 时多模态 images 不会重传，需用落盘路径作为文本 fallback
+  // 包含当前消息内图片 + 历史消息内图片，restart 时拼成提示注入新 prompt
+  const restartImagePaths: string[] = [...(currentImagePaths ?? [])];
   if (!historySummaries) {
     // 收集所有自己管理的 bot open_id，用于历史消息差异化截断
     const selfBotOpenIds = accountManager.getAllBotOpenIds();
@@ -2210,6 +2274,9 @@ export async function executeClaudeTask(
 
     const afterMsgId = activeConversationId ? _historyDedup.get(sessionKey) : undefined;
     const history = await buildChatHistoryContext(chatId, threadId, messageId, afterMsgId, selfBotOpenIds);
+    if (history.savedImagePaths?.length) {
+      restartImagePaths.push(...history.savedImagePaths);
+    }
     if (history.text) {
       effectivePrompt = history.text + '\n\n---\n\n' + promptWithTime;
     }
@@ -2256,6 +2323,10 @@ export async function executeClaudeTask(
     const quoted = await injectQuotedMessage(effectivePrompt, rootId, messageId, chatId, images);
     effectivePrompt = quoted.prompt;
     images = quoted.images;
+    // 引用图片同样纳入工作区切换后落盘路径，避免 restart 丢失
+    if (quoted.savedImagePath) {
+      restartImagePaths.push(quoted.savedImagePath);
+    }
   }
 
   // 构造逐条 turn 回调
@@ -2461,9 +2532,14 @@ export async function executeClaudeTask(
       // - 不传 onWorkspaceChanged（不触发二次 restart）
       // - disableWorkspaceTool: 完全移除 setup_workspace MCP tool，防止无限循环
       // - 使用 effectivePrompt（含聊天历史）而非裸 prompt，避免 restart 后丢失对话上下文
+      // - restart 不重传多模态 images：将 S1 落盘的图片路径作为文本附加，让 agent 用 Read 工具按需查看
+      const restartImageHints = formatRestartImageHints(restartImagePaths);
+      const restartPromptWithImageHints = restartImageHints
+        ? `${restartImageHints}\n\n---\n\n${effectivePrompt}`
+        : effectivePrompt;
       const restartResult = await claudeExecutor.execute({
         sessionKey,
-        prompt: effectivePrompt,
+        prompt: restartPromptWithImageHints,
         workingDir: result.newWorkingDir,
         readOnly,
         model: agentCfg?.model,
@@ -2955,6 +3031,8 @@ interface HistoryResult {
   documents?: DocumentAttachment[];
   /** 历史消息中提取的文本文件内容（已格式化，可拼入 prompt） */
   fileTexts?: string[];
+  /** 历史图片原图落盘路径，用于 workspace 切换后通过 Read 工具按需重新加载 */
+  savedImagePaths?: string[];
 }
 
 /**
@@ -3204,6 +3282,8 @@ async function parseMessage(data: MessageEventData): Promise<ParsedMessage | nul
   let text = '';
   let images: ImageAttachment[] | undefined;
   let documents: DocumentAttachment[] | undefined;
+  // 当前消息内图片同步落盘：workspace 切换后 restart 不重传 images，落盘路径作为 fallback 文本注入
+  const currentImagePaths: string[] = [];
 
   if (message.message_type === 'merge_forward') {
     // 合并转发消息：通过 API 获取子消息列表，解析后拼成可读文本
@@ -3374,6 +3454,12 @@ async function parseMessage(data: MessageEventData): Promise<ParsedMessage | nul
               logger.info({ imageKey, originalSize: buf.length, compressedSize: compressed.data.length, ratio: `${(compressed.data.length / buf.length * 100).toFixed(0)}%` }, 'Image compressed');
             }
             images.push({ data: compressed.data.toString('base64'), mediaType: compressed.mediaType });
+            try {
+              const path = await saveMessageFileToCache(message.message_id, imageKey, buf, `image${mediaTypeToExt(mediaType)}`);
+              currentImagePaths.push(path);
+            } catch (saveErr) {
+              logger.debug({ err: saveErr, messageId: message.message_id, imageKey }, 'Failed to persist post image to cache (non-fatal)');
+            }
           } catch (err) {
             logger.error({ err, messageId: message.message_id, imageKey }, 'Failed to download post image');
           }
@@ -3409,6 +3495,12 @@ async function parseMessage(data: MessageEventData): Promise<ParsedMessage | nul
         logger.info({ messageId: message.message_id, originalSize: buf.length, compressedSize: compressed.data.length, ratio: `${(compressed.data.length / buf.length * 100).toFixed(0)}%` }, 'Image compressed');
       }
       images = [{ data: compressed.data.toString('base64'), mediaType: compressed.mediaType }];
+      try {
+        const path = await saveMessageFileToCache(message.message_id, imageKey, buf, `image${mediaTypeToExt(mediaType)}`);
+        currentImagePaths.push(path);
+      } catch (saveErr) {
+        logger.debug({ err: saveErr, messageId: message.message_id, imageKey }, 'Failed to persist image to cache (non-fatal)');
+      }
     } catch (err) {
       logger.error({ err, messageId: message.message_id }, 'Failed to process image message');
       await feishuClient.replyText(message.message_id, '⚠️ 图片下载失败，请稍后重试');
@@ -3581,6 +3673,7 @@ async function parseMessage(data: MessageEventData): Promise<ParsedMessage | nul
     messageType: message.message_type,
     senderType: sender.sender_type,
     createTime: message.create_time || undefined,
+    ...(currentImagePaths.length > 0 ? { currentImagePaths } : {}),
   };
 }
 
