@@ -6,7 +6,7 @@ import { taskQueue } from '../session/queue.js';
 import { claudeExecutor } from '../claude/executor.js';
 import { DEFAULT_IMAGE_PROMPT, DEFAULT_DOCUMENT_PROMPT } from '../claude/types.js';
 import type { TurnInfo, ToolCallInfo, ImageAttachment, DocumentAttachment, ConversationTurn } from '../claude/types.js';
-import { buildResultCard, buildStatusCard, buildCancelledCard, buildPipelineCard, buildPipelineConfirmCard, buildCombinedProgressCard, buildSimpleResultCard, buildAskUserQuestionCard, buildAskUserAnsweredCard } from './message-builder.js';
+import { buildStatusCard, buildCancelledCard, buildPipelineCard, buildPipelineConfirmCard, buildCombinedProgressCard, buildAskUserQuestionCard, buildAskUserAnsweredCard } from './message-builder.js';
 import type { AskUserQuestionItem } from './message-builder.js';
 import { TOTAL_PHASES } from '../pipeline/types.js';
 import { feishuClient, feishuClientContext, runWithAccountId } from './client.js';
@@ -2412,7 +2412,7 @@ export async function executeClaudeTask(
           );
         } else {
           await sendResultCard(
-            prompt, { ...result, success: false, output: '', error: '工作区准备失败，目录不存在' },
+            { ...result, success: false, output: '', error: '工作区准备失败，目录不存在' },
             result.durationMs, result.costUsd,
             threadReplyMsgId, chatId,
           );
@@ -2512,7 +2512,7 @@ export async function executeClaudeTask(
         );
       } else {
         await sendResultCard(
-          prompt, restartResult, totalDurationMs, totalCostUsd,
+          restartResult, totalDurationMs, totalCostUsd,
           threadReplyMsgId, chatId, undefined, turnCount,
         );
       }
@@ -2584,7 +2584,7 @@ export async function executeClaudeTask(
       );
     } else {
       await sendResultCard(
-        prompt, result, result.durationMs, result.costUsd,
+        result, result.durationMs, result.costUsd,
         threadReplyMsgId, chatId, undefined, turnCount,
       );
     }
@@ -2675,10 +2675,13 @@ export async function executeDirectTask(
   // /t 命令：强制创建话题，后续回复在话题中
   let threadReplyMsgId: string | undefined = eventThreadId ? rootId : undefined;
   let threadId: string | undefined = eventThreadId;
+  // ensureThread 创建新话题时返回的初始进度卡片 ID，结果出来后原地更新为完成态
+  let progressCardMsgId: string | undefined;
 
   if (options?.forceThread && !eventThreadId) {
     const threadResult = await ensureThread(chatId, userId, messageId, rootId, undefined, agentId);
     threadReplyMsgId = threadResult.threadReplyMsgId;
+    progressCardMsgId = threadResult.greetingMsgId;
     if (threadReplyMsgId) {
       const s = sessionManager.getOrCreate(chatId, userId, agentId);
       threadId = s.threadId;
@@ -2893,7 +2896,8 @@ export async function executeDirectTask(
     }
 
     // 发送结果（统一走轻量回复，话题内通过 threadReplyMsgId 路由）
-    await sendDirectReply(messageId, chatId, result, threadReplyMsgId);
+    // progressCardMsgId 仅在 /t 创建新话题时有值，原地更新为完成态合并卡片
+    await sendDirectReply(messageId, chatId, result, threadReplyMsgId, progressCardMsgId);
 
     // 记忆抽取 (fire-and-forget)
     if (config.memory.enabled && result.success && result.output) {
@@ -2971,16 +2975,37 @@ async function buildDirectTaskHistory(
 }
 
 /**
- * 直接回复结果（轻量模式，短文本纯文字、长文本才用卡片）
+ * 直接回复结果（轻量模式，短文本纯文字、长文本或已有占位卡片走 combined card）
  *
  * @param threadReplyMsgId 话题内时传入，使用 replyTextInThread / replyCardInThread
+ * @param progressCardMsgId /t 创建话题时 ensureThread 返回的占位卡片 ID，原地更新为完成态
  */
 async function sendDirectReply(
   messageId: string,
   chatId: string,
   result: import('../claude/types.js').ClaudeResult,
   threadReplyMsgId?: string,
+  progressCardMsgId?: string,
 ): Promise<void> {
+  // progressCardMsgId 存在：始终原地更新占位卡片为完成态（避免遗留 "正在处理..."）
+  if (progressCardMsgId) {
+    const durationStr = formatDuration(result.durationMs);
+    const costInfo = result.costUsd ? ` | 💰 $${result.costUsd.toFixed(4)}` : '';
+    // 失败时也保留 partial output（执行器可能在 timeout/budget 触发前已产出文本）
+    const text = result.success
+      ? (result.output || '_(无输出)_')
+      : (result.output || '');
+    const card = buildCombinedProgressCard(text, [], 1, true, undefined, {
+      success: result.success,
+      durationStr: durationStr + costInfo,
+      error: result.error,
+    });
+    await feishuClient.updateCard(progressCardMsgId, card).catch((err) => {
+      logger.warn({ err, progressCardMsgId }, 'Failed to update direct-reply progress card');
+    });
+    return;
+  }
+
   // 成功但无输出（如模型 thinking 后决定不回复）→ 静默，不发 "(无输出)"
   if (result.success && !result.output) {
     logger.debug({ messageId }, 'Direct reply skipped — empty output (silent)');
@@ -3016,10 +3041,13 @@ async function sendDirectReply(
       await feishuClient.replyText(messageId, output);
     }
   } else {
-    // 长文本：卡片
+    // 长文本：合并卡片（无 header，含状态栏）
     const durationStr = formatDuration(result.durationMs);
     const costInfo = result.costUsd ? ` | 💰 $${result.costUsd.toFixed(4)}` : '';
-    const card = buildResultCard(output, output, true, durationStr + costInfo);
+    const card = buildCombinedProgressCard(output, [], 1, true, undefined, {
+      success: result.success,
+      durationStr: durationStr + costInfo,
+    });
     if (threadReplyMsgId) {
       await feishuClient.replyCardInThread(threadReplyMsgId, card);
     } else {
@@ -3030,9 +3058,11 @@ async function sendDirectReply(
 
 /**
  * 发送结果卡片（提取为独立函数，避免 restart 和正常流程重复代码）
+ *
+ * 仅在 progressCardMsgId 缺失时（极少见的兜底场景）作为新卡片发送。
+ * 统一使用合并卡片样式，与原地更新路径保持一致。
  */
 async function sendResultCard(
-  prompt: string,
   result: import('../claude/types.js').ClaudeResult,
   totalDurationMs: number,
   totalCostUsd: number | undefined,
@@ -3041,24 +3071,24 @@ async function sendResultCard(
   /** 最后一个缓冲的 turn（逐条模式），其内容合并进底部结果卡片 */
   lastTurn?: TurnInfo,
   /** 逐条模式的轮次计数 */
-  _turnCount?: number,
+  turnCount?: number,
 ): Promise<void> {
   const durationStr = formatDuration(totalDurationMs);
   const costInfo = totalCostUsd
     ? ` | 💰 $${totalCostUsd.toFixed(4)}`
     : '';
 
-  // 结果卡片：逐条模式包含最后一轮内容，否则包含完整输出
-  const resultCard = lastTurn
-    ? buildSimpleResultCard(prompt, result.success, durationStr + costInfo, result.error, lastTurn)
-    : buildResultCard(
-        prompt,
-        result.output || result.error || '(无输出)',
-        result.success,
-        durationStr + costInfo,
-      );
+  // 合并卡片：合并最后一轮文本 + 工具调用，附带状态栏
+  const text = lastTurn?.textContent ?? result.output ?? '';
+  const tools = lastTurn?.toolCalls ?? [];
+  const turns = turnCount ?? 1;
 
-  // 发送到话题底部（作为新消息）
+  const resultCard = buildCombinedProgressCard(text, tools, turns, true, undefined, {
+    success: result.success,
+    durationStr: durationStr + costInfo,
+    error: result.error,
+  });
+
   if (threadReplyMsgId) {
     await feishuClient.replyCardInThread(threadReplyMsgId, resultCard);
   } else {
