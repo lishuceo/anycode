@@ -3505,14 +3505,20 @@ async function parseMessage(data: MessageEventData): Promise<ParsedMessage | nul
                 logger.warn({ messageId: message.message_id, sizeBytes: buf.length, fileName }, 'Quoted file too large, skipping');
               }
             } else if (isTextFile(fileName)) {
-              const MAX_TEXT_SIZE = 1 * 1024 * 1024;
+              const MAX_TEXT_SIZE = 30 * 1024 * 1024;
+              const INLINE_THRESHOLD = 64 * 1024;
               const buf = await feishuClient.downloadMessageFile(parent.message_id, fileKey);
-              if (buf.length <= MAX_TEXT_SIZE) {
+              if (buf.length > MAX_TEXT_SIZE) {
+                logger.warn({ messageId: message.message_id, sizeBytes: buf.length, fileName }, 'Quoted text file too large, skipping');
+              } else if (buf.length <= INLINE_THRESHOLD) {
                 const fileContent = buf.toString('utf-8');
                 text = `${text}\n\n[引用的文件: ${fileName}]\n\n<file name="${fileName}">\n${fileContent}\n</file>`;
-                logger.info({ messageId: message.message_id, parentId: message.parent_id, fileName, sizeBytes: buf.length }, 'Text file downloaded from quoted parent message');
+                logger.info({ messageId: message.message_id, parentId: message.parent_id, fileName, sizeBytes: buf.length }, 'Quoted text file embedded inline');
               } else {
-                logger.warn({ messageId: message.message_id, sizeBytes: buf.length, fileName }, 'Quoted text file too large, skipping');
+                const filePath = await saveMessageFileToCache(parent.message_id, fileKey, buf, fileName);
+                const sizeKB = (buf.length / 1024).toFixed(1);
+                text = `${text}\n\n[引用的文件: ${fileName}（${sizeKB} KB），已保存到本地: ${filePath}\n请使用 Read 工具按需读取该文件，支持 offset/limit 分段；文件保留 24 小时。]`;
+                logger.info({ messageId: message.message_id, parentId: message.parent_id, fileName, sizeBytes: buf.length, filePath }, 'Quoted text file saved to cache for lazy read');
               }
             }
           }
