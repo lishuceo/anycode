@@ -10,6 +10,7 @@ import { buildStatusCard, buildCancelledCard, buildPipelineCard, buildPipelineCo
 import type { AskUserQuestionItem } from './message-builder.js';
 import { TOTAL_PHASES } from '../pipeline/types.js';
 import { feishuClient, feishuClientContext, runWithAccountId } from './client.js';
+import { saveMessageFileToCache } from './file-cache.js';
 import { config, isMultiBotMode } from '../config.js';
 import { checkAndRequestApproval, handleApprovalTextCommand, handleApprovalCardAction, setOnApproved } from './approval.js';
 import { resolveThreadContext } from './thread-context.js';
@@ -1518,7 +1519,8 @@ async function downloadHistoryFiles(
 
   const toProcess = uniqueRefs.slice(-MAX_HISTORY_FILES);
   const MAX_PDF_SIZE = 30 * 1024 * 1024;
-  const MAX_TEXT_SIZE = 1 * 1024 * 1024;
+  const MAX_TEXT_SIZE = 30 * 1024 * 1024;
+  const INLINE_HISTORY_TEXT_THRESHOLD = 64 * 1024;
 
   const documents: DocumentAttachment[] = [];
   const fileTexts: string[] = [];
@@ -1542,10 +1544,19 @@ async function downloadHistoryFiles(
         }
       } else if (isTextFile(ref.fileName)) {
         const buf = await feishuClient.downloadMessageFile(ref.messageId, ref.fileKey);
-        if (buf.length <= MAX_TEXT_SIZE) {
+        if (buf.length > MAX_TEXT_SIZE) {
+          logger.warn({ messageId: ref.messageId, fileName: ref.fileName, sizeBytes: buf.length }, 'History text file too large, skipping');
+          return;
+        }
+        if (buf.length <= INLINE_HISTORY_TEXT_THRESHOLD) {
           const content = buf.toString('utf-8');
           fileTexts.push(`[历史消息中的文件: ${ref.fileName}]\n\n<file name="${ref.fileName}">\n${content}\n</file>`);
-          logger.info({ messageId: ref.messageId, fileName: ref.fileName, sizeBytes: buf.length }, 'History text file downloaded');
+          logger.info({ messageId: ref.messageId, fileName: ref.fileName, sizeBytes: buf.length }, 'History text file embedded inline');
+        } else {
+          const filePath = await saveMessageFileToCache(ref.messageId, ref.fileKey, buf, ref.fileName);
+          const sizeKB = (buf.length / 1024).toFixed(1);
+          fileTexts.push(`[历史消息中的文件: ${ref.fileName}（${sizeKB} KB），已保存到本地: ${filePath}\n请使用 Read 工具按需读取该文件，支持 offset/limit 分段；文件保留 24 小时。]`);
+          logger.info({ messageId: ref.messageId, fileName: ref.fileName, sizeBytes: buf.length, filePath }, 'History text file saved to cache for lazy read');
         }
       }
     } catch (err) {
@@ -3404,9 +3415,9 @@ async function parseMessage(data: MessageEventData): Promise<ParsedMessage | nul
       return null;
     }
   } else if (message.message_type === 'file') {
-    // 文件消息：支持 PDF（多模态）和文本类文件（嵌入 prompt）
+    // 文件消息：支持 PDF（多模态）和文本类文件（小文件嵌入 prompt，大文件落盘 lazy load）
     const MAX_FILE_SIZE_BYTES = 30 * 1024 * 1024; // 30MB
-    const MAX_TEXT_FILE_SIZE_BYTES = 1 * 1024 * 1024; // 1MB for text files
+    const INLINE_TEXT_FILE_THRESHOLD = 64 * 1024; // <= 64KB 直接嵌入 prompt，省一轮工具调用
     try {
       const content = JSON.parse(message.content);
       const fileKey = content.file_key as string | undefined;
@@ -3430,18 +3441,25 @@ async function parseMessage(data: MessageEventData): Promise<ParsedMessage | nul
         documents = [{ data: buf.toString('base64'), mediaType: 'application/pdf', fileName }];
         logger.info({ messageId: message.message_id, fileName, sizeBytes: buf.length }, 'PDF file downloaded');
       } else if (isTextFile(fileName)) {
-        // 文本类文件：下载后作为文本嵌入 prompt
+        // 文本类文件：小文件直接嵌入 prompt；大文件落盘，让 agent 用 Read 按需 offset/limit 分段读
         const buf = await feishuClient.downloadMessageFile(message.message_id, fileKey);
 
-        if (buf.length > MAX_TEXT_FILE_SIZE_BYTES) {
+        if (buf.length > MAX_FILE_SIZE_BYTES) {
           logger.warn({ messageId: message.message_id, sizeBytes: buf.length, fileName }, 'Text file too large, skipping');
-          await feishuClient.replyText(message.message_id, `⚠️ 文本文件太大（${(buf.length / 1024 / 1024).toFixed(1)}MB），请压缩到 1MB 以内后重试`);
+          await feishuClient.replyText(message.message_id, `⚠️ 文本文件太大（${(buf.length / 1024 / 1024).toFixed(1)}MB），上限 ${MAX_FILE_SIZE_BYTES / 1024 / 1024}MB`);
           return null;
         }
 
-        const fileContent = buf.toString('utf-8');
-        text = `[用户发送了文件: ${fileName}]\n\n<file name="${fileName}">\n${fileContent}\n</file>`;
-        logger.info({ messageId: message.message_id, fileName, sizeBytes: buf.length }, 'Text file downloaded and embedded in prompt');
+        if (buf.length <= INLINE_TEXT_FILE_THRESHOLD) {
+          const fileContent = buf.toString('utf-8');
+          text = `[用户发送了文件: ${fileName}]\n\n<file name="${fileName}">\n${fileContent}\n</file>`;
+          logger.info({ messageId: message.message_id, fileName, sizeBytes: buf.length }, 'Text file embedded inline');
+        } else {
+          const filePath = await saveMessageFileToCache(message.message_id, fileKey, buf, fileName);
+          const sizeKB = (buf.length / 1024).toFixed(1);
+          text = `[用户发送了文件: ${fileName}（${sizeKB} KB），已保存到本地: ${filePath}\n请使用 Read 工具按需读取该文件，支持 offset/limit 分段；文件保留 24 小时。]`;
+          logger.info({ messageId: message.message_id, fileName, sizeBytes: buf.length, filePath }, 'Text file saved to cache for lazy read');
+        }
       } else {
         text = `[用户发送了文件: ${fileName}，该文件类型暂不支持。支持的类型：PDF、常见文本/代码文件（.md, .txt, .json, .log, .py, .ts 等）]`;
       }
