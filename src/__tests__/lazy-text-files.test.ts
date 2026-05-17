@@ -9,7 +9,7 @@
  */
 // @ts-nocheck — test file
 import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync, statSync, existsSync, utimesSync } from 'fs';
+import { mkdtempSync, rmSync, statSync, existsSync, utimesSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
@@ -57,7 +57,7 @@ describe('file-cache', () => {
     const filePath = await saveMessageFileToCache('om_a/b', 'file_c:d', buf, 'weird.ext-with-bad-stuff!!');
     // No slashes/colons leak through; weird ext is dropped
     const base = filePath.slice(DOWNLOAD_DIR.length + 1);
-    expect(base).not.toMatch(/[\/:!]/);
+    expect(base).not.toMatch(/[/:!]/);
     expect(base.endsWith('.ext-with-bad-stuff!!')).toBe(false);
   });
 
