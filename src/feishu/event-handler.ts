@@ -1982,7 +1982,7 @@ async function injectQuotedMessage(
   messageId: string,
   chatId: string,
   existingImages?: ImageAttachment[],
-): Promise<{ prompt: string; images?: ImageAttachment[] }> {
+): Promise<{ prompt: string; images?: ImageAttachment[]; savedImagePath?: string }> {
   if (!rootId || rootId === messageId) return { prompt: effectivePrompt, images: existingImages };
 
   try {
@@ -1995,6 +1995,7 @@ async function injectQuotedMessage(
     const rootMsgType = rootMsg.msg_type || 'text';
     let rootContent = '';
     let quotedImage: ImageAttachment | undefined;
+    let quotedSavedPath: string | undefined;
 
     if (rootMsgType === 'image') {
       // 图片消息：下载图片并追加到 images
@@ -2009,6 +2010,17 @@ async function injectQuotedMessage(
             quotedImage = { data: compressed.data.toString('base64'), mediaType: compressed.mediaType };
             rootContent = '[用户引用了一张图片]';
             logger.info({ rootId, imageSize: buf.length, compressedSize: compressed.data.length }, 'Downloaded quoted image');
+            // 同时落盘原图，工作区切换 restart 时通过 Read 工具兜底加载
+            try {
+              quotedSavedPath = await saveMessageFileToCache(
+                rootId,
+                imageKey,
+                buf,
+                `image${mediaTypeToExt(mediaType)}`,
+              );
+            } catch (saveErr) {
+              logger.debug({ err: saveErr, rootId, imageKey }, 'Failed to persist quoted image to cache (non-fatal)');
+            }
           } else {
             rootContent = '[用户引用了一张图片，但图片过大无法加载]';
           }
@@ -2054,7 +2066,7 @@ async function injectQuotedMessage(
       const mergedImages = quotedImage
         ? [...(existingImages || []), quotedImage]
         : existingImages;
-      return { prompt: newPrompt, images: mergedImages };
+      return { prompt: newPrompt, images: mergedImages, savedImagePath: quotedSavedPath };
     }
   } catch (err) {
     logger.warn({ err, rootId }, 'Failed to fetch rootId message for injection');
@@ -2311,6 +2323,10 @@ export async function executeClaudeTask(
     const quoted = await injectQuotedMessage(effectivePrompt, rootId, messageId, chatId, images);
     effectivePrompt = quoted.prompt;
     images = quoted.images;
+    // 引用图片同样纳入工作区切换后落盘路径，避免 restart 丢失
+    if (quoted.savedImagePath) {
+      restartImagePaths.push(quoted.savedImagePath);
+    }
   }
 
   // 构造逐条 turn 回调
