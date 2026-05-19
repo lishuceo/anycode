@@ -340,3 +340,74 @@ describe('editablePathPatterns', () => {
     expect(cfg!.editablePathPatterns).toBeUndefined();
   });
 });
+
+describe('maxBudgetUsd / maxTurns fallback', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    mkdirSync(KNOWLEDGE_DIR, { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(TEST_DIR, { recursive: true, force: true });
+  });
+
+  // Regression: agents without an explicit maxBudgetUsd/maxTurns previously fell
+  // back to hardcoded BUILTIN_DEFAULTS (5 / 100), ignoring CLAUDE_MAX_BUDGET_USD env.
+  // Triggered "Reached maximum budget ($5)" for pm agent in prod.
+  async function setupWithClaudeConfig(configObj: Record<string, unknown>, claudeOverrides: Record<string, unknown>) {
+    writeFileSync(CONFIG_FILE, JSON.stringify(configObj));
+    vi.stubEnv('AGENT_CONFIG_PATH', CONFIG_FILE);
+    vi.doMock('../../config.js', () => ({
+      config: {
+        agent: { configPath: CONFIG_FILE },
+        claude: { model: 'claude-sonnet-4-6', maxBudgetUsd: 5, maxTurns: 100, ...claudeOverrides },
+      },
+    }));
+    const loader = await import('../config-loader.js');
+    const result = loader.loadAgentConfig();
+    expect(result.loaded).toBe(true);
+    return loader;
+  }
+
+  it('should inherit maxBudgetUsd from config.claude when agent omits it', async () => {
+    await setupWithClaudeConfig(
+      { agents: [{ id: 'pm' }] },
+      { maxBudgetUsd: 50 },
+    );
+
+    const { agentRegistry } = await import('../registry.js');
+    const cfg = agentRegistry.get('pm');
+    expect(cfg!.maxBudgetUsd).toBe(50);
+  });
+
+  it('should inherit maxTurns from config.claude when agent omits it', async () => {
+    await setupWithClaudeConfig(
+      { agents: [{ id: 'pm' }] },
+      { maxTurns: 500 },
+    );
+
+    const { agentRegistry } = await import('../registry.js');
+    const cfg = agentRegistry.get('pm');
+    expect(cfg!.maxTurns).toBe(500);
+  });
+
+  it('should let file-level defaults override config.claude fallback', async () => {
+    await setupWithClaudeConfig(
+      { defaults: { maxBudgetUsd: 20 }, agents: [{ id: 'pm' }] },
+      { maxBudgetUsd: 50 },
+    );
+
+    const { agentRegistry } = await import('../registry.js');
+    expect(agentRegistry.get('pm')!.maxBudgetUsd).toBe(20);
+  });
+
+  it('should let agent-level value override both defaults and config.claude', async () => {
+    await setupWithClaudeConfig(
+      { defaults: { maxBudgetUsd: 20 }, agents: [{ id: 'pm', maxBudgetUsd: 100 }] },
+      { maxBudgetUsd: 50 },
+    );
+
+    const { agentRegistry } = await import('../registry.js');
+    expect(agentRegistry.get('pm')!.maxBudgetUsd).toBe(100);
+  });
+});
