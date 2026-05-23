@@ -1,7 +1,7 @@
 import * as lark from '@larksuiteoapi/node-sdk';
 
 import { logger } from '../utils/logger.js';
-import { formatMergeForwardSubMessage } from './message-parser.js';
+import { formatMergeForwardSubMessage, formatInteractiveCard } from './message-parser.js';
 import { chatBotRegistry } from './bot-registry.js';
 
 /**
@@ -617,7 +617,7 @@ export class FeishuClient {
         }
         if (item.deleted) { diagSkipped.push({ id: item.message_id ?? '?', type: item.msg_type ?? '?', reason: 'deleted' }); continue; }
         const msgType = item.msg_type ?? '';
-        if (msgType !== 'text' && msgType !== 'post' && msgType !== 'merge_forward' && msgType !== 'file' && msgType !== 'image') { diagSkipped.push({ id: item.message_id ?? '?', type: msgType, reason: 'unsupported_type' }); continue; }
+        if (msgType !== 'text' && msgType !== 'post' && msgType !== 'merge_forward' && msgType !== 'file' && msgType !== 'image' && msgType !== 'interactive') { diagSkipped.push({ id: item.message_id ?? '?', type: msgType, reason: 'unsupported_type' }); continue; }
         const senderType = item.sender?.sender_type === 'app' ? 'app' as const : 'user' as const;
         let content = '';
         const imageRefs: Array<{ imageKey: string }> = [];
@@ -645,6 +645,8 @@ export class FeishuClient {
               imageRefs.push({ imageKey });
             }
           } catch { /* ignore parse errors */ }
+        } else if (msgType === 'interactive') {
+          content = formatInteractiveCard(item.body?.content ?? '{}');
         } else if (msgType === 'merge_forward') {
           const messageId = item.message_id;
           if (messageId) {
