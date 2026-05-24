@@ -267,6 +267,15 @@ describe('extractMessageText', () => {
     expect(result.fileRefs).toEqual([]);
   });
 
+  it('handles file msgType without file_name (displays 未知文件 consistently)', () => {
+    const result = extractMessageText(
+      'file',
+      JSON.stringify({ file_key: 'file_x' }),
+    );
+    expect(result.text).toBe('[文件: 未知文件]');
+    expect(result.fileRefs).toEqual([{ fileKey: 'file_x', fileName: '未知文件' }]);
+  });
+
   it('respects collectRefs: false', () => {
     const result = extractMessageText('image', JSON.stringify({ image_key: 'k' }), undefined, {
       collectRefs: false,

@@ -113,6 +113,18 @@ describe('extractCardText (compat with legacy formatInteractiveCard)', () => {
     expect(extractCardText(card)).toContain('第三方卡片内容');
   });
 
+  it('extracts direct content/text string on unknown tag (not just nested)', () => {
+    const card = JSON.stringify({
+      elements: [
+        { tag: 'custom_share', content: 'Hello 直接字符串' },
+        { tag: 'custom_share2', text: '另一个直接字符串' },
+      ],
+    });
+    const out = extractCardText(card);
+    expect(out).toContain('Hello 直接字符串');
+    expect(out).toContain('另一个直接字符串');
+  });
+
   it('extractMessageType(interactive) returns "[卡片消息]" for empty card', () => {
     expect(extractMessageText('interactive', '{}').text).toBe('[卡片消息]');
   });

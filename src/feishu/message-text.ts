@@ -105,11 +105,15 @@ function walkCardNode(node: unknown, parts: string[], depth = 0): void {
   if (obj.fields) walkCardNode(obj.fields, parts, depth + 1);
   if (obj.columns) walkCardNode(obj.columns, parts, depth + 1);
 
-  // 未知 tag 兜底：递归遍历所有 object 子字段提取 content
-  // 处理第三方 share-card 等非标准卡片格式
+  // 未知 tag 兜底：直接拾取 content/text 字符串字段,并递归 object 子字段
+  // 处理第三方 share-card 等非标准卡片格式(如 { tag: 'custom_share', content: 'Hello' })
   if (typeof obj.tag === 'string' && !KNOWN_TAGS.has(obj.tag)) {
-    for (const v of Object.values(obj)) {
-      if (v && typeof v === 'object') walkCardNode(v, parts, depth + 1);
+    for (const [k, v] of Object.entries(obj)) {
+      if ((k === 'content' || k === 'text') && typeof v === 'string' && v.trim()) {
+        parts.push(v.trim());
+      } else if (v && typeof v === 'object') {
+        walkCardNode(v, parts, depth + 1);
+      }
     }
   }
 }
@@ -258,8 +262,9 @@ export function extractMessageText(
     } catch {
       /* ignore */
     }
-    const fileRefs = collectRefs && fileKey ? [{ fileKey, fileName: fileName || '未知文件' }] : [];
-    return { text: `[文件: ${fileName}]`, imageRefs: [], fileRefs };
+    const displayName = fileName || '未知文件';
+    const fileRefs = collectRefs && fileKey ? [{ fileKey, fileName: displayName }] : [];
+    return { text: `[文件: ${displayName}]`, imageRefs: [], fileRefs };
   }
 
   if (msgType === 'interactive') {
