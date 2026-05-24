@@ -12,6 +12,14 @@ import {
   buildPipelineCard,
   buildStreamingCard,
   buildProgressCard,
+  buildStatusCard,
+  buildCancelledCard,
+  buildSimpleResultCard,
+  buildCombinedProgressCard,
+  buildAskUserQuestionCard,
+  buildAskUserAnsweredCard,
+  buildApprovalCard,
+  buildApprovalResultCard,
 } from '../message-builder.js';
 
 describe('extractCardText', () => {
@@ -79,6 +87,48 @@ describe('extractCardText', () => {
     expect(text).toContain('top title');
     expect(text).toContain('inner panel title');
     expect(text).toContain('inner content');
+  });
+
+  // -- Production card smoke test --
+  // 锁住"所有生产 card builder 都能被 extractCardText 解析"的契约。
+  // 如果未来新增 card 类型或改了内部 tag 结构,这里会先报警。
+  describe('smoke: all production card builders', () => {
+    const PROMPT = '帮我设计 Session Fork 方案';
+    const RESULT_TEXT = '## 方案要点\n核心难点在于同时继承对话历史和工作区状态';
+    const lastTurn = { textContent: RESULT_TEXT, toolCalls: [] };
+
+    const builders: Array<[string, () => Record<string, unknown>, string[]]> = [
+      ['buildProgressCard', () => buildProgressCard(PROMPT, '加载中...'), [PROMPT]],
+      ['buildResultCard', () => buildResultCard(PROMPT, RESULT_TEXT, true, '39s'), [PROMPT, '核心难点']],
+      ['buildResultCard(failure)', () => buildResultCard(PROMPT, RESULT_TEXT, false, '5s'), [PROMPT, '核心难点']],
+      ['buildStreamingCard', () => buildStreamingCard(PROMPT, '正在做事', 3), [PROMPT, '正在做事']],
+      ['buildPipelineCard', () => buildPipelineCard(PROMPT, 'plan', 1, 6, 30, 0.12, '细节', 'pid'), [PROMPT, '细节']],
+      ['buildStatusCard', () => buildStatusCard('/root/dev/foo', 'idle', 3), ['/root/dev/foo', 'idle']],
+      ['buildCancelledCard', () => buildCancelledCard(PROMPT), [PROMPT]],
+      ['buildSimpleResultCard', () => buildSimpleResultCard(PROMPT, true, '10s', undefined, lastTurn), ['核心难点']],
+      ['buildSimpleResultCard(error)', () => buildSimpleResultCard(PROMPT, false, '2s', '某错误信息'), ['某错误信息']],
+      ['buildCombinedProgressCard', () => buildCombinedProgressCard(RESULT_TEXT, [], 2, false), ['核心难点']],
+      ['buildAskUserQuestionCard', () => buildAskUserQuestionCard('qid', [
+        { question: '选哪个?', options: [{ label: 'A方案', description: '描述A' }, { label: 'B方案', description: '描述B' }] },
+      ]), ['选哪个', 'A方案', 'B方案']],
+      ['buildAskUserAnsweredCard', () => buildAskUserAnsweredCard([
+        { question: '选哪个?', options: [{ label: 'A方案' }, { label: 'B方案' }] },
+      ], { '选哪个?': 'A方案' }), ['选哪个', 'A方案']],
+      ['buildApprovalCard', () => buildApprovalCard('aid', '张三', '我想试一试', 'group'), ['张三', '我想试一试']],
+      ['buildApprovalResultCard(approved)', () => buildApprovalResultCard('张三', true), ['张三']],
+      ['buildApprovalResultCard(rejected)', () => buildApprovalResultCard('张三', false), ['张三']],
+    ];
+
+    for (const [name, build, mustContain] of builders) {
+      it(`${name}: extracted text contains key content`, () => {
+        const card = build();
+        const text = extractCardText(JSON.stringify(card));
+        expect(text.length).toBeGreaterThan(0);
+        for (const needle of mustContain) {
+          expect(text, `${name} missing "${needle}"; got: ${text.slice(0, 200)}`).toContain(needle);
+        }
+      });
+    }
   });
 
   it('extracts text from div.fields[].text.content', () => {
