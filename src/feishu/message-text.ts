@@ -71,6 +71,11 @@ const KNOWN_TAGS = new Set([
   'action', 'button', 'hr', 'img', 'select_static', 'date_picker', 'overflow',
 ]);
 
+// 容器字段已由上方显式分支递归过,unknown-tag 兜底时跳过,避免双重提取
+const CONTAINER_KEYS = new Set([
+  'text', 'title', 'header', 'body', 'elements', 'actions', 'fields', 'columns',
+]);
+
 function walkCardNode(node: unknown, parts: string[], depth = 0): void {
   if (depth > 8 || !node || typeof node !== 'object') return;
 
@@ -105,13 +110,14 @@ function walkCardNode(node: unknown, parts: string[], depth = 0): void {
   if (obj.fields) walkCardNode(obj.fields, parts, depth + 1);
   if (obj.columns) walkCardNode(obj.columns, parts, depth + 1);
 
-  // 未知 tag 兜底：直接拾取 content/text 字符串字段,并递归 object 子字段
-  // 处理第三方 share-card 等非标准卡片格式(如 { tag: 'custom_share', content: 'Hello' })
+  // 未知 tag 兜底：处理第三方 share-card 等非标准卡片格式
+  // - 直接拾取 content/text 字符串字段(上方 container 分支只递归 object,不处理 string)
+  // - 递归非 CONTAINER_KEYS 的 object 子字段(CONTAINER_KEYS 已被上方分支处理,避免双重提取)
   if (typeof obj.tag === 'string' && !KNOWN_TAGS.has(obj.tag)) {
     for (const [k, v] of Object.entries(obj)) {
       if ((k === 'content' || k === 'text') && typeof v === 'string' && v.trim()) {
         parts.push(v.trim());
-      } else if (v && typeof v === 'object') {
+      } else if (v && typeof v === 'object' && !CONTAINER_KEYS.has(k)) {
         walkCardNode(v, parts, depth + 1);
       }
     }

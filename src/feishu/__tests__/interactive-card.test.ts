@@ -125,6 +125,19 @@ describe('extractCardText (compat with legacy formatInteractiveCard)', () => {
     expect(out).toContain('另一个直接字符串');
   });
 
+  it('does not double-extract when unknown tag uses standard container fields', () => {
+    // { tag: 'custom_share', text: { content: 'X' } } 中 'X' 不应出现两次:
+    // container 分支递归 obj.text 一次,unknown-tag 兜底必须跳过 CONTAINER_KEYS
+    const card = JSON.stringify({
+      elements: [
+        { tag: 'custom_share', text: { tag: 'lark_md', content: '唯一内容X' } },
+      ],
+    });
+    const out = extractCardText(card);
+    const occurrences = (out.match(/唯一内容X/g) ?? []).length;
+    expect(occurrences).toBe(1);
+  });
+
   it('extractMessageType(interactive) returns "[卡片消息]" for empty card', () => {
     expect(extractMessageText('interactive', '{}').text).toBe('[卡片消息]');
   });
