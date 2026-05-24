@@ -340,6 +340,50 @@ describe('Memory card builders', () => {
       expect(found).toBe(true);
     });
 
+    it('should annotate project-scoped memories with their repository (plan-9)', () => {
+      const memories = [
+        {
+          id: 'mem-with-repo', agentId: 'dev', userId: 'user1', chatId: null,
+          workspaceDir: null, repository: 'https://github.com/taptap/maker',
+          type: 'fact' as const, content: 'maker uses dual bare repo',
+          tags: [], metadata: {}, confidence: 0.7, confidenceLevel: 'L0' as const,
+          evidenceCount: 1, validAt: '2026-02-28T00:00:00Z',
+          invalidAt: null, supersededBy: null, ttl: null, sourceChatId: null, sourceMessageId: null,
+          createdAt: '2026-02-28T00:00:00Z', updatedAt: '2026-02-28T00:00:00Z',
+          lastAccessedAt: null,
+        },
+        {
+          id: 'mem-no-repo', agentId: 'dev', userId: 'user1', chatId: null,
+          workspaceDir: null, repository: null,
+          type: 'fact' as const, content: 'unattributed legacy fact',
+          tags: [], metadata: {}, confidence: 0.7, confidenceLevel: 'L0' as const,
+          evidenceCount: 1, validAt: '2026-02-28T00:00:00Z',
+          invalidAt: null, supersededBy: null, ttl: null, sourceChatId: null, sourceMessageId: null,
+          createdAt: '2026-02-28T00:00:00Z', updatedAt: '2026-02-28T00:00:00Z',
+          lastAccessedAt: null,
+        },
+        {
+          id: 'mem-pref', agentId: 'dev', userId: 'user1', chatId: null,
+          workspaceDir: null, repository: null,
+          type: 'preference' as const, content: 'user prefers terse',
+          tags: [], metadata: {}, confidence: 0.7, confidenceLevel: 'L0' as const,
+          evidenceCount: 1, validAt: '2026-02-28T00:00:00Z',
+          invalidAt: null, supersededBy: null, ttl: null, sourceChatId: null, sourceMessageId: null,
+          createdAt: '2026-02-28T00:00:00Z', updatedAt: '2026-02-28T00:00:00Z',
+          lastAccessedAt: null,
+        },
+      ];
+      const card = buildMemoryListCard(memories, 1, 1, { fact: 2, preference: 1 }, 'dev', 'user1');
+      const elements = card.elements as any[];
+      const allText = elements.map((e: any) => e.text?.content ?? '').join('\n');
+      expect(allText).toContain('仓库: taptap/maker');
+      expect(allText).toContain('仓库: 未绑定');
+      // Preferences should not show a 仓库 line at all
+      const prefDiv = elements.find((e: any) => e.text?.content?.includes('user prefers terse'));
+      expect(prefDiv).toBeDefined();
+      expect(prefDiv.text.content).not.toContain('仓库:');
+    });
+
     it('should show "暂无记忆记录" when empty', () => {
       const card = buildMemoryListCard([], 1, 1, {}, 'dev', 'user1');
       const elements = card.elements as any[];
