@@ -66,6 +66,14 @@ export interface ThreadSession {
   approved?: boolean;
   /** 该 thread 是否为原地编辑模式（/edit 命令触发，跳过源仓库保护） */
   inplaceEdit?: boolean;
+  /** Fork 来源话题 ID（被 /fork 创建的话题才有此值） */
+  parentTopicId?: string;
+  /** Fork 时父 session 最后一条消息 ID（P1「从历史点 fork」会用） */
+  forkedFromMessageId?: string;
+  /** Fork 时父 session 的 JSONL 末尾标识（P2 时光机会用） */
+  forkPoint?: string;
+  /** 4-6 字符短 id，用于人类可读的视觉提示（目录名、分支名后缀） */
+  forkShortId?: string;
   /** 创建时间 */
   createdAt: Date;
   /** 最后更新时间 */
