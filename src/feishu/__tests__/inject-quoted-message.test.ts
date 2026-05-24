@@ -182,6 +182,8 @@ describe('injectQuotedMessage', () => {
     expect(result.prompt).toContain('引用了一张图片');
     expect(result.images).toHaveLength(1);
     expect(result.images![0].mediaType).toBe('image/png');
+    // 引用图片必须带标签,buildMultimodalPrompt 才能在图片前插入说明文本块
+    expect(result.images![0].label).toBe('用户引用的消息中的图片');
     expect(mockDownloadMessageImage).toHaveBeenCalledWith('img1', 'img_key_123');
   });
 
