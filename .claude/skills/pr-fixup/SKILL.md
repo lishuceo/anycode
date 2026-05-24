@@ -141,7 +141,21 @@ gh run view RUN_ID --log-failed 2>&1 | tail -100
 
 ### Step 3: 获取未解决的 Review 评论
 
-通过 GraphQL 获取所有 review threads：
+Review 反馈分布在三个地方，必须**都检查**，不能只看 inline review threads：
+
+1. **Inline review threads** — reviewer 在具体代码行上的评论（GraphQL `reviewThreads`）
+2. **PR 顶层 issue comments** — review bot 经常把发现的问题汇总成一条整体评论发到 PR 主时间线（`gh pr view --json comments`）
+3. **PR description** — 部分 review bot 会把 summary 写进 PR description 而非 comment
+
+先获取 PR 作者和最后一次 push 时间：
+
+```bash
+gh pr view PR_NUMBER --json author,body,headRefOid -q '{author: .author.login, body: .body, sha: .headRefOid}'
+# 取最后一次 push 时间用于过滤（仅处理 push 之后的新评论，避免重复响应历史评论）
+LAST_PUSH=$(git log -1 --format=%cI HEAD)
+```
+
+**3a. Inline review threads**（GraphQL）：
 
 ```bash
 gh api graphql -f query='{
@@ -158,6 +172,7 @@ gh api graphql -f query='{
               author { login }
               path
               line
+              createdAt
             }
           }
         }
@@ -167,19 +182,33 @@ gh api graphql -f query='{
 }'
 ```
 
-先获取 PR 作者：`gh pr view PR_NUMBER --json author -q .author.login` → `PR_AUTHOR`
-
 过滤条件：
 - `isResolved == false`（未解决）
-- 发起评论（第一条 comment）的 `author.login` **不是** PR 作者（排除自己的评论，处理所有 reviewer 的反馈，包括 bot 和人类 reviewer）
+- 第一条 comment 的 `author.login` **不是** PR 作者
 
-如果没有 CI 失败（Step 2 已全部通过）且没有未解决的非作者评论 → 输出 "✅ 所有 CI checks 通过，PR review 无阻塞问题" 并结束循环。
+**3b. PR 顶层 issue comments**：
+
+```bash
+gh pr view PR_NUMBER --json comments -q '.comments[] | select(.author.login != "PR_AUTHOR") | {id, body, author: .author.login, createdAt}'
+```
+
+过滤条件：
+- `author.login` 不是 PR 作者
+- `createdAt` 在最后一次 push 之后（处理新增反馈，忽略已被旧 commit 处理的历史评论）
+
+**3c. PR description**：
+
+检查 PR body 中是否包含 review summary 关键字（如 `## Review Summary`、`### Issues Found`、`🟡`、`🔴`、`nit`、`confidence`、`Suggested Action` 等 review bot 常用标记）。如果有，把这些条目当作待处理 review feedback，与 3a/3b 一起进入 Step 4。
+
+如果没有 CI 失败（Step 2 已全部通过）且 3a/3b/3c 都没有未处理的反馈 → 输出 "✅ 所有 CI checks 通过，PR review 无阻塞问题" 并结束循环。
 
 ### Step 4: 分析并处理 Review 评论
 
-对于每个未解决的评论：
+对于每个未解决的评论（来自 3a inline、3b issue comment、3c PR description summary）：
 
-1. **读取完整源文件**：用 Read 工具读取评论所在的 `path` 文件
+1. **读取相关源文件**：
+   - inline 评论：用 Read 工具读取评论所在的 `path` 文件
+   - issue comment / PR description summary：从 body 中解析出涉及的文件路径（通常是 `src/foo.ts:123` 格式），逐个 Read
 2. **理解评论内容**：仔细阅读 `body` 中指出的具体问题
 3. **结合上下文判断**：评论是否正确？
 
@@ -200,11 +229,18 @@ gh api graphql -f query='{
 - 回复评论确认修复：
 
 ```bash
+# inline review comment（来自 3a）
 gh api repos/OWNER/REPO/pulls/PR_NUMBER/comments/COMMENT_DATABASE_ID/replies \
   -f body="Fixed — <简述修改内容>"
+
+# PR 顶层 issue comment（来自 3b）— 没有 thread，直接在 PR 主时间线新增一条
+gh pr comment PR_NUMBER --body "Fixed — <简述修改内容>（回复 #ISSUE_COMMENT_ID）"
+
+# PR description summary 条目（来自 3c）— 同样在 PR 主时间线回复
+gh pr comment PR_NUMBER --body "Addressed — <简述修改内容>"
 ```
 
-- Resolve 该 thread：
+- Resolve 该 thread（仅 inline review thread 适用，issue comment 和 description summary 无 thread 可 resolve）：
 
 ```bash
 gh api graphql -f query='mutation {
@@ -219,11 +255,15 @@ gh api graphql -f query='mutation {
 1. 回复评论说明原因：
 
 ```bash
+# inline review comment（来自 3a）
 gh api repos/OWNER/REPO/pulls/PR_NUMBER/comments/COMMENT_DATABASE_ID/replies \
   -f body="Not an issue — <具体解释，引用代码说明 reviewer 的判断为什么不适用于此场景>"
+
+# PR 顶层 issue comment / description summary（来自 3b/3c）
+gh pr comment PR_NUMBER --body "Not an issue — <具体解释>"
 ```
 
-2. Resolve 该 thread：
+2. Resolve 该 thread（仅 inline review thread 适用）：
 
 ```bash
 gh api graphql -f query='mutation {
