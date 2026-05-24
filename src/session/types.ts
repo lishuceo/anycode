@@ -104,6 +104,8 @@ export interface QueueTask {
   createTime?: string;
   /** 强制使用话题模式（/t 命令触发） */
   forceThread?: boolean;
+  /** 当前消息中图片已落盘的本地路径，用于工作区切换重启时透传给 agent */
+  currentImagePaths?: string[];
   resolve: (result: string) => void;
   reject: (error: Error) => void;
   createdAt: Date;

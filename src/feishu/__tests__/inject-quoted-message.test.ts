@@ -40,6 +40,15 @@ vi.mock('../../utils/image-compress.js', () => ({
   })),
 }));
 
+const mockSaveMessageFileToCache = vi.fn();
+vi.mock('../file-cache.js', async (importOriginal) => {
+  const original = await importOriginal();
+  return {
+    ...original,
+    saveMessageFileToCache: (...args: unknown[]) => mockSaveMessageFileToCache(...args),
+  };
+});
+
 // ============================================================
 // Tests
 // ============================================================
@@ -189,6 +198,44 @@ describe('injectQuotedMessage', () => {
     const result = await injectQuotedMessage('prompt', 'img2', 'msg1', 'chat1');
     expect(result.prompt).toContain('下载失败');
     expect(result.images).toBeUndefined();
+  });
+
+  it('persists quoted image to cache and returns savedImagePath', async () => {
+    mockGetMessageById.mockResolvedValue([
+      {
+        message_id: 'imgsave',
+        msg_type: 'image',
+        body: { content: '{"image_key":"img_key_save"}' },
+      },
+    ]);
+    const fakePng = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00]);
+    mockDownloadMessageImage.mockResolvedValue(fakePng);
+    mockSaveMessageFileToCache.mockResolvedValue('/tmp/feishu-downloads/imgsave-img_key_save.png');
+
+    const result = await injectQuotedMessage('prompt', 'imgsave', 'msg1', 'chat1');
+    expect(mockSaveMessageFileToCache).toHaveBeenCalledWith('imgsave', 'img_key_save', fakePng, 'image.png');
+    expect(result.savedImagePath).toBe('/tmp/feishu-downloads/imgsave-img_key_save.png');
+    // 多模态 images 仍正常返回，不受落盘影响
+    expect(result.images).toHaveLength(1);
+  });
+
+  it('returns no savedImagePath when cache save throws (non-fatal)', async () => {
+    mockGetMessageById.mockResolvedValue([
+      {
+        message_id: 'imgfail',
+        msg_type: 'image',
+        body: { content: '{"image_key":"img_key_fail"}' },
+      },
+    ]);
+    const fakePng = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00]);
+    mockDownloadMessageImage.mockResolvedValue(fakePng);
+    mockSaveMessageFileToCache.mockRejectedValue(new Error('disk full'));
+
+    const result = await injectQuotedMessage('prompt', 'imgfail', 'msg1', 'chat1');
+    // 落盘失败不影响主流程：images 与 prompt 仍正常返回
+    expect(result.images).toHaveLength(1);
+    expect(result.prompt).toContain('引用了一张图片');
+    expect(result.savedImagePath).toBeUndefined();
   });
 
   it('merges quoted image with existing images', async () => {

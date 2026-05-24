@@ -1,4 +1,121 @@
 /**
+ * 解析飞书 interactive 卡片 JSON,提取可读文本(标题 + 各 element 的文本内容)。
+ * 支持已知 element tag(div/markdown/note/column_set/action/img/hr)并对未知结构做递归 content 提取兜底。
+ */
+export function formatInteractiveCard(contentJson: string): string {
+  try {
+    const card = JSON.parse(contentJson || '{}') as Record<string, unknown>;
+    const parts: string[] = [];
+
+    // header.title 可能是 { content } 或 { text: { content } }
+    const header = card.header as Record<string, unknown> | undefined;
+    const title = header?.title as Record<string, unknown> | undefined;
+    if (title) {
+      const titleText =
+        (title.content as string) ??
+        ((title.text as Record<string, unknown> | undefined)?.content as string) ??
+        '';
+      if (titleText.trim()) parts.push(titleText.trim());
+    }
+
+    // 卡片 elements 可能在顶层 elements 或 v2 形式的 body.elements
+    const body = card.body as Record<string, unknown> | undefined;
+    const topElements = (card.elements ?? body?.elements) as unknown[] | undefined;
+    if (Array.isArray(topElements)) {
+      walkCardElements(topElements, parts);
+    }
+
+    const joined = parts.filter(s => s && s.trim()).join('\n').trim();
+    return joined || '[卡片消息]';
+  } catch {
+    return '[卡片消息 - 解析失败]';
+  }
+}
+
+function walkCardElements(elements: unknown[], parts: string[]): void {
+  for (const raw of elements) {
+    if (!raw || typeof raw !== 'object') continue;
+    const el = raw as Record<string, unknown>;
+    const tag = el.tag as string | undefined;
+
+    switch (tag) {
+      case 'div': {
+        const text = el.text as Record<string, unknown> | undefined;
+        const t = text?.content as string | undefined;
+        if (t) parts.push(t);
+        const fields = el.fields as unknown[] | undefined;
+        if (Array.isArray(fields)) {
+          for (const f of fields) {
+            const fc = (f as Record<string, unknown>)?.text as Record<string, unknown> | undefined;
+            const ft = fc?.content as string | undefined;
+            if (ft) parts.push(ft);
+          }
+        }
+        break;
+      }
+      case 'markdown':
+      case 'plain_text':
+      case 'lark_md': {
+        const t = el.content as string | undefined;
+        if (t) parts.push(t);
+        break;
+      }
+      case 'note': {
+        const sub = el.elements as unknown[] | undefined;
+        if (Array.isArray(sub)) walkCardElements(sub, parts);
+        break;
+      }
+      case 'column_set': {
+        const cols = el.columns as unknown[] | undefined;
+        if (Array.isArray(cols)) {
+          for (const col of cols) {
+            const sub = (col as Record<string, unknown>)?.elements as unknown[] | undefined;
+            if (Array.isArray(sub)) walkCardElements(sub, parts);
+          }
+        }
+        break;
+      }
+      case 'action': {
+        const actions = el.actions as unknown[] | undefined;
+        if (Array.isArray(actions)) {
+          for (const a of actions) {
+            const text = (a as Record<string, unknown>)?.text as Record<string, unknown> | undefined;
+            const t = text?.content as string | undefined;
+            if (t) parts.push(`[按钮: ${t}]`);
+          }
+        }
+        break;
+      }
+      case 'img':
+        parts.push('[图片]');
+        break;
+      case 'hr':
+        break;
+      default: {
+        // 未知 tag:递归挖出所有 content 字符串(兜底,处理 share-card 等第三方卡片格式)
+        extractContentStrings(el, parts);
+      }
+    }
+  }
+}
+
+function extractContentStrings(obj: unknown, parts: string[], depth = 0): void {
+  if (depth > 6 || !obj || typeof obj !== 'object') return;
+  if (Array.isArray(obj)) {
+    for (const item of obj) extractContentStrings(item, parts, depth + 1);
+    return;
+  }
+  const rec = obj as Record<string, unknown>;
+  for (const [k, v] of Object.entries(rec)) {
+    if ((k === 'content' || k === 'text') && typeof v === 'string' && v.trim()) {
+      parts.push(v.trim());
+    } else if (v && typeof v === 'object') {
+      extractContentStrings(v, parts, depth + 1);
+    }
+  }
+}
+
+/**
  * 解析合并转发子消息的 body.content 为可读文本
  */
 export function formatMergeForwardSubMessage(
@@ -66,7 +183,7 @@ export function formatMergeForwardSubMessage(
     if (msgType === 'video') return '[视频]';
     if (msgType === 'media') return '[视频]';
     if (msgType === 'sticker') return '[表情]';
-    if (msgType === 'interactive') return '[卡片消息]';
+    if (msgType === 'interactive') return formatInteractiveCard(contentJson);
     if (msgType === 'share_chat') return '[群名片]';
     if (msgType === 'share_user') return '[个人名片]';
     if (msgType === 'merge_forward') return '[嵌套的合并转发消息]';

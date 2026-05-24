@@ -240,7 +240,19 @@ describe('formatMergeForwardSubMessage', () => {
     expect(formatMergeForwardSubMessage('{}', 'media')).toBe('[视频]');
   });
 
-  it('should return placeholder for interactive (card) message type', () => {
+  it('should extract title and text from interactive (card) message', () => {
+    const card = JSON.stringify({
+      header: { title: { tag: 'plain_text', content: '🚀 SpaceX 发射' } },
+      elements: [
+        { tag: 'div', text: { tag: 'lark_md', content: 'XOVR 任务详情' } },
+      ],
+    });
+    const result = formatMergeForwardSubMessage(card, 'interactive');
+    expect(result).toContain('SpaceX 发射');
+    expect(result).toContain('XOVR 任务详情');
+  });
+
+  it('should fall back to placeholder for empty interactive card', () => {
     expect(formatMergeForwardSubMessage('{}', 'interactive')).toBe('[卡片消息]');
   });
 

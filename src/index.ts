@@ -6,6 +6,7 @@ import { startServer, closeServer } from './server.js';
 import { sessionManager } from './session/manager.js';
 import { claudeExecutor } from './claude/executor.js';
 import { cleanupTmpDirs, cleanupExpiredCaches } from './workspace/cache.js';
+import { cleanupOldDownloads } from './feishu/file-cache.js';
 import { pipelineStore } from './pipeline/store.js';
 import { recoverInterruptedPipelines } from './pipeline/runner.js';
 import { killOrphanedClaudeProcesses } from './utils/process-cleanup.js';
@@ -274,6 +275,7 @@ async function main(): Promise<void> {
     pipelineStore.cleanExpired(30);
     cleanupExpiredApprovals();
     chatBotRegistry.cleanup();
+    void cleanupOldDownloads().catch((err) => logger.warn({ err }, 'cleanupOldDownloads failed'));
     if (config.memory.enabled) {
       runMemoryMaintenance();
     }
