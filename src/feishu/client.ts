@@ -1,7 +1,8 @@
 import * as lark from '@larksuiteoapi/node-sdk';
 
 import { logger } from '../utils/logger.js';
-import { formatMergeForwardSubMessage, formatInteractiveCard } from './message-parser.js';
+import { formatMergeForwardSubMessage } from './message-parser.js';
+import { extractMessageText } from './message-text.js';
 import { chatBotRegistry } from './bot-registry.js';
 
 /**
@@ -617,37 +618,23 @@ export class FeishuClient {
         }
         if (item.deleted) { diagSkipped.push({ id: item.message_id ?? '?', type: item.msg_type ?? '?', reason: 'deleted' }); continue; }
         const msgType = item.msg_type ?? '';
-        if (msgType !== 'text' && msgType !== 'post' && msgType !== 'merge_forward' && msgType !== 'file' && msgType !== 'image' && msgType !== 'interactive') { diagSkipped.push({ id: item.message_id ?? '?', type: msgType, reason: 'unsupported_type' }); continue; }
+        // 受支持的类型：text/post/file/image/interactive/merge_forward
+        // 其他类型(audio/video/sticker/share_*/system 等)在历史上下文中跳过以保持简洁
+        if (
+          msgType !== 'text' &&
+          msgType !== 'post' &&
+          msgType !== 'merge_forward' &&
+          msgType !== 'file' &&
+          msgType !== 'image' &&
+          msgType !== 'interactive'
+        ) { diagSkipped.push({ id: item.message_id ?? '?', type: msgType, reason: 'unsupported_type' }); continue; }
         const senderType = item.sender?.sender_type === 'app' ? 'app' as const : 'user' as const;
         let content = '';
-        const imageRefs: Array<{ imageKey: string }> = [];
-        // file 类型：文件名占位 + 返回 fileRefs 供调用方按需下载
-        // image 类型：文本占位 + 返回 imageRefs 供调用方按需下载
-        const fileRefs: Array<{ fileKey: string; fileName: string }> = [];
-        if (msgType === 'file') {
-          try {
-            const body = JSON.parse(item.body?.content ?? '{}');
-            const fileName = (body.file_name as string) || '未知文件';
-            const fileKey = body.file_key as string | undefined;
-            content = `[文件: ${fileName}]`;
-            if (fileKey && item.message_id) {
-              fileRefs.push({ fileKey, fileName });
-            }
-          } catch {
-            content = '[文件]';
-          }
-        } else if (msgType === 'image') {
-          content = '[图片]';
-          try {
-            const body = JSON.parse(item.body?.content ?? '{}');
-            const imageKey = body.image_key as string | undefined;
-            if (imageKey && item.message_id) {
-              imageRefs.push({ imageKey });
-            }
-          } catch { /* ignore parse errors */ }
-        } else if (msgType === 'interactive') {
-          content = formatInteractiveCard(item.body?.content ?? '{}');
-        } else if (msgType === 'merge_forward') {
+        let imageRefs: Array<{ imageKey: string }> = [];
+        let fileRefs: Array<{ fileKey: string; fileName: string }> = [];
+
+        if (msgType === 'merge_forward') {
+          // merge_forward 需要额外 API call 展开子消息,单独处理
           const messageId = item.message_id;
           if (messageId) {
             try {
@@ -677,68 +664,16 @@ export class FeishuClient {
             content = '[合并转发的聊天记录]';
           }
         } else {
-          // text 和 post 类型的 body.content 是 JSON 格式
-          try {
-            const body = JSON.parse(item.body?.content ?? '{}');
-            if (msgType === 'text') {
-              let text = (body.text as string) ?? '';
-              // 解析飞书 @mention 占位符（@_user_1 → @用户名）
-              if (text && Array.isArray(item.mentions)) {
-                for (const m of item.mentions as Array<{ key?: string; name?: string }>) {
-                  if (m.key) {
-                    text = text.replaceAll(m.key, m.name ? `@${m.name}` : '');
-                  }
-                }
-              }
-              // 飞书引用回复时 text 可能被 <p> 等 HTML 标签包裹
-              if (text.includes('<')) {
-                text = text.replace(/<[^>]+>/g, '').trim();
-              }
-              content = text;
-            } else if (msgType === 'post') {
-              // 飞书 post 格式可能是直接的 {title, content} 或带语言键的 {zh_cn: {title, content}}
-              const postBody = Array.isArray(body.content)
-                ? body
-                : (body.zh_cn || body.en_us || body.ja_jp || Object.values(body)[0]) as Record<string, unknown> | undefined;
-              const title = (postBody?.title as string) ?? '';
-              const textParts: string[] = title ? [title] : [];
-              for (const paragraph of (postBody?.content as Array<Array<Record<string, unknown>>>) ?? []) {
-                for (const element of paragraph ?? []) {
-                  if (element.tag === 'text') textParts.push((element.text as string) ?? '');
-                  else if (element.tag === 'a') {
-                    const linkText = (element.text as string) ?? '';
-                    const href = (element.href as string) ?? '';
-                    textParts.push(linkText && href ? `[${linkText}](${href})` : href || linkText);
-                  }
-                  else if (element.tag === 'at') {
-                    const atName = (element.user_name as string) ?? '';
-                    if (atName) textParts.push(`@${atName}`);
-                  }
-                  else if (element.tag === 'img') {
-                    textParts.push('[图片]');
-                    const imgKey = element.image_key as string | undefined;
-                    if (imgKey) imageRefs.push({ imageKey: imgKey });
-                  }
-                  else if (element.tag === 'media') textParts.push('[视频]');
-                  else if (element.tag === 'emotion') {
-                    const emojiType = (element.emoji_type as string) ?? '';
-                    textParts.push(emojiType ? `[${emojiType}]` : '[表情]');
-                  }
-                  else if (element.tag === 'code_block') {
-                    const lang = (element.language as string) ?? '';
-                    const code = (element.text as string) ?? '';
-                    textParts.push(lang ? `\`\`\`${lang}\n${code}\`\`\`` : `\`\`\`\n${code}\`\`\``);
-                  }
-                  else if (element.tag === 'md') textParts.push((element.text as string) ?? '');
-                  else if (element.tag === 'hr') textParts.push('---');
-                }
-              }
-              content = textParts.join(' ');
-            }
-          } catch (parseErr) {
-            diagSkipped.push({ id: item.message_id ?? '?', type: msgType, reason: `parse_error: ${(parseErr as Error).message?.slice(0, 80)}` });
-            continue;
-          }
+          // text/post/file/image/interactive 走统一的 extractMessageText
+          const extracted = extractMessageText(
+            msgType,
+            item.body?.content ?? '{}',
+            item.mentions as Array<{ key?: string; name?: string; id?: string; id_type?: string }> | undefined,
+          );
+          content = extracted.text;
+          imageRefs = extracted.imageRefs;
+          // 仅当有 message_id 时,fileRefs 才有意义(下载需要 message_id)
+          fileRefs = item.message_id ? extracted.fileRefs : [];
         }
         if (!content.trim()) { diagSkipped.push({ id: item.message_id ?? '?', type: msgType, reason: 'empty_content' }); continue; }
         messages.push({

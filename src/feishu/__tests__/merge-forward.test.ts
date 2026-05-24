@@ -240,20 +240,21 @@ describe('formatMergeForwardSubMessage', () => {
     expect(formatMergeForwardSubMessage('{}', 'media')).toBe('[视频]');
   });
 
-  it('should extract title and text from interactive (card) message', () => {
-    const card = JSON.stringify({
-      header: { title: { tag: 'plain_text', content: '🚀 SpaceX 发射' } },
-      elements: [
-        { tag: 'div', text: { tag: 'lark_md', content: 'XOVR 任务详情' } },
-      ],
-    });
-    const result = formatMergeForwardSubMessage(card, 'interactive');
-    expect(result).toContain('SpaceX 发射');
-    expect(result).toContain('XOVR 任务详情');
+  it('should fall back to "[卡片消息]" only when interactive card is empty', () => {
+    expect(formatMergeForwardSubMessage('{}', 'interactive')).toBe('[卡片消息]');
   });
 
-  it('should fall back to placeholder for empty interactive card', () => {
-    expect(formatMergeForwardSubMessage('{}', 'interactive')).toBe('[卡片消息]');
+  it('REGRESSION: interactive card text is preserved (fixes amnesia on bot card replies)', () => {
+    const card = {
+      header: { title: { tag: 'plain_text', content: 'Session Fork 设计' } },
+      elements: [
+        { tag: 'div', text: { tag: 'lark_md', content: '核心难点在于同时继承对话历史和工作区状态' } },
+      ],
+    };
+    const result = formatMergeForwardSubMessage(JSON.stringify(card), 'interactive');
+    expect(result).not.toBe('[卡片消息]');
+    expect(result).toContain('Session Fork');
+    expect(result).toContain('核心难点');
   });
 
   it('should return placeholder for share_chat message type', () => {

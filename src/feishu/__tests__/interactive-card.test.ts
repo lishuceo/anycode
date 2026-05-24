@@ -1,21 +1,27 @@
 // @ts-nocheck — test file
 import { describe, it, expect } from 'vitest';
-import { formatInteractiveCard } from '../message-parser.js';
+import { extractCardText, extractMessageText } from '../message-text.js';
 
-describe('formatInteractiveCard', () => {
+/**
+ * extractCardText 兼容性回归 — 来自原 formatInteractiveCard 的契约。
+ *
+ * formatInteractiveCard 已被 extractCardText 取代;这些用例确保统一后的解析器
+ * 仍覆盖 v1 嵌套 title / v2 body.elements / 第三方 share-card 等历史场景。
+ */
+describe('extractCardText (compat with legacy formatInteractiveCard)', () => {
   it('extracts header title from plain_text', () => {
     const card = JSON.stringify({
       header: { title: { tag: 'plain_text', content: '🚀 SpaceX 发射通知' } },
       elements: [],
     });
-    expect(formatInteractiveCard(card)).toContain('SpaceX 发射通知');
+    expect(extractCardText(card)).toContain('SpaceX 发射通知');
   });
 
-  it('extracts header title nested under text.content', () => {
+  it('extracts header title nested under text.content (v1 form, no tag)', () => {
     const card = JSON.stringify({
       header: { title: { text: { content: '嵌套标题' } } },
     });
-    expect(formatInteractiveCard(card)).toContain('嵌套标题');
+    expect(extractCardText(card)).toContain('嵌套标题');
   });
 
   it('extracts text from div element with lark_md content', () => {
@@ -24,7 +30,7 @@ describe('formatInteractiveCard', () => {
         { tag: 'div', text: { tag: 'lark_md', content: '**核心内容**' } },
       ],
     });
-    expect(formatInteractiveCard(card)).toContain('**核心内容**');
+    expect(extractCardText(card)).toContain('**核心内容**');
   });
 
   it('extracts text from div fields array', () => {
@@ -39,7 +45,7 @@ describe('formatInteractiveCard', () => {
         },
       ],
     });
-    const out = formatInteractiveCard(card);
+    const out = extractCardText(card);
     expect(out).toContain('字段A');
     expect(out).toContain('字段B');
   });
@@ -50,7 +56,7 @@ describe('formatInteractiveCard', () => {
         { tag: 'note', elements: [{ tag: 'plain_text', content: '提示文字' }] },
       ],
     });
-    expect(formatInteractiveCard(card)).toContain('提示文字');
+    expect(extractCardText(card)).toContain('提示文字');
   });
 
   it('extracts text from column_set with nested columns', () => {
@@ -65,7 +71,7 @@ describe('formatInteractiveCard', () => {
         },
       ],
     });
-    const out = formatInteractiveCard(card);
+    const out = extractCardText(card);
     expect(out).toContain('左列');
     expect(out).toContain('右列');
   });
@@ -81,7 +87,8 @@ describe('formatInteractiveCard', () => {
         },
       ],
     });
-    expect(formatInteractiveCard(card)).toContain('[按钮: 查看详情]');
+    // 统一后不再加 [按钮: ] 前缀,只保留按钮文字
+    expect(extractCardText(card)).toContain('查看详情');
   });
 
   it('supports v2 card with body.elements', () => {
@@ -89,7 +96,7 @@ describe('formatInteractiveCard', () => {
       header: { title: { content: 'V2 卡片' } },
       body: { elements: [{ tag: 'markdown', content: '正文内容' }] },
     });
-    const out = formatInteractiveCard(card);
+    const out = extractCardText(card);
     expect(out).toContain('V2 卡片');
     expect(out).toContain('正文内容');
   });
@@ -103,15 +110,40 @@ describe('formatInteractiveCard', () => {
         },
       ],
     });
-    expect(formatInteractiveCard(card)).toContain('第三方卡片内容');
+    expect(extractCardText(card)).toContain('第三方卡片内容');
   });
 
-  it('returns placeholder for empty card', () => {
-    expect(formatInteractiveCard('{}')).toBe('[卡片消息]');
+  it('extracts direct content/text string on unknown tag (not just nested)', () => {
+    const card = JSON.stringify({
+      elements: [
+        { tag: 'custom_share', content: 'Hello 直接字符串' },
+        { tag: 'custom_share2', text: '另一个直接字符串' },
+      ],
+    });
+    const out = extractCardText(card);
+    expect(out).toContain('Hello 直接字符串');
+    expect(out).toContain('另一个直接字符串');
   });
 
-  it('returns parse-failed placeholder for invalid JSON', () => {
-    expect(formatInteractiveCard('not json')).toBe('[卡片消息 - 解析失败]');
+  it('does not double-extract when unknown tag uses standard container fields', () => {
+    // { tag: 'custom_share', text: { content: 'X' } } 中 'X' 不应出现两次:
+    // container 分支递归 obj.text 一次,unknown-tag 兜底必须跳过 CONTAINER_KEYS
+    const card = JSON.stringify({
+      elements: [
+        { tag: 'custom_share', text: { tag: 'lark_md', content: '唯一内容X' } },
+      ],
+    });
+    const out = extractCardText(card);
+    const occurrences = (out.match(/唯一内容X/g) ?? []).length;
+    expect(occurrences).toBe(1);
+  });
+
+  it('extractMessageType(interactive) returns "[卡片消息]" for empty card', () => {
+    expect(extractMessageText('interactive', '{}').text).toBe('[卡片消息]');
+  });
+
+  it('extractMessageType(interactive) returns "[卡片消息]" for invalid JSON', () => {
+    expect(extractMessageText('interactive', 'not json').text).toBe('[卡片消息]');
   });
 
   it('combines header + multiple elements into multi-line output', () => {
@@ -123,7 +155,7 @@ describe('formatInteractiveCard', () => {
         { tag: 'div', text: { content: '第二段' } },
       ],
     });
-    const out = formatInteractiveCard(card);
+    const out = extractCardText(card);
     expect(out).toContain('标题');
     expect(out).toContain('第一段');
     expect(out).toContain('第二段');
