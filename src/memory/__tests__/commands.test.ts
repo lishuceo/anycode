@@ -73,6 +73,7 @@ function makeRow(overrides: Partial<MemoryRow> = {}): MemoryRow {
     user_id: 'user1',
     chat_id: 'chat1',
     workspace_dir: '/projects/test',
+    repository: null,
     type: 'fact',
     content: 'Test memory content',
     tags: '["test"]',
@@ -316,7 +317,7 @@ describe('Memory card builders', () => {
       const memories = [
         {
           id: 'mem1', agentId: 'dev', userId: 'user1', chatId: null,
-          workspaceDir: null, type: 'fact' as const, content: 'Node 20',
+          workspaceDir: null, repository: null, type: 'fact' as const, content: 'Node 20',
           tags: [], metadata: {}, confidence: 0.7, confidenceLevel: 'L0' as const,
           evidenceCount: 3, validAt: '2026-02-28T00:00:00Z',
           invalidAt: null, supersededBy: null,          ttl: null, sourceChatId: null, sourceMessageId: null,
@@ -385,7 +386,7 @@ describe('Memory card builders', () => {
         {
           memory: {
             id: 'mem1', agentId: 'dev', userId: 'user1', chatId: null,
-            workspaceDir: null, type: 'fact' as const, content: 'TypeScript project',
+            workspaceDir: null, repository: null, type: 'fact' as const, content: 'TypeScript project',
             tags: [], metadata: {}, confidence: 0.7, confidenceLevel: 'L0' as const,
             evidenceCount: 1, validAt: '2026-02-28T00:00:00Z',
             invalidAt: null, supersededBy: null,            ttl: null, sourceChatId: null, sourceMessageId: null,
