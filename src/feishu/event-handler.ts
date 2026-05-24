@@ -1503,39 +1503,55 @@ async function fetchTopicRootImages(threadId: string): Promise<{
     // LRU: 命中后移到最近
     topicRootImagesCache.delete(threadId);
     topicRootImagesCache.set(threadId, cached);
-    return { rootMessageId: cached.rootMessageId, images: cached.images, savedPaths: cached.savedPaths };
+    // '' 是哨兵 (表示"已确认无可用首条图片"),对外暴露为 undefined
+    return {
+      rootMessageId: cached.rootMessageId || undefined,
+      images: cached.images,
+      savedPaths: cached.savedPaths,
+    };
   }
+
+  // 负面缓存哨兵:任何无法定位/无图片/失败的情况都用空 entry 占位,
+  // 避免每轮 resume 都重复打 Feishu API。rootMessageId 为空串表示"已确认无图"
+  const cacheEmpty = (): { rootMessageId?: string; images: ImageAttachment[]; savedPaths: string[] } => {
+    const empty = { rootMessageId: '', images: [] as ImageAttachment[], savedPaths: [] as string[] };
+    _putTopicRootCache(threadId, empty);
+    return { rootMessageId: undefined, images: [], savedPaths: [] };
+  };
 
   try {
     const items = await feishuClient.getMessageById(threadId);
-    if (!items || items.length === 0) return { images: [], savedPaths: [] };
+    if (!items || items.length === 0) return cacheEmpty();
     const rootMsg = items.find(m => m.message_id === threadId) ?? items[0];
-    if (!rootMsg) return { images: [], savedPaths: [] };
+    if (!rootMsg) return cacheEmpty();
 
     const rootMessageId = rootMsg.message_id;
-    if (!rootMessageId) return { images: [], savedPaths: [] };
+    if (!rootMessageId) return cacheEmpty();
     const msgType = rootMsg.msg_type || 'text';
     const imageKeys: string[] = [];
 
     if (msgType === 'image') {
       try {
-        const body = JSON.parse(rootMsg.body?.content ?? '{}');
-        const key = body.image_key as string | undefined;
-        if (key) imageKeys.push(key);
+        const body = JSON.parse(rootMsg.body?.content ?? '{}') as Record<string, unknown>;
+        const key = body.image_key;
+        if (typeof key === 'string' && key.length > 0) imageKeys.push(key);
       } catch { /* ignore */ }
     } else if (msgType === 'post') {
       try {
-        const body = JSON.parse(rootMsg.body?.content ?? '{}');
-        const postBody = Array.isArray(body.content)
+        const body = JSON.parse(rootMsg.body?.content ?? '{}') as Record<string, unknown>;
+        // 飞书 post 可能直接含 content 数组,也可能按语言 key (zh_cn/en_us/ja_jp) 嵌套
+        const localized = (body.zh_cn || body.en_us || body.ja_jp) as Record<string, unknown> | undefined;
+        const postBody: Record<string, unknown> | undefined = Array.isArray(body.content)
           ? body
-          : (body.zh_cn || body.en_us || body.ja_jp || Object.values(body)[0]) as Record<string, unknown> | undefined;
-        const paragraphs = postBody?.content as Array<Array<Record<string, unknown>>> | undefined;
-        if (paragraphs) {
+          : (localized && typeof localized === 'object' ? localized : undefined);
+        const paragraphs = postBody?.content;
+        if (Array.isArray(paragraphs)) {
           for (const para of paragraphs) {
+            if (!Array.isArray(para)) continue;
             for (const el of para) {
-              if (el.tag === 'img') {
-                const key = el.image_key as string | undefined;
-                if (key) imageKeys.push(key);
+              if (el && typeof el === 'object' && (el as Record<string, unknown>).tag === 'img') {
+                const key = (el as Record<string, unknown>).image_key;
+                if (typeof key === 'string' && key.length > 0) imageKeys.push(key);
               }
             }
           }
@@ -1544,13 +1560,18 @@ async function fetchTopicRootImages(threadId: string): Promise<{
     }
 
     if (imageKeys.length === 0) {
-      // 缓存空结果,避免重复 fetch
       const empty = { rootMessageId, images: [] as ImageAttachment[], savedPaths: [] as string[] };
       _putTopicRootCache(threadId, empty);
       return { rootMessageId, images: [], savedPaths: [] };
     }
 
-    const results = await Promise.all(imageKeys.map(async (imageKey) => {
+    // 防御:截断异常的超长 imageKeys 列表,避免 post 携带巨量 img 元素时
+    // 把多模态 payload 撑爆 + 拖慢首条加载
+    const cappedKeys = imageKeys.slice(0, MAX_HISTORY_IMAGES);
+    if (cappedKeys.length < imageKeys.length) {
+      logger.warn({ threadId, total: imageKeys.length, kept: cappedKeys.length }, 'Topic-root image count capped');
+    }
+    const results = await Promise.all(cappedKeys.map(async (imageKey) => {
       try {
         const buf = await feishuClient.downloadMessageImage(rootMessageId, imageKey);
         if (buf.length > MAX_IMAGE_SIZE_BYTES) {
@@ -1595,7 +1616,8 @@ async function fetchTopicRootImages(threadId: string): Promise<{
     return result;
   } catch (err) {
     logger.warn({ err, threadId }, 'Failed to fetch topic-root message');
-    return { images: [], savedPaths: [] };
+    // 失败也缓存哨兵 - 避免 transient 错误每轮 resume 都重复 hit Feishu API
+    return cacheEmpty();
   }
 }
 
