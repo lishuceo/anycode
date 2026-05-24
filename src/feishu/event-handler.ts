@@ -176,7 +176,7 @@ function createAskUserHandler(chatId: string, getThreadReplyMsgId: () => string 
       pendingQuestions.set(questionId, pending);
 
       // 发送卡片（在话题内回复或直接发到群）
-      // 如果发送失败，立即 reject 而非等待 5 分钟超时
+      // 如果发送失败，立即 reject 而非等待用户回答（避免任务永久挂起）
       const trySendCard = async () => {
         try {
           const threadMsgId = getThreadReplyMsgId();
