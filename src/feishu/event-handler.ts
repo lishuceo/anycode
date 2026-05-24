@@ -15,6 +15,7 @@ import { checkAndRequestApproval, handleApprovalTextCommand, handleApprovalCardA
 import { resolveThreadContext } from './thread-context.js';
 import { ensureThread } from './thread-utils.js';
 import { formatMergeForwardSubMessage } from './message-parser.js';
+import { extractPostText } from './message-text.js';
 import { pipelineStore } from '../pipeline/store.js';
 import {
   createPendingPipeline,
@@ -3251,70 +3252,17 @@ async function parseMessage(data: MessageEventData): Promise<ParsedMessage | nul
       text = '[合并转发消息 - 解析失败]';
     }
   } else if (message.message_type === 'post') {
-    // 富文本消息：解析 content 中的 text、at、img 元素
-    // at 元素需要区分 bot（跳过）和人类（保留 @名字给 Claude）
+    // 富文本消息：委托 extractPostText 统一解析,本地仅做 bot 过滤 + 图片下载
     const selfBotOpenId = feishuClient.botOpenId;
     const postAllBotIds = isMultiBotMode() ? accountManager.getAllBotOpenIds() : new Set<string>();
     try {
-      const content = JSON.parse(message.content);
-      // post 内容结构有两种形式:
-      //   1. 直接: { "title": "...", "content": [[elements]] }
-      //   2. 带语言键: { "zh_cn": { "title": "...", "content": [[elements]] } }
-      let postBody: Record<string, unknown> | undefined;
-      if (Array.isArray(content.content)) {
-        postBody = content;
-      } else {
-        postBody = (content.zh_cn || content.en_us || content.ja_jp || Object.values(content)[0]) as Record<string, unknown> | undefined;
-      }
-      const paragraphs = postBody?.content as Array<Array<Record<string, unknown>>> | undefined;
-
-      if (!paragraphs) {
-        logger.error({ content: message.content }, 'Post message missing content paragraphs');
-        return null;
-      }
-
-      const textParts: string[] = [];
-      const imageKeys: string[] = [];
-
-      for (const paragraph of paragraphs) {
-        for (const element of paragraph) {
-          if (element.tag === 'text') {
-            textParts.push(element.text as string || '');
-          } else if (element.tag === 'at') {
-            // @mention：人类用户保留为 @名字（让 Claude 看到），bot 的跳过
-            // post 中 at 元素不含 mention.key 占位符，后续 text.replace(mention.key) 不会清理
-            const atName = element.user_name as string || '';
-            const atUserId = element.user_id as string || '';
-            // 直接用 user_id（open_id）判断是否为 bot，比 name 匹配更可靠
-            const isBot = (selfBotOpenId && atUserId === selfBotOpenId) || postAllBotIds.has(atUserId);
-            if (!isBot && atName) {
-              textParts.push(`@${atName}`);
-            }
-          } else if (element.tag === 'a') {
-            const linkText = (element.text as string) || '';
-            const href = (element.href as string) || '';
-            textParts.push(linkText && href ? `[${linkText}](${href})` : href || linkText);
-          } else if (element.tag === 'img') {
-            const imageKey = element.image_key as string | undefined;
-            if (imageKey) imageKeys.push(imageKey);
-          } else if (element.tag === 'media') {
-            textParts.push('[视频]');
-          } else if (element.tag === 'emotion') {
-            const emojiType = (element.emoji_type as string) || '';
-            textParts.push(emojiType ? `[${emojiType}]` : '[表情]');
-          } else if (element.tag === 'code_block') {
-            const lang = (element.language as string) || '';
-            const code = (element.text as string) || '';
-            textParts.push(lang ? `\`\`\`${lang}\n${code}\`\`\`` : `\`\`\`\n${code}\`\`\``);
-          } else if (element.tag === 'md') {
-            textParts.push((element.text as string) || '');
-          } else if (element.tag === 'hr') {
-            textParts.push('---');
-          }
-        }
-      }
-
-      text = textParts.join('').trim();
+      const extracted = extractPostText(message.content, undefined, {
+        separator: '',
+        includeImagePlaceholder: false,
+        isBot: (openId) => (!!selfBotOpenId && openId === selfBotOpenId) || postAllBotIds.has(openId),
+      });
+      text = extracted.text.trim();
+      const imageKeys = extracted.imageRefs.map((r) => r.imageKey);
 
       // 下载所有图片
       if (imageKeys.length) {

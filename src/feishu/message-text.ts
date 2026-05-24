@@ -30,6 +30,9 @@ export interface PostExtractOptions {
   separator?: string;
   /** 判断某个 open_id 是否为 bot,bot @ 提及不输出 @名字。仅 event-handler 路径用到。 */
   isBot?: (openId: string) => boolean;
+  /** 是否在 text 中插入 "[图片]" 占位符。event-handler 内联下载图片为多模态块,
+   *  不需要文本占位符;设为 false 时只收集 imageRefs。默认 true。 */
+  includeImagePlaceholder?: boolean;
 }
 
 export interface MessageExtractOptions extends PostExtractOptions {
@@ -145,7 +148,7 @@ export function extractPostText(
       } else if (element.tag === 'img') {
         const imgKey = element.image_key as string | undefined;
         if (imgKey) imageRefs.push({ imageKey: imgKey });
-        textParts.push('[图片]');
+        if (opts.includeImagePlaceholder !== false) textParts.push('[图片]');
       } else if (element.tag === 'media') {
         textParts.push('[视频]');
       } else if (element.tag === 'emotion') {
