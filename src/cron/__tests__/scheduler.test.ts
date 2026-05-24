@@ -274,4 +274,127 @@ describe('CronScheduler', () => {
     // Job should be deleted after successful run
     expect(store.get(job.id)).toBeUndefined();
   });
+
+  // ── Holiday / weekend skip ──
+
+  /** UTC ms for Shanghai-local date (UTC+8). */
+  function shanghaiMs(dateStr: string, hour = 10): number {
+    return new Date(`${dateStr}T${String(hour).padStart(2, '0')}:00:00Z`).getTime() - 8 * 3600 * 1000;
+  }
+
+  it('skips execution on legal holiday when skipHolidays=true', async () => {
+    const job = await scheduler.addJob({
+      name: 'daily-report',
+      chatId: 'chat1',
+      userId: 'user1',
+      prompt: 'send daily',
+      schedule: { kind: 'cron', expr: '0 9 * * *', tz: 'Asia/Shanghai' },
+      skipHolidays: true,
+    });
+
+    vi.useFakeTimers();
+    vi.setSystemTime(shanghaiMs('2026-10-01')); // 国庆节
+
+    try {
+      await scheduler.triggerJob(job.id);
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(executeTask).not.toHaveBeenCalled();
+    expect(sendMessage).not.toHaveBeenCalled();
+
+    const updated = store.get(job.id);
+    expect(updated!.state.consecutiveErrors).toBe(0);
+    expect(updated!.state.lastStatus).toBeUndefined();
+    expect(updated!.state.nextRunAtMs).toBeDefined();
+  });
+
+  it('still executes on 调休补班 weekend when skipHolidays=true only', async () => {
+    const job = await scheduler.addJob({
+      name: 'workday-task',
+      chatId: 'chat1',
+      userId: 'user1',
+      prompt: 'work',
+      schedule: { kind: 'cron', expr: '0 9 * * *', tz: 'Asia/Shanghai' },
+      skipHolidays: true,
+    });
+
+    vi.useFakeTimers();
+    vi.setSystemTime(shanghaiMs('2026-02-28')); // Saturday 调休补班
+
+    try {
+      await scheduler.triggerJob(job.id);
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(executeTask).toHaveBeenCalledTimes(1);
+  });
+
+  it('skips execution on ordinary weekend when skipWeekends=true', async () => {
+    const job = await scheduler.addJob({
+      name: 'weekday-task',
+      chatId: 'chat1',
+      userId: 'user1',
+      prompt: 'work',
+      schedule: { kind: 'cron', expr: '0 9 * * *', tz: 'Asia/Shanghai' },
+      skipWeekends: true,
+    });
+
+    vi.useFakeTimers();
+    vi.setSystemTime(shanghaiMs('2026-03-08')); // Sunday
+
+    try {
+      await scheduler.triggerJob(job.id);
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(executeTask).not.toHaveBeenCalled();
+  });
+
+  it('executes on ordinary workday when both skip flags are true', async () => {
+    const job = await scheduler.addJob({
+      name: 'task',
+      chatId: 'chat1',
+      userId: 'user1',
+      prompt: 'work',
+      schedule: { kind: 'cron', expr: '0 9 * * *', tz: 'Asia/Shanghai' },
+      skipHolidays: true,
+      skipWeekends: true,
+    });
+
+    vi.useFakeTimers();
+    vi.setSystemTime(shanghaiMs('2026-03-10')); // Tuesday, ordinary day
+
+    try {
+      await scheduler.triggerJob(job.id);
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(executeTask).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not skip when both flags are false (default)', async () => {
+    const job = await scheduler.addJob({
+      name: 'always-run',
+      chatId: 'chat1',
+      userId: 'user1',
+      prompt: 'work',
+      schedule: { kind: 'cron', expr: '0 9 * * *', tz: 'Asia/Shanghai' },
+    });
+
+    vi.useFakeTimers();
+    vi.setSystemTime(shanghaiMs('2026-10-01')); // 国庆节 — but no skip flags
+
+    try {
+      await scheduler.triggerJob(job.id);
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(executeTask).toHaveBeenCalledTimes(1);
+  });
 });
