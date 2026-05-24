@@ -121,6 +121,46 @@ export function formatHistoryImageHints(paths: string[]): string {
   ].join('\n');
 }
 
+/**
+ * Workspace restart 路径专用：将"刚拉到的完整历史"与本轮 prompt 拼成 S2 的 prompt 文本。
+ *
+ * 纯函数，仅做字符串/数组装配。便于单元测试覆盖 restart-history loss 回归。
+ *
+ * - history.text → 前置历史块（无则不前置）
+ * - history.fileTexts → 再前置（文本文件原文）
+ * - history.historyImagePaths → 合并到 imagePaths 并去重（保留原有顺序在前）
+ *
+ * 不处理 rootId 引用消息注入（异步 IO，由调用方在 helper 之后处理）。
+ */
+export function assembleRestartPromptFromFullHistory(
+  promptWithTime: string,
+  history: {
+    text?: string;
+    fileTexts?: string[];
+    historyImagePaths?: string[];
+  },
+  existingImagePaths: string[],
+): { prompt: string; imagePaths: string[] } {
+  let prompt = promptWithTime;
+  if (history.text) {
+    prompt = history.text + '\n\n---\n\n' + prompt;
+  }
+  if (history.fileTexts?.length) {
+    prompt = history.fileTexts.join('\n\n') + '\n\n---\n\n' + prompt;
+  }
+  const imagePaths = [...existingImagePaths];
+  if (history.historyImagePaths?.length) {
+    const seen = new Set(imagePaths);
+    for (const p of history.historyImagePaths) {
+      if (!seen.has(p)) {
+        imagePaths.push(p);
+        seen.add(p);
+      }
+    }
+  }
+  return { prompt, imagePaths };
+}
+
 // ============================================================
 // AskUserQuestion 待回答存储
 // 当 Claude 调用 AskUserQuestion 时，canUseTool 拦截并发送飞书卡片，
@@ -2721,16 +2761,57 @@ export async function executeClaudeTask(
         }
       }
 
+      // ─── Restart 前重建完整 chat history ──────────────────────────────
+      // S2 跨 cwd 启动，无法 resume S1 的 SDK session，SDK 端无任何对话记忆。
+      // 若 S1 流程因 activeConversationId 命中走了 dedup（_historyDedup），
+      // effectivePrompt 只含本轮增量消息 —— 直接拿去启动 S2 会丢失所有 thread
+      // 历史 turn，导致 bot 失忆。这里无视 dedup，重新拉一次完整 thread 历史。
+      let restartEffectivePrompt = effectivePrompt;
+      if (activeConversationId) {
+        const selfBotOpenIdsForRestart = accountManager.getAllBotOpenIds();
+        if (feishuClient.botOpenId) selfBotOpenIdsForRestart.add(feishuClient.botOpenId);
+        const fullHistory = await buildChatHistoryContext(
+          chatId, threadId, messageId, undefined, selfBotOpenIdsForRestart,
+        );
+        const assembled = assembleRestartPromptFromFullHistory(
+          promptWithTime, fullHistory, restartImagePaths,
+        );
+        restartEffectivePrompt = assembled.prompt;
+        restartImagePaths.length = 0;
+        restartImagePaths.push(...assembled.imagePaths);
+        // 主面板模式需重新注入 rootId 引用消息（话题模式不需要，与 line 2515 处一致）
+        if (!threadId) {
+          const quoted = await injectQuotedMessage(restartEffectivePrompt, rootId, messageId, chatId, undefined);
+          restartEffectivePrompt = quoted.prompt;
+          if (quoted.savedImagePath && !restartImagePaths.includes(quoted.savedImagePath)) {
+            restartImagePaths.push(quoted.savedImagePath);
+          }
+        }
+        // dedup 锚点推进到完整历史最新一条，避免 S2 之后再拉重复内容
+        if (fullHistory.newestMsgId) {
+          _historyDedup.set(sessionKey, fullHistory.newestMsgId);
+        }
+        logger.info(
+          {
+            sessionKey,
+            originalPromptLen: effectivePrompt.length,
+            restartPromptLen: restartEffectivePrompt.length,
+            historyImageCount: fullHistory.historyImagePaths?.length ?? 0,
+          },
+          'Rebuilt full chat history for restart query',
+        );
+      }
+
       // 第二次 query：以新 cwd 执行，CLAUDE.md 正确加载
       // - 不传 resumeSessionId（Agent SDK 不支持跨 cwd resume，会 exit code 1）
       // - 不传 onWorkspaceChanged（不触发二次 restart）
       // - disableWorkspaceTool: 完全移除 setup_workspace MCP tool，防止无限循环
-      // - 使用 effectivePrompt（含聊天历史）而非裸 prompt，避免 restart 后丢失对话上下文
+      // - 使用 restartEffectivePrompt（含完整聊天历史），避免 restart 后丢失对话上下文
       // - restart 不重传多模态 images：将 S1 落盘的图片路径作为文本附加，让 agent 用 Read 工具按需查看
       const restartImageHints = formatRestartImageHints(restartImagePaths);
       const restartPromptWithImageHints = restartImageHints
-        ? `${restartImageHints}\n\n---\n\n${effectivePrompt}`
-        : effectivePrompt;
+        ? `${restartImageHints}\n\n---\n\n${restartEffectivePrompt}`
+        : restartEffectivePrompt;
       const restartResult = await claudeExecutor.execute({
         sessionKey,
         prompt: restartPromptWithImageHints,
