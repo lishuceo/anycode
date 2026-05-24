@@ -147,12 +147,14 @@ Review 反馈分布在三个地方，必须**都检查**，不能只看 inline r
 2. **PR 顶层 issue comments** — review bot 经常把发现的问题汇总成一条整体评论发到 PR 主时间线（`gh pr view --json comments`）
 3. **PR description** — 部分 review bot 会把 summary 写进 PR description 而非 comment
 
-先获取 PR 作者和最后一次 push 时间：
+先获取 PR 作者、body、head SHA，以及最后一次推送对应的 commit 时间：
 
 ```bash
 gh pr view PR_NUMBER --json author,body,headRefOid -q '{author: .author.login, body: .body, sha: .headRefOid}'
-# 取最后一次 push 时间用于过滤（仅处理 push 之后的新评论，避免重复响应历史评论）
-LAST_PUSH=$(git log -1 --format=%cI HEAD)
+# 用 GitHub 上 head commit 的 committer date 作为"最后一次 push 时间"的近似值
+# 不要用本地 git log（rebase/amend 后本地时间和 GitHub 上不一致）
+HEAD_SHA=$(gh pr view PR_NUMBER --json headRefOid -q .headRefOid)
+LAST_PUSH=$(gh api repos/OWNER/REPO/commits/$HEAD_SHA --jq .commit.committer.date)
 ```
 
 **3a. Inline review threads**（GraphQL）：
@@ -198,7 +200,12 @@ gh pr view PR_NUMBER --json comments -q '.comments[] | select(.author.login != "
 
 **3c. PR description**：
 
-检查 PR body 中是否包含 review summary 关键字（如 `## Review Summary`、`### Issues Found`、`🟡`、`🔴`、`nit`、`confidence`、`Suggested Action` 等 review bot 常用标记）。如果有，把这些条目当作待处理 review feedback，与 3a/3b 一起进入 Step 4。
+检查 PR body 中是否包含 review summary。判定标准（避免把普通 PR 说明误判为 review）：
+
+- **强信号**（出现任一即可判定）：`## Review Summary`、`### Issues Found`、`## Review Notes`、`Suggested Action`
+- **弱信号**（需同时出现 ≥2 个才算）：`🟡`、`🔴`、`nit`、`confidence`、`severity`
+
+满足上述任一规则的，把 review summary 段落里的条目当作待处理 review feedback，与 3a/3b 一起进入 Step 4。
 
 如果没有 CI 失败（Step 2 已全部通过）且 3a/3b/3c 都没有未处理的反馈 → 输出 "✅ 所有 CI checks 通过，PR review 无阻塞问题" 并结束循环。
 
@@ -234,7 +241,8 @@ gh api repos/OWNER/REPO/pulls/PR_NUMBER/comments/COMMENT_DATABASE_ID/replies \
   -f body="Fixed — <简述修改内容>"
 
 # PR 顶层 issue comment（来自 3b）— 没有 thread，直接在 PR 主时间线新增一条
-gh pr comment PR_NUMBER --body "Fixed — <简述修改内容>（回复 #ISSUE_COMMENT_ID）"
+# 回复链接用完整 URL（GitHub 不会把 #COMMENT_ID 解析成 comment 跳转）
+gh pr comment PR_NUMBER --body "Fixed — <简述修改内容>（回复 [评论](https://github.com/OWNER/REPO/pull/PR_NUMBER#issuecomment-ISSUE_COMMENT_ID)）"
 
 # PR description summary 条目（来自 3c）— 同样在 PR 主时间线回复
 gh pr comment PR_NUMBER --body "Addressed — <简述修改内容>"
