@@ -115,8 +115,13 @@ interface PendingQuestion {
 /** questionId → PendingQuestion */
 const pendingQuestions = new Map<string, PendingQuestion>();
 
-/** AskUserQuestion 等待超时（5 分钟） */
-const ASK_USER_TIMEOUT_MS = 5 * 60 * 1000;
+/** AskUserQuestion 等待超时（毫秒）。0 表示永不超时（默认）。 */
+const ASK_USER_TIMEOUT_MS = (() => {
+  const raw = process.env.ASK_USER_TIMEOUT_MS;
+  if (raw === undefined || raw === '') return 0;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : 0;
+})();
 
 /**
  * 创建 AskUserQuestion 回调（供 executeClaudeTask / executeDirectTask 共用）
@@ -144,10 +149,12 @@ function createAskUserHandler(chatId: string, getThreadReplyMsgId: () => string 
         chatId,
       };
 
-      pending.timeoutTimer = setTimeout(() => {
-        pendingQuestions.delete(questionId);
-        reject(new Error('AskUserQuestion timed out'));
-      }, ASK_USER_TIMEOUT_MS);
+      if (ASK_USER_TIMEOUT_MS > 0) {
+        pending.timeoutTimer = setTimeout(() => {
+          pendingQuestions.delete(questionId);
+          reject(new Error('AskUserQuestion timed out'));
+        }, ASK_USER_TIMEOUT_MS);
+      }
 
       pendingQuestions.set(questionId, pending);
 

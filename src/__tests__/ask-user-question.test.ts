@@ -54,8 +54,8 @@ describe('buildAskUserQuestionCard', () => {
     expect(actionGroup.tag).toBe('action');
     expect(actionGroup.actions).toHaveLength(2);
 
-    // First option should be primary
-    expect(actionGroup.actions[0].type).toBe('primary');
+    // All options should be default (no misleading "primary" highlight)
+    expect(actionGroup.actions[0].type).toBe('default');
     expect(actionGroup.actions[0].text.content).toBe('Option A');
     expect(actionGroup.actions[0].value).toEqual({
       action: 'ask_user_answer',
@@ -65,7 +65,6 @@ describe('buildAskUserQuestionCard', () => {
       optionLabel: 'Option A',
     });
 
-    // Second option should be default
     expect(actionGroup.actions[1].type).toBe('default');
     expect(actionGroup.actions[1].text.content).toBe('Option B');
   });

@@ -1425,7 +1425,7 @@ export function buildAskUserQuestionCard(
     const buttons = q.options.map((opt, oi) => ({
       tag: 'button',
       text: { tag: 'plain_text', content: opt.label },
-      type: oi === 0 ? 'primary' : 'default',
+      type: 'default',
       value: {
         action: 'ask_user_answer',
         questionId,
