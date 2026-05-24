@@ -13,6 +13,11 @@ export interface InjectionContext {
   userId?: string;
   workspaceDir?: string;
   chatId?: string;
+  /**
+   * Canonical repository URL the session is operating in (plan-9).
+   * When set, project-scoped memories from other repos are filtered out.
+   */
+  repository?: string | null;
 }
 
 /** Type display names */
@@ -47,6 +52,8 @@ export async function injectMemories(
       agentId: context.agentId,
       userId: context.userId,
       workspaceDir: context.workspaceDir,
+      repository: context.repository ?? null,
+      chatId: context.chatId ?? null,
       limit: 15,
     });
 

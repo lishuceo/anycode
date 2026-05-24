@@ -2653,7 +2653,7 @@ export async function executeClaudeTask(
     // 使用 repo identity（而非带随机后缀的工作区路径）确保同仓库记忆互通
     const repoIdentity = getRepoIdentity(workingDir);
     const memoryContext = config.memory.enabled
-      ? await injectMemories(rawPrompt, { agentId, userId, workspaceDir: repoIdentity, chatId })
+      ? await injectMemories(rawPrompt, { agentId, userId, workspaceDir: repoIdentity, chatId, repository: resolveRepositoryForCwd(workingDir) })
       : '';
 
     // Bot 身份上下文（多 bot 模式下告诉 agent 自己是谁、群内有哪些其他 bot）
@@ -3220,7 +3220,7 @@ export async function executeDirectTask(
     // 记忆注入（使用 repo identity 确保同仓库记忆互通）
     const repoIdentity = getRepoIdentity(workingDir);
     const memoryContext = config.memory.enabled
-      ? await injectMemories(rawPrompt, { agentId, userId, workspaceDir: repoIdentity, chatId })
+      ? await injectMemories(rawPrompt, { agentId, userId, workspaceDir: repoIdentity, chatId, repository: resolveRepositoryForCwd(workingDir) })
       : '';
 
     // Bot 身份上下文（多 bot 模式下告诉 agent 自己是谁、群内有哪些其他 bot）
