@@ -13,7 +13,7 @@ import { feishuClient, feishuClientContext, runWithAccountId } from './client.js
 import { config, isMultiBotMode } from '../config.js';
 import { checkAndRequestApproval, handleApprovalTextCommand, handleApprovalCardAction, setOnApproved } from './approval.js';
 import { resolveThreadContext } from './thread-context.js';
-import { ensureThread } from './thread-utils.js';
+import { ensureThread, initProgressCardMsgId } from './thread-utils.js';
 import { formatMergeForwardSubMessage } from './message-parser.js';
 import { pipelineStore } from '../pipeline/store.js';
 import {
@@ -2122,7 +2122,7 @@ export async function executeClaudeTask(
 
   if (resolved.status !== 'resolved') return;
 
-  const { threadReplyMsgId, workingDir, threadId, threadSession, prompt } = resolved.ctx;
+  const { threadReplyMsgId, greetingMsgId, workingDir, threadId, threadSession, prompt } = resolved.ctx;
   const session = sessionManager.getOrCreate(chatId, userId, agentId);
 
   // 如果本次处理新建了话题（eventThreadId 为空但 threadId 已存在），
@@ -2139,14 +2139,19 @@ export async function executeClaudeTask(
   const sessionKey = threadId ? `${chatId}:${userId}:${threadId}` : `${chatId}:${userId}`;
 
   // 发送初始进度卡片（即时反馈），后续原地更新为 tool call 进度卡片
-  let progressCardMsgId: string | undefined;
+  // 新话题首条消息时 ensureThread 已创建了一张问候卡片（greetingMsgId），
+  // 直接复用避免残留空卡片（之前的 bug：第二张卡片更新，第一张永远停在"正在处理…"）
   let progressCardFailed = false;
-  if (threadReplyMsgId) {
-    progressCardMsgId = await feishuClient.replyCardInThread(
-      threadReplyMsgId, buildCombinedProgressCard('', [], 0),
-    ) ?? undefined;
-    if (!progressCardMsgId) progressCardFailed = true;
-  } else {
+  const progressCardMsgId = await initProgressCardMsgId(
+    greetingMsgId,
+    threadReplyMsgId,
+    async (anchorMsgId) => (await feishuClient.replyCardInThread(
+      anchorMsgId, buildCombinedProgressCard('', [], 0),
+    )) ?? undefined,
+  );
+  if (threadReplyMsgId && !progressCardMsgId) {
+    progressCardFailed = true;
+  } else if (!threadReplyMsgId && !greetingMsgId) {
     await feishuClient.replyText(messageId, '🤖 处理中...');
   }
 
