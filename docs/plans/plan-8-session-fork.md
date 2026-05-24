@@ -28,7 +28,7 @@ Agent 协作中常出现的场景：某个 thread 已经讨论了很多轮，接
 
 核心痛点：**高质量 agent session 的上下文建设成本极高，但没有一个轻量的方式把这份资产复用到多条平行探索上**。
 
-类比：git 在没有 branch 之前，开发者只能在 master 上线性提交。**fork 之于 session，等价于 branch 之于 commit**。
+类比：git 在没有 branch 之前，开发者只能在 master 上线性提交。fork 之于 session，类似 branch 之于 commit 的「轻量分支」环节 —— 但要注意：git branch 的核心价值是支持**合并**，而本方案 P0~P2 都不支持 fork 合并（P3 待评估）。所以更精确的说法是「fork 是为了**并行探索**而非**并行开发**」。
 
 ## 为什么这个需求对 Agent 比对普通 LLM 聊天更刚需
 
@@ -37,20 +37,23 @@ Agent 协作中常出现的场景：某个 thread 已经讨论了很多轮，接
 | 层 | 内容 | 处理方式 |
 |---|---|---|
 | **对话历史** | SDK session 的 JSONL 文件 | 复制原 session 文件，新 conversationId 指向副本 |
-| **工作区状态** | 文件树 / 未提交修改 / git 分支 / runtime 日志 | git worktree + git stash 中转 |
+| **工作区状态** | 文件树 / 未提交修改 / git 分支 | git worktree + git stash 中转 |
 | **隐性共识** | 已在 LLM context 中的认知（代码库理解、用户偏好、前置约束） | 只要前两层复制完，这层自动继承 |
 
 只有同时复制前两层，第三层才能延续。任一层丢失，agent 在新 session 里的行为都会漂移。
 
 ## 与现有方案的边界
 
-| 方案 | 适用 | 不适用 |
+| 方案 | 适用 | 不适用 / 为什么不够 |
 |------|------|--------|
 | **Subagent（Agent tool）** | 并行探索、独立子任务 | 父 session 无法继承子 session 学到的东西 |
-| **复述/总结后开新会话** | 上下文不深、决策点清晰 | 大量隐性共识丢失 |
-| **Session Fork** | 决策树状、上下文昂贵、需要对比 end-to-end | 简单线性任务（杀鸡用牛刀） |
+| **复述/总结后开新会话** | 上下文不深、决策点清晰 | 大量隐性共识丢失（agent 偏好、踩坑记录） |
+| **LLM 生成摘要注入新话题首条** | 轻量场景，无 workspace 状态需要继承 | 摘要本身可能漏关键细节；不解决「工作区状态」继承 |
+| **Session resume 双指向（只读 fork）** | 仅需对比两个 LLM 输出路径，不修改文件 | SDK resume 是单向的，两个 thread 共享 conversationId 会在 JSONL 里写交叉消息，破坏原 session |
+| **手动 `git branch` + 用户复述** | 用户精力充裕、上下文小 | 复述漂移；用户负担重 |
+| **Session Fork（本方案）** | 决策树状、上下文昂贵、需要对比 end-to-end | 简单线性任务（杀鸡用牛刀） |
 
-三者互补，不是替代关系。
+本方案与前几个互补不替代；选 fork 是因为前几个都无法同时解决「对话历史 + 工作区状态 + 隐性共识」三层继承。
 
 ## P0 详细设计
 
@@ -77,11 +80,10 @@ P0 只做「从当前继续 fork」：复制现状，新话题继续推进。
 
 #### 场景 A：已 setup_workspace 的会话
 
-**必须新建隔离副本**，严禁复用原 workspace 目录。三个硬约束任一足以否决「原地 fork」：
+**必须新建隔离副本**，严禁复用原 workspace 目录。两个硬约束任一足以否决「原地 fork」：
 
 1. **文件写冲突**：两个 session 并发对同一目录写文件，结果不可预测；agent 对「我刚改了什么」的认知会被另一个 session 覆盖
 2. **Git 分支锁**：git worktree 同一分支不能被两个 worktree 同时 checkout，会直接报错
-3. **Runtime 日志混乱**：`.cli/logs`（追踪在 `workspace_runtime.git`）会被两条时间线交叉污染，时间回溯能力直接失效
 
 **执行步骤：**
 
@@ -106,18 +108,14 @@ fork 后:       /root/dev/.workspaces/abc-foo-fork-<id>  (branch: feat/foo-fork-
    ```
    备选：`rsync` 差异文件（git stash 漏 untracked 时兜底）。
 
-3. **同步 runtime 仓库**（双 bare repo 架构）：
-   - `workspace_runtime.git` 也建对应分支：`git worktree add <新 runtime 路径> -b <分支>-fork-<短id>`
-   - 复制 `.cli/logs` 当前状态作为新时间线起点
-
-4. **复制 SDK session JSONL**：
-   - 找到原 `conversationId` 对应的 JSONL 文件
-   - 复制到新位置，生成新 `conversationId`
+3. **复制 SDK session JSONL**（⚠️ 待调研）：
+   - 找到原 `conversationId` 对应的 JSONL 文件，复制到新位置生成新 `conversationId`
    - 新 session 后续 resume 时基于副本，不影响原 session
+   - **风险**：`@anthropic-ai/claude-agent-sdk` 当前未公开 JSONL 文件路径接口，需要先调研 SDK 内部存储约定（猜测在 `~/.claude/projects/<hash>/<conversationId>.jsonl` 之类位置），或改用 SDK 的 session 复制 API（若有）
 
-5. **创建 ThreadSession 记录**（schema 见下文）
+4. **创建 ThreadSession 记录**（schema 见下文）
 
-6. **创建飞书新话题**：标题带 `🔱` 前缀，首条系统消息标注血缘
+5. **创建飞书新话题**：标题带 `🔱` 前缀，首条系统消息标注血缘
 
 #### 场景 B：未 setup_workspace 的会话
 
@@ -129,7 +127,6 @@ fork 后:       /root/dev/.workspaces/abc-foo-fork-<id>  (branch: feat/foo-fork-
 - 没有未提交修改要继承
 - 没有 worktree 要复制
 - 两个会话并发读 `/root/dev/` 完全安全
-- Runtime 日志各自独立（每个 ThreadSession 本就有自己的 `.cli/logs`）
 
 **步骤：**
 
@@ -164,6 +161,32 @@ CREATE INDEX idx_thread_sessions_parent ON thread_sessions(parent_topic_id);
 - `fork_short_id`：4-6 字符 hex 短 id，仅用于人类可读的视觉提示
 
 > **注意**：`fork_point` 与 SDK JSONL 内部 message 序号的对齐方式需要在实现时确认（SDK 不保证序号稳定，可能需要存 message 内容 hash）。P0 只写入字段，P2 时光机功能实现时再消费。
+
+## 实现前置依赖（必须先解决）
+
+P0 落地前，以下三件事必须先有结论或原型，否则方案不可执行：
+
+1. **SDK JSONL 文件路径获取**
+   - `@anthropic-ai/claude-agent-sdk` 当前**未公开**通过 `conversationId` 获取 JSONL 文件路径的 API
+   - 候选方案：a) 反查 SDK 源码定位文件路径约定（猜测 `~/.claude/projects/<projectHash>/<conversationId>.jsonl`）；b) 等 SDK 暴露官方 session 复制 API；c) 我们自己把每轮对话另存一份镜像
+   - **未确认前，文档第 4 步「复制 JSONL」不可实现**
+
+2. **飞书新话题创建 API**
+   - 当前 `client.ts` 仅有 `createThreadWithCard()` 「在某条消息下回复并隐式建话题」，**没有**直接创建带自定义标题新话题的 API
+   - 候选方案：a) bot 先在群里发一条「🔱 fork 提示」消息，自动成为新话题根；b) 调研飞书是否有 `/im/v1/threads/create` 之类的官方 API
+   - **未确认前，文档「新话题标题带 🔱 前缀」可能不可控**
+
+3. **Feature flag 机制**
+   - 当前无 per-user feature flag 框架，无法实现「默认隐藏，仅重度用户暴露」
+   - 候选方案：a) 在 `config.fork.allowedUsers` 加白名单；b) 复用现有 `ALLOWED_USER_IDS`；c) 暂不隐藏，所有用户可见但 `/help` 不列出
+   - **P0 可接受方案 c**（最简）
+
+## 并发与原子性
+
+- **Per-chat 队列**：`src/session/queue.ts` 以 `queueKey = chatId:rootId` 串行化。Fork 进入新 threadId → 新队列，与原话题独立，无相互阻塞。
+- **原话题 query 进行中的 fork**：若原 session 正在执行长 query，JSONL 在追写中。Fork 必须**等待原话题当前 query 结束**（在原话题队列里排队），否则会复制到半成品 JSONL → SDK resume 失败。
+- **新话题首次消息保护**：Fork 完成前在 ThreadSession 标记 `fork_initializing=true`，期间用户在新话题发消息直接排队等候（不进入 Claude），避免读到复制中的 JSONL。
+- **JSONL 复制原子化**：先写到 `<新 conversationId>.jsonl.tmp`，整个写完后 atomic `rename`，避免半文件被读。
 
 ## 命名规范
 
@@ -206,20 +229,19 @@ Anthropic prompt cache 有 5 分钟 TTL：
 
 ## 失败处理与回滚
 
-Fork 涉及多个外部状态变更（worktree、stash、runtime worktree、JSONL 复制、DB 记录、飞书话题创建），任一步失败必须能干净回滚。
+Fork 涉及多个外部状态变更（worktree、stash、JSONL 复制、DB 记录、飞书话题创建），任一步失败必须能干净回滚。
 
 执行顺序与失败处理：
 
 | 步骤 | 失败时回滚动作 |
 |------|----------------|
 | 1. 新 worktree | 无需回滚 |
-| 2. Stash apply | `git worktree remove --force <新路径>` + 删除分支 |
-| 3. Runtime worktree | 同上 + 删除 runtime 分支 |
-| 4. JSONL 复制 | 上述全部 + `rm <新 JSONL>` |
-| 5. ThreadSession 写入 | 上述全部 + `DELETE FROM thread_sessions` |
-| 6. 飞书话题创建 | 上述全部（话题创建在最后，失败成本最低；如已创建则发系统消息说明） |
+| 2. Stash apply（含 `-u` 含 untracked） | `git worktree remove --force <新路径>` + `git branch -D <新分支>` |
+| 3. JSONL 复制（写临时文件后 atomic rename） | 上述全部 + `rm <新 JSONL>` |
+| 4. ThreadSession 写入 | 上述全部 + `DELETE FROM thread_sessions WHERE thread_id=...` |
+| 5. 飞书话题创建 | **保留现场不清理**，在 DB 标记 `status='fork_pending'`，提供 `/fork-retry` 手动恢复（避免清理后用户无法重做） |
 
-**原则：飞书话题创建放在最后**，避免出现「话题存在但 DB 无记录」的孤儿状态。
+**原则：飞书话题创建放在最后，但失败时不能简单清理**，否则用户面对「fork 失败」却无法重做。`fork_pending` 状态让用户能手动重试创建话题，或主动放弃。
 
 ## 未跟踪产物处理
 
@@ -238,12 +260,18 @@ Fork 涉及多个外部状态变更（worktree、stash、runtime worktree、JSON
 
 ## 路线图
 
-| 阶段 | 范围 | 工期 |
-|------|------|------|
-| **P0** | 从当前状态 fork，场景 A + B | 1 周 |
-| P1 | `/lineage` 命令；从历史某条消息 fork；回复下 🔱 按钮 | 2-3 天 |
-| P2 | `/fork-tree` 可视化；自动归档长期不活跃 fork；时光机（基于 fork_point 回放） | 2 周+ |
-| P3 | Fork 合并 / cherry-pick 对话片段；fork 之间的差异对比 UI | 待评估 |
+为了把「需求验证」放在「重工程」前面，P0 拆为两个子阶段：
+
+| 阶段 | 范围 | 工期 | 目的 |
+|------|------|------|------|
+| **P-1（验证）** | 不写代码，复盘最近 3-5 个真实 session，统计若有 fork 能力的使用率 | 2 天 | 决定是否做 P0a |
+| **P0a** | 仅场景 B（未 setup workspace，共享 `/root/dev/`），只复制 JSONL + 建话题 | 3-5 天 | 验证 UX、`/fork` 命令、JSONL 复制是否可行 |
+| **P0b** | 场景 A（已 setup workspace，worktree + stash） | 1 周 | P0a 验证 fork 真有人用后再做 |
+| P1 | `/lineage` 命令；从历史某条消息 fork；回复下 🔱 按钮 | 2-3 天 | |
+| P2 | `/fork-tree` 可视化；自动归档长期不活跃 fork；时光机（基于 fork_point 回放） | 2 周+ | |
+| P3 | Fork 合并 / cherry-pick 对话片段；fork 之间的差异对比 UI | 待评估 | 决定 fork 是否真的「类比 git branch」 |
+
+**P0a/P0b 的退出标准**：P0a 上线两周内若使用率 >20%（活跃用户中），启动 P0b；<10% 则停在 P0a 或下线。
 
 ## 风险与对策
 
@@ -279,7 +307,7 @@ Fork 涉及多个外部状态变更（worktree、stash、runtime worktree、JSON
 | 决策 | 选择 | 理由 |
 |------|------|------|
 | Fork 粒度（P0） | 仅「从当前 fork」 | 避免 JSONL 截断复杂度 |
-| Workspace 隔离方式 | 新建 worktree + 新分支 | 避免分支锁、文件写冲突、runtime 日志污染 |
+| Workspace 隔离方式 | 新建 worktree + 新分支 | 避免分支锁与文件写冲突 |
 | Non-workspace 工作目录 | 共享 `/root/dev/` | 只读场景，零复制成本 |
 | 触发方式 | `/fork` 命令，默认隐藏 | 降低普通用户认知负担 |
 | 飞书 UI 层 | 并列话题 + 前缀 🔱 + 首条系统消息 | 飞书无原生父子话题嵌套 |
@@ -296,7 +324,7 @@ Fork 涉及多个外部状态变更（worktree、stash、runtime worktree、JSON
 ## 附录：与姜黎讨论过程中的关键 Q&A
 
 **Q1：P0 fork 是在原目录还是新目录？**
-→ 必须新建目录，三个硬约束（文件写冲突 / git 分支锁 / runtime 日志污染）任一足以否决原地 fork。
+→ 必须新建目录，两个硬约束（文件写冲突 / git 分支锁）任一足以否决原地 fork。
 
 **Q2：飞书上的新话题是跟原话题并列吗？**
 → 是。飞书话题模型扁平，没有原生嵌套；血缘靠元数据 + 前缀 🔱 + 首条系统消息维护。
