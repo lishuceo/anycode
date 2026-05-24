@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildProgressCard, buildResultCard, buildStreamingCard, buildPipelineCard, buildStatusCard, buildTurnCard, buildToolProgressCard, buildTextContentCard, buildCombinedProgressCard, buildOverviewCard, buildSimpleResultCard } from '../message-builder.js';
+import { buildProgressCard, buildStreamingCard, buildPipelineCard, buildStatusCard, buildTurnCard, buildToolProgressCard, buildTextContentCard, buildCombinedProgressCard, buildOverviewCard } from '../message-builder.js';
 import type { CombinedCardResult } from '../message-builder.js';
 import type { TurnInfo, ToolCallInfo, ActivityStatus } from '../../claude/types.js';
 
@@ -38,59 +38,6 @@ describe('buildProgressCard', () => {
     const content = card.elements[0].text.content;
     expect(content).toContain('\\*bold\\*');
     expect(content).toContain('\\_italic\\_');
-  });
-});
-
-describe('buildResultCard', () => {
-  it('should build a success card', () => {
-    const card = buildResultCard('test', 'done', true, '3.2s') as any;
-    expect(card.header.template).toBe('green');
-    expect(card.header.title.content).toContain('执行完成');
-    const note = card.elements[4];
-    expect(note.elements[0].content).toContain('✅');
-    expect(note.elements[0].content).toContain('3.2s');
-  });
-
-  it('should build a failure card', () => {
-    const card = buildResultCard('test', 'error', false, '1.0s') as any;
-    expect(card.header.template).toBe('red');
-    expect(card.header.title.content).toContain('执行失败');
-    const note = card.elements[4];
-    expect(note.elements[0].content).toContain('❌');
-  });
-
-  it('should build a timeout card', () => {
-    const card = buildResultCard('test', 'timeout', false, '300s', true) as any;
-    expect(card.header.template).toBe('orange');
-    expect(card.header.title.content).toContain('执行超时');
-    const note = card.elements[4];
-    expect(note.elements[0].content).toContain('⏱️');
-  });
-
-  it('should show empty output placeholder', () => {
-    const card = buildResultCard('test', '', true, '0.1s') as any;
-    const outputEl = card.elements[2];
-    expect(outputEl.text.content).toContain('_(无输出)_');
-  });
-
-  it('should show long single-line output directly without folding', () => {
-    // 行数 ≤ 5 但字符多的情况，直接展示不折叠
-    const longOutput = 'x'.repeat(5000);
-    const card = buildResultCard('test', longOutput, true, '1s') as any;
-    const outputEl = card.elements[2];
-    expect(outputEl.tag).toBe('div');
-    expect(outputEl.text.content.length).toBeGreaterThan(300);
-  });
-
-  it('should use collapsible panel for multi-line long output', () => {
-    // 行数 > 5 且字符多的情况，触发折叠面板
-    const longOutput = Array.from({ length: 20 }, (_, i) => `line ${i}: ${'x'.repeat(50)}`).join('\n');
-    const card = buildResultCard('test', longOutput, true, '1s') as any;
-    const previewHeader = card.elements[2];
-    expect(previewHeader.text.content).toContain('💬 回复预览');
-    const foldPanel = card.elements[4];
-    expect(foldPanel.tag).toBe('collapsible_panel');
-    expect(foldPanel.expanded).toBe(false);
   });
 });
 
@@ -417,53 +364,6 @@ describe('buildOverviewCard', () => {
   });
 });
 
-describe('buildSimpleResultCard', () => {
-  it('should show minimal card when no lastTurn', () => {
-    const card = buildSimpleResultCard('do something', true, '5s | 💰 $0.02') as any;
-    expect(card.header.template).toBe('green');
-    expect(card.header.title.content).toContain('执行完成');
-    // only note (no prompt, no content, no hr)
-    expect(card.elements).toHaveLength(1);
-    expect(card.elements[0].elements[0].content).toContain('✅');
-    expect(card.elements[0].elements[0].content).toContain('5s');
-  });
-
-  it('should merge lastTurn content into the card', () => {
-    const lastTurn: TurnInfo = {
-      turnIndex: 1,
-      textContent: 'Here is the answer.',
-      toolCalls: [{ name: 'Read', input: { file_path: '/src/app.ts' } }],
-    };
-    const card = buildSimpleResultCard('question', true, '3s', undefined, lastTurn) as any;
-    // content + hr + note = 3 elements
-    expect(card.elements).toHaveLength(3);
-    const allText = card.elements.map((e: any) => e.text?.content ?? '').join(' ');
-    expect(allText).toContain('Here is the answer.');
-    expect(allText).toContain('📖');
-    expect(allText).toContain('/src/app.ts');
-  });
-
-  it('should show error message on failure', () => {
-    const card = buildSimpleResultCard('test', false, '10s', 'something broke') as any;
-    expect(card.header.template).toBe('red');
-    expect(card.header.title.content).toContain('执行失败');
-    // error + hr + note = 3 elements
-    expect(card.elements).toHaveLength(3);
-    const allText = card.elements.map((e: any) => e.text?.content ?? '').join(' ');
-    expect(allText).toContain('something broke');
-  });
-
-  it('should show both lastTurn and error on failure', () => {
-    const lastTurn: TurnInfo = { turnIndex: 1, textContent: 'partial work', toolCalls: [] };
-    const card = buildSimpleResultCard('test', false, '10s', 'something broke', lastTurn) as any;
-    // content + hr + error + hr + note = 5 elements
-    expect(card.elements).toHaveLength(5);
-    const allText = card.elements.map((e: any) => e.text?.content ?? '').join(' ');
-    expect(allText).toContain('partial work');
-    expect(allText).toContain('something broke');
-  });
-});
-
 describe('buildToolProgressCard', () => {
   it('should show tool calls with blue header when in progress', () => {
     const tools: ToolCallInfo[] = [
@@ -599,6 +499,17 @@ describe('buildCombinedProgressCard', () => {
   it('should show placeholder when both empty', () => {
     const card = buildCombinedProgressCard('', [], 0) as any;
     expect(card.elements[0].text.content).toContain('正在处理');
+  });
+
+  it('should NOT show "正在处理" placeholder on completed failure with no text/tools', () => {
+    // 回归：失败 + 无 output 时，不能同时出现 "⏳ 正在处理..." 和 "❌ 执行失败"
+    const result: CombinedCardResult = { success: false, durationStr: '5s', error: 'Boom' };
+    const card = buildCombinedProgressCard('', [], 1, true, undefined, result) as any;
+    const placeholder = card.elements.find((e: any) => e.text?.content?.includes('正在处理'));
+    expect(placeholder).toBeUndefined();
+    // 错误信息仍应直接展示
+    const errorEl = card.elements.find((e: any) => e.text?.content?.includes('Boom'));
+    expect(errorEl).toBeDefined();
   });
 
   it('should keep combined card payload under 30KB', () => {

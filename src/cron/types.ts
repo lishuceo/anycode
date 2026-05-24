@@ -38,6 +38,11 @@ export interface CronJob {
   enabled: boolean;
   deleteAfterRun: boolean;
 
+  /** 跳过中国法定节假日（按 schedule.tz 时区判断；调休补班日仍执行） */
+  skipHolidays: boolean;
+  /** 跳过周末（按 schedule.tz 时区判断；调休补班日仍执行） */
+  skipWeekends: boolean;
+
   // 执行配置
   timeoutSeconds: number;
   model?: string;
@@ -71,6 +76,8 @@ export interface CronJobCreate {
   schedule: CronSchedule;
   enabled?: boolean;
   deleteAfterRun?: boolean;
+  skipHolidays?: boolean;
+  skipWeekends?: boolean;
 
   timeoutSeconds?: number;
   model?: string;
@@ -89,6 +96,8 @@ export interface CronJobPatch {
   prompt?: string;
   schedule?: CronSchedule;
   enabled?: boolean;
+  skipHolidays?: boolean;
+  skipWeekends?: boolean;
   timeoutSeconds?: number;
   model?: string;
   maxBudgetUsd?: number;

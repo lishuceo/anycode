@@ -66,36 +66,52 @@ export function extractCardText(cardJson: string): string {
     .trim();
 }
 
-function walkCardNode(node: unknown, parts: string[]): void {
-  if (!node || typeof node !== 'object') return;
+const KNOWN_TAGS = new Set([
+  'plain_text', 'lark_md', 'markdown', 'div', 'note', 'column_set', 'column',
+  'action', 'button', 'hr', 'img', 'select_static', 'date_picker', 'overflow',
+]);
+
+function walkCardNode(node: unknown, parts: string[], depth = 0): void {
+  if (depth > 8 || !node || typeof node !== 'object') return;
 
   if (Array.isArray(node)) {
-    for (const item of node) walkCardNode(item, parts);
+    for (const item of node) walkCardNode(item, parts, depth + 1);
     return;
   }
 
   const obj = node as Record<string, unknown>;
 
-  // 跳过纯装饰节点
   if (obj.tag === 'hr' || obj.tag === 'img') return;
 
-  // 文本叶子：{ tag: 'plain_text' | 'lark_md' | 'markdown', content: '...' }
+  // 文本叶子：{ content: '...' },tag 为文本类型或未设置(v1 嵌套 title.text 形式)
   if (
     typeof obj.content === 'string' &&
-    (obj.tag === 'plain_text' || obj.tag === 'lark_md' || obj.tag === 'markdown')
+    (!obj.tag ||
+      obj.tag === 'plain_text' ||
+      obj.tag === 'lark_md' ||
+      obj.tag === 'markdown')
   ) {
     if (obj.content) parts.push(obj.content);
     return;
   }
 
-  // 容器字段：递归
-  if (obj.text) walkCardNode(obj.text, parts);
-  if (obj.title) walkCardNode(obj.title, parts);
-  if (obj.header) walkCardNode(obj.header, parts);
-  if (obj.elements) walkCardNode(obj.elements, parts);
-  if (obj.actions) walkCardNode(obj.actions, parts);
-  if (obj.fields) walkCardNode(obj.fields, parts);
-  if (obj.columns) walkCardNode(obj.columns, parts);
+  // 容器字段：递归(含 v2 卡片的 body.elements)
+  if (obj.text) walkCardNode(obj.text, parts, depth + 1);
+  if (obj.title) walkCardNode(obj.title, parts, depth + 1);
+  if (obj.header) walkCardNode(obj.header, parts, depth + 1);
+  if (obj.body) walkCardNode(obj.body, parts, depth + 1);
+  if (obj.elements) walkCardNode(obj.elements, parts, depth + 1);
+  if (obj.actions) walkCardNode(obj.actions, parts, depth + 1);
+  if (obj.fields) walkCardNode(obj.fields, parts, depth + 1);
+  if (obj.columns) walkCardNode(obj.columns, parts, depth + 1);
+
+  // 未知 tag 兜底：递归遍历所有 object 子字段提取 content
+  // 处理第三方 share-card 等非标准卡片格式
+  if (typeof obj.tag === 'string' && !KNOWN_TAGS.has(obj.tag)) {
+    for (const v of Object.values(obj)) {
+      if (v && typeof v === 'object') walkCardNode(v, parts, depth + 1);
+    }
+  }
 }
 
 /**

@@ -102,6 +102,8 @@ export interface ImageAttachment {
   data: string;
   /** MIME 类型 */
   mediaType: 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp';
+  /** 可选说明,会作为前置文本块插入到该图片前,帮助 agent 区分图片来源 */
+  label?: string;
 }
 
 /** 文档附件 (从飞书消息下载的 PDF 等) */

@@ -38,7 +38,7 @@ vi.mock('../../utils/logger.js', () => ({
 }));
 
 // Import after mocks
-const { ensureThread } = await import('../thread-utils.js');
+const { ensureThread, initProgressCardMsgId } = await import('../thread-utils.js');
 
 // ============================================================
 // Tests
@@ -124,5 +124,34 @@ describe('ensureThread', () => {
       expect(result.greetingMsgId).toBeUndefined();
       expect(mockSessionSetThread).not.toHaveBeenCalled();
     });
+  });
+});
+
+describe('initProgressCardMsgId', () => {
+  it('reuses greetingMsgId without creating a new card (avoids orphaned card bug)', async () => {
+    const replyCardInThread = vi.fn(() => Promise.resolve('new-card'));
+    const result = await initProgressCardMsgId('greeting-card-1', 'anchor-1', replyCardInThread);
+    expect(result).toBe('greeting-card-1');
+    expect(replyCardInThread).not.toHaveBeenCalled();
+  });
+
+  it('creates a new card when no greetingMsgId but threadReplyMsgId exists', async () => {
+    const replyCardInThread = vi.fn(() => Promise.resolve('new-card'));
+    const result = await initProgressCardMsgId(undefined, 'anchor-1', replyCardInThread);
+    expect(result).toBe('new-card');
+    expect(replyCardInThread).toHaveBeenCalledWith('anchor-1');
+  });
+
+  it('returns undefined when neither greetingMsgId nor threadReplyMsgId exists', async () => {
+    const replyCardInThread = vi.fn(() => Promise.resolve('new-card'));
+    const result = await initProgressCardMsgId(undefined, undefined, replyCardInThread);
+    expect(result).toBeUndefined();
+    expect(replyCardInThread).not.toHaveBeenCalled();
+  });
+
+  it('returns undefined when reply card creation fails', async () => {
+    const replyCardInThread = vi.fn(() => Promise.resolve(undefined));
+    const result = await initProgressCardMsgId(undefined, 'anchor-1', replyCardInThread);
+    expect(result).toBeUndefined();
   });
 });

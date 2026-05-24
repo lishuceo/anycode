@@ -1,6 +1,7 @@
 node_modules/
 dist/
 data/
+!src/cron/holidays/data/
 logs/
 .env
 *.log

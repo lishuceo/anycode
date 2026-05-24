@@ -8,33 +8,31 @@ import {
   extractMessageText,
 } from '../message-text.js';
 import {
-  buildResultCard,
   buildPipelineCard,
   buildStreamingCard,
   buildProgressCard,
   buildStatusCard,
   buildCancelledCard,
-  buildSimpleResultCard,
   buildCombinedProgressCard,
   buildAskUserQuestionCard,
   buildAskUserAnsweredCard,
   buildApprovalCard,
   buildApprovalResultCard,
+  buildOverviewCard,
+  buildTextContentCard,
 } from '../message-builder.js';
 
 describe('extractCardText', () => {
-  it('extracts text from buildResultCard (failure case in main thread)', () => {
-    const card = buildResultCard(
-      '帮我设计 Session Fork 方案',
+  it('extracts text from buildTextContentCard (代替已删除的 buildResultCard)', () => {
+    const card = buildTextContentCard(
       '## 方案要点\n\n核心难点在于同时继承对话历史和工作区状态',
+      3,
       true,
-      '39s',
     );
     const text = extractCardText(JSON.stringify(card));
-    expect(text).toContain('帮我设计 Session Fork 方案');
-    expect(text).toContain('Session Fork');
+    expect(text).toContain('方案要点');
     expect(text).toContain('核心难点');
-    expect(text).toContain('执行完成');
+    expect(text).toContain('Agent 输出');
   });
 
   it('extracts text from buildPipelineCard including button labels', () => {
@@ -95,18 +93,17 @@ describe('extractCardText', () => {
   describe('smoke: all production card builders', () => {
     const PROMPT = '帮我设计 Session Fork 方案';
     const RESULT_TEXT = '## 方案要点\n核心难点在于同时继承对话历史和工作区状态';
-    const lastTurn = { textContent: RESULT_TEXT, toolCalls: [] };
 
     const builders: Array<[string, () => Record<string, unknown>, string[]]> = [
       ['buildProgressCard', () => buildProgressCard(PROMPT, '加载中...'), [PROMPT]],
-      ['buildResultCard', () => buildResultCard(PROMPT, RESULT_TEXT, true, '39s'), [PROMPT, '核心难点']],
-      ['buildResultCard(failure)', () => buildResultCard(PROMPT, RESULT_TEXT, false, '5s'), [PROMPT, '核心难点']],
+      ['buildOverviewCard(processing)', () => buildOverviewCard(PROMPT, 'processing', 1, 5, 0.01), [PROMPT, '处理中']],
+      ['buildOverviewCard(success)', () => buildOverviewCard(PROMPT, 'success', 3, 39, 0.12), [PROMPT, '完成']],
+      ['buildOverviewCard(error)', () => buildOverviewCard(PROMPT, 'error', 2, 5), [PROMPT, '失败']],
+      ['buildTextContentCard', () => buildTextContentCard(RESULT_TEXT, 3, true), ['核心难点']],
       ['buildStreamingCard', () => buildStreamingCard(PROMPT, '正在做事', 3), [PROMPT, '正在做事']],
       ['buildPipelineCard', () => buildPipelineCard(PROMPT, 'plan', 1, 6, 30, 0.12, '细节', 'pid'), [PROMPT, '细节']],
       ['buildStatusCard', () => buildStatusCard('/root/dev/foo', 'idle', 3), ['/root/dev/foo', 'idle']],
       ['buildCancelledCard', () => buildCancelledCard(PROMPT), [PROMPT]],
-      ['buildSimpleResultCard', () => buildSimpleResultCard(PROMPT, true, '10s', undefined, lastTurn), ['核心难点']],
-      ['buildSimpleResultCard(error)', () => buildSimpleResultCard(PROMPT, false, '2s', '某错误信息'), ['某错误信息']],
       ['buildCombinedProgressCard', () => buildCombinedProgressCard(RESULT_TEXT, [], 2, false), ['核心难点']],
       ['buildAskUserQuestionCard', () => buildAskUserQuestionCard('qid', [
         { question: '选哪个?', options: [{ label: 'A方案', description: '描述A' }, { label: 'B方案', description: '描述B' }] },
@@ -279,11 +276,10 @@ describe('extractMessageText', () => {
 
   // -- 失忆事件的核心回归测试 --
   it('REGRESSION: interactive msgType extracts card text instead of "[卡片消息]" placeholder', () => {
-    const card = buildResultCard(
-      '设计方案',
+    const card = buildTextContentCard(
       '## 设计要点\n\n这是关键内容,以前会被洗成 [卡片消息]',
+      3,
       true,
-      '10s',
     );
     const result = extractMessageText('interactive', JSON.stringify(card));
     expect(result.text).not.toBe('[卡片消息]');
