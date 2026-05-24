@@ -123,9 +123,9 @@ vi.mock('../agent/config-loader.js', () => ({
 }));
 vi.mock('../agent/tools/discussion.js', () => ({ createDiscussionMcpServer: vi.fn() }));
 vi.mock('../feishu/message-builder.js', () => ({
-  buildResultCard: vi.fn(), buildStatusCard: vi.fn(), buildCancelledCard: vi.fn(),
+  buildStatusCard: vi.fn(), buildCancelledCard: vi.fn(),
   buildPipelineCard: vi.fn(), buildPipelineConfirmCard: vi.fn(), buildProgressCard: vi.fn(),
-  buildToolProgressCard: vi.fn(), buildTextContentCard: vi.fn(), buildSimpleResultCard: vi.fn(),
+  buildToolProgressCard: vi.fn(), buildTextContentCard: vi.fn(), buildCombinedProgressCard: vi.fn(),
 }));
 vi.mock('../feishu/message-parser.js', () => ({ formatMergeForwardSubMessage: vi.fn() }));
 vi.mock('../feishu/mention-resolver.js', () => ({ resolveMentions: vi.fn() }));

@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "tsx src/index.ts",
     "onboard": "tsx scripts/onboard.ts",
-    "build": "tsc",
+    "build": "tsc && node -e \"require('node:fs').cpSync('src/cron/holidays/data','dist/cron/holidays/data',{recursive:true})\"",
     "start": "node dist/index.js",
     "lint": "eslint src/",
     "typecheck": "tsc --noEmit",

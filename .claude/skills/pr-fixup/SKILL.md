@@ -141,7 +141,23 @@ gh run view RUN_ID --log-failed 2>&1 | tail -100
 
 ### Step 3: 获取未解决的 Review 评论
 
-通过 GraphQL 获取所有 review threads：
+Review 反馈分布在三个地方，必须**都检查**，不能只看 inline review threads：
+
+1. **Inline review threads** — reviewer 在具体代码行上的评论（GraphQL `reviewThreads`）
+2. **PR 顶层 issue comments** — review bot 经常把发现的问题汇总成一条整体评论发到 PR 主时间线（`gh pr view --json comments`）
+3. **PR description** — 部分 review bot 会把 summary 写进 PR description 而非 comment
+
+先获取 PR 作者、body、head SHA，以及最后一次推送对应的 commit 时间：
+
+```bash
+gh pr view PR_NUMBER --json author,body,headRefOid -q '{author: .author.login, body: .body, sha: .headRefOid}'
+# 用 GitHub 上 head commit 的 committer date 作为"最后一次 push 时间"的近似值
+# 不要用本地 git log（rebase/amend 后本地时间和 GitHub 上不一致）
+HEAD_SHA=$(gh pr view PR_NUMBER --json headRefOid -q .headRefOid)
+LAST_PUSH=$(gh api repos/OWNER/REPO/commits/$HEAD_SHA --jq .commit.committer.date)
+```
+
+**3a. Inline review threads**（GraphQL）：
 
 ```bash
 gh api graphql -f query='{
@@ -158,6 +174,7 @@ gh api graphql -f query='{
               author { login }
               path
               line
+              createdAt
             }
           }
         }
@@ -167,19 +184,45 @@ gh api graphql -f query='{
 }'
 ```
 
-先获取 PR 作者：`gh pr view PR_NUMBER --json author -q .author.login` → `PR_AUTHOR`
-
 过滤条件：
 - `isResolved == false`（未解决）
-- 发起评论（第一条 comment）的 `author.login` **不是** PR 作者（排除自己的评论，处理所有 reviewer 的反馈，包括 bot 和人类 reviewer）
+- 第一条 comment 的 `author.login` **不是** PR 作者
 
-如果没有 CI 失败（Step 2 已全部通过）且没有未解决的非作者评论 → 输出 "✅ 所有 CI checks 通过，PR review 无阻塞问题" 并结束循环。
+**3b. PR 顶层 issue comments**：
+
+```bash
+gh pr view PR_NUMBER --json comments -q '.comments[] | select(.author.login != "PR_AUTHOR") | {id, body, author: .author.login, createdAt}'
+```
+
+过滤条件：
+- `author.login` 不是 PR 作者
+- `createdAt` 在最后一次 push 之后（处理新增反馈，忽略已被旧 commit 处理的历史评论）
+
+**3c. PR description**：
+
+检查 PR body 中是否包含 review summary。判定标准（避免把普通 PR 说明误判为 review）：
+
+- **强信号**（出现任一即可判定）：`## Review Summary`、`### Issues Found`、`## Review Notes`、`Suggested Action`
+- **弱信号**（需同时出现 ≥2 个才算）：`🟡`、`🔴`、`nit`、`confidence`、`severity`
+
+满足上述任一规则的，把 review summary 段落里的条目当作待处理 review feedback，与 3a/3b 一起进入 Step 4。
+
+**去重（重要）**：3a 靠 `isResolved` 去重、3b 靠 `createdAt > LAST_PUSH` 去重，但 PR description 是静态的，Claude 修完代码 push 后 description 内容并不会变。为避免同一 `/pr-fixup` 调用内同一条 3c 条目被反复处理，必须做以下两件事之一：
+
+- **本轮内存记录**：在当前 `/pr-fixup` 执行流程中维护一个集合（如条目正文的前 50 字符 hash），处理过的 3c 条目下一轮直接跳过
+- **镜像到顶层 comment**：处理完 3c 条目后调用 `gh pr comment` 写一条 "Addressed (3c): <条目摘要>" 到 PR 主时间线，让后续轮次靠 3b 的 `LAST_PUSH` 过滤自动跳过
+
+推荐第一种（更便宜，不污染 PR 时间线）。
+
+如果没有 CI 失败（Step 2 已全部通过）且 3a/3b/3c 都没有未处理的反馈 → 输出 "✅ 所有 CI checks 通过，PR review 无阻塞问题" 并结束循环。
 
 ### Step 4: 分析并处理 Review 评论
 
-对于每个未解决的评论：
+对于每个未解决的评论（来自 3a inline、3b issue comment、3c PR description summary）：
 
-1. **读取完整源文件**：用 Read 工具读取评论所在的 `path` 文件
+1. **读取相关源文件**：
+   - inline 评论：用 Read 工具读取评论所在的 `path` 文件
+   - issue comment / PR description summary：从 body 中解析出涉及的文件路径（通常是 `src/foo.ts:123` 格式），逐个 Read
 2. **理解评论内容**：仔细阅读 `body` 中指出的具体问题
 3. **结合上下文判断**：评论是否正确？
 
@@ -200,11 +243,19 @@ gh api graphql -f query='{
 - 回复评论确认修复：
 
 ```bash
+# inline review comment（来自 3a）
 gh api repos/OWNER/REPO/pulls/PR_NUMBER/comments/COMMENT_DATABASE_ID/replies \
   -f body="Fixed — <简述修改内容>"
+
+# PR 顶层 issue comment（来自 3b）— 没有 thread，直接在 PR 主时间线新增一条
+# 回复链接用完整 URL（GitHub 不会把 #COMMENT_ID 解析成 comment 跳转）
+gh pr comment PR_NUMBER --body "Fixed — <简述修改内容>（回复 [评论](https://github.com/OWNER/REPO/pull/PR_NUMBER#issuecomment-ISSUE_COMMENT_ID)）"
+
+# PR description summary 条目（来自 3c）— 同样在 PR 主时间线回复
+gh pr comment PR_NUMBER --body "Addressed — <简述修改内容>"
 ```
 
-- Resolve 该 thread：
+- Resolve 该 thread（仅 inline review thread 适用，issue comment 和 description summary 无 thread 可 resolve）：
 
 ```bash
 gh api graphql -f query='mutation {
@@ -219,11 +270,15 @@ gh api graphql -f query='mutation {
 1. 回复评论说明原因：
 
 ```bash
+# inline review comment（来自 3a）
 gh api repos/OWNER/REPO/pulls/PR_NUMBER/comments/COMMENT_DATABASE_ID/replies \
   -f body="Not an issue — <具体解释，引用代码说明 reviewer 的判断为什么不适用于此场景>"
+
+# PR 顶层 issue comment / description summary（来自 3b/3c）
+gh pr comment PR_NUMBER --body "Not an issue — <具体解释>"
 ```
 
-2. Resolve 该 thread：
+2. Resolve 该 thread（仅 inline review thread 适用）：
 
 ```bash
 gh api graphql -f query='mutation {
@@ -246,9 +301,11 @@ gh api graphql -f query='mutation {
 - 输出 "🔄 第 N 轮：修复 X 个 CI 问题 + Y 个 review 问题，反驳 Z 个误报，等待新一轮 checks..."
 - 回到 Step 1
 
-**如果只有误报被 resolve（无代码修复）且 CI 全部通过：**
-- 输出 "✅ 第 N 轮：反驳 Y 个误报并 resolve，所有 CI checks 通过"
+**如果本轮所有 review 反馈都已处理（inline 已 reply+resolve、3b/3c 已 reply）且无代码修复且 CI 全部通过：**
+- 输出 "✅ 第 N 轮：处理 Y 个 review 反馈（含 Z 个反驳），所有 CI checks 通过"
 - 结束循环
+
+> 注意：3b/3c 没有 thread 可以 resolve，"已处理"的标准是已经发出 `gh pr comment` 回复。不要因为"没有 resolve 动作"就误判为未处理而陷入死循环。
 
 ---
 

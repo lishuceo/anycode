@@ -6,10 +6,11 @@ import { taskQueue } from '../session/queue.js';
 import { claudeExecutor } from '../claude/executor.js';
 import { DEFAULT_IMAGE_PROMPT, DEFAULT_DOCUMENT_PROMPT } from '../claude/types.js';
 import type { TurnInfo, ToolCallInfo, ImageAttachment, DocumentAttachment, ConversationTurn } from '../claude/types.js';
-import { buildResultCard, buildStatusCard, buildCancelledCard, buildPipelineCard, buildPipelineConfirmCard, buildCombinedProgressCard, buildSimpleResultCard, buildAskUserQuestionCard, buildAskUserAnsweredCard } from './message-builder.js';
+import { buildStatusCard, buildCancelledCard, buildPipelineCard, buildPipelineConfirmCard, buildCombinedProgressCard, buildAskUserQuestionCard, buildAskUserAnsweredCard } from './message-builder.js';
 import type { AskUserQuestionItem } from './message-builder.js';
 import { TOTAL_PHASES } from '../pipeline/types.js';
 import { feishuClient, feishuClientContext, runWithAccountId } from './client.js';
+import { saveMessageFileToCache } from './file-cache.js';
 import { config, isMultiBotMode } from '../config.js';
 import { checkAndRequestApproval, handleApprovalTextCommand, handleApprovalCardAction, setOnApproved } from './approval.js';
 import { resolveThreadContext } from './thread-context.js';
@@ -89,6 +90,36 @@ export function formatConversationTrace(trace?: ConversationTurn[]): string {
   return joined.length > MAX_TOTAL ? joined.slice(-MAX_TOTAL) : joined;
 }
 
+/**
+ * 工作区切换 restart 时：把已落盘的图片路径拼成文本提示，让 agent 用 Read 工具按需查看。
+ * 由于 restart query 不重传多模态 images 参数（避免重复消耗 token），需以文本路径作为 fallback。
+ * 返回空字符串表示没有可附加的图片提示。
+ */
+export function formatRestartImageHints(paths: string[]): string {
+  if (!paths.length) return '';
+  // 去重后保持原顺序
+  const unique = Array.from(new Set(paths));
+  const lines = unique.map(p => `- ${p}`);
+  return [
+    '[历史聊天图片] 工作区切换前已加载的图片已落盘到本地，如需查看请使用 Read 工具读取：',
+    ...lines,
+  ].join('\n');
+}
+
+/**
+ * 把历史消息中的图片落盘路径拼成文本提示。与 formatRestartImageHints 同形式但措辞不同：
+ * 历史图片不再走多模态(避免污染上下文),需要时让 agent 用 Read 工具按需读取。
+ */
+export function formatHistoryImageHints(paths: string[]): string {
+  if (!paths.length) return '';
+  const unique = Array.from(new Set(paths));
+  const lines = unique.map(p => `- ${p}`);
+  return [
+    '[历史聊天图片] 历史消息中的图片未自动展开,已落盘到本地,如需查看请使用 Read 工具读取：',
+    ...lines,
+  ].join('\n');
+}
+
 // ============================================================
 // AskUserQuestion 待回答存储
 // 当 Claude 调用 AskUserQuestion 时，canUseTool 拦截并发送飞书卡片，
@@ -115,8 +146,13 @@ interface PendingQuestion {
 /** questionId → PendingQuestion */
 const pendingQuestions = new Map<string, PendingQuestion>();
 
-/** AskUserQuestion 等待超时（5 分钟） */
-const ASK_USER_TIMEOUT_MS = 5 * 60 * 1000;
+/** AskUserQuestion 等待超时（毫秒）。0 表示永不超时（默认）。 */
+const ASK_USER_TIMEOUT_MS = (() => {
+  const raw = process.env.ASK_USER_TIMEOUT_MS;
+  if (raw === undefined || raw === '') return 0;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : 0;
+})();
 
 /**
  * 创建 AskUserQuestion 回调（供 executeClaudeTask / executeDirectTask 共用）
@@ -144,15 +180,17 @@ function createAskUserHandler(chatId: string, getThreadReplyMsgId: () => string 
         chatId,
       };
 
-      pending.timeoutTimer = setTimeout(() => {
-        pendingQuestions.delete(questionId);
-        reject(new Error('AskUserQuestion timed out'));
-      }, ASK_USER_TIMEOUT_MS);
+      if (ASK_USER_TIMEOUT_MS > 0) {
+        pending.timeoutTimer = setTimeout(() => {
+          pendingQuestions.delete(questionId);
+          reject(new Error('AskUserQuestion timed out'));
+        }, ASK_USER_TIMEOUT_MS);
+      }
 
       pendingQuestions.set(questionId, pending);
 
       // 发送卡片（在话题内回复或直接发到群）
-      // 如果发送失败，立即 reject 而非等待 5 分钟超时
+      // 如果发送失败，立即 reject 而非等待用户回答（避免任务永久挂起）
       const trySendCard = async () => {
         try {
           const threadMsgId = getThreadReplyMsgId();
@@ -640,7 +678,7 @@ function processQueue(queueKey: string, agentId: AgentId = 'dev'): void {
 
     const executeFn = useDirectMode
       ? executeDirectTask(task.message, task.chatId, task.userId, task.messageId, task.images, task.documents, agentId, task.threadId, task.rootId, task.createTime, { forceThread: task.forceThread }, task.messageType)
-      : executeClaudeTask(task.message, task.chatId, task.userId, task.messageId, task.rootId, task.threadId, task.images, task.documents, agentId, task.createTime, task.messageType);
+      : executeClaudeTask(task.message, task.chatId, task.userId, task.messageId, task.rootId, task.threadId, task.images, task.documents, agentId, task.createTime, task.messageType, task.currentImagePaths);
 
     claudeExecutor.registerTask(executeFn);
 
@@ -778,6 +816,8 @@ interface ParsedMessage {
   senderType?: string;
   /** 消息创建时间（毫秒级时间戳字符串，来自飞书 message.create_time） */
   createTime?: string;
+  /** 当前消息内图片的落盘路径（workspace 切换后 restart 不重传多模态 images，用此作为文本 fallback） */
+  currentImagePaths?: string[];
 }
 
 /**
@@ -827,7 +867,7 @@ async function handleMessageEvent(data: MessageEventData, accountId: string = 'd
   const parsed = await parseMessage(data);
   if (!parsed) return;
 
-  const { text, messageId, userId, chatId, chatType, mentionedBot, rootId, threadId, images, documents, messageType, mentions, createTime } = parsed;
+  const { text, messageId, userId, chatId, chatType, mentionedBot, rootId, threadId, images, documents, messageType, mentions, createTime, currentImagePaths } = parsed;
 
   logger.info({ userId, chatId, chatType, rootId, threadId, accountId, text: text.slice(0, 100), hasImages: !!images?.length }, 'Received message');
 
@@ -980,7 +1020,7 @@ async function handleMessageEvent(data: MessageEventData, accountId: string = 'd
   const queueKey = perMessageParallel
     ? makeQueueKey(chatId, undefined, agentId, messageId)
     : makeQueueKey(chatId, effectiveThreadId, agentId, isDirectMode ? userId : undefined);
-  taskQueue.enqueue(queueKey, chatId, userId, effectiveText, messageId, rootId, effectiveThreadId, images, documents, createTime, forceThread, messageType, accountId).catch(() => {});
+  taskQueue.enqueue(queueKey, chatId, userId, effectiveText, messageId, rootId, effectiveThreadId, images, documents, createTime, forceThread, messageType, accountId, currentImagePaths).catch(() => {});
   processQueue(queueKey, agentId);
 }
 
@@ -1367,7 +1407,8 @@ const MAX_HISTORY_IMAGES = 5;
 async function downloadHistoryImages(
   messages: Array<{ messageId: string; imageRefs?: Array<{ imageKey: string }> }>,
   parentMsgCount = 0,
-): Promise<{ images: ImageAttachment[]; lazyHints: string[] }> {
+  topicRootMessageId?: string,
+): Promise<{ historyImagePaths: string[]; lazyHints: string[] }> {
   // 收集所有图片引用，标记是否来自父群
   const refs: Array<{ messageId: string; imageKey: string; fromParent: boolean }> = [];
   for (let i = 0; i < messages.length; i++) {
@@ -1379,7 +1420,7 @@ async function downloadHistoryImages(
       }
     }
   }
-  if (refs.length === 0) return { images: [], lazyHints: [] };
+  if (refs.length === 0) return { historyImagePaths: [], lazyHints: [] };
 
   // 父群图片：lazy loading（注入元数据，不下载）
   const lazyHints: string[] = [];
@@ -1390,6 +1431,10 @@ async function downloadHistoryImages(
       );
       return false;
     }
+    // 话题首条图片由 fetchTopicRootImages 单独处理(走多模态),这里跳过避免重复下载
+    if (topicRootMessageId && ref.messageId === topicRootMessageId) {
+      return false;
+    }
     return true;
   });
 
@@ -1397,10 +1442,11 @@ async function downloadHistoryImages(
     logger.info({ parentImageCount: lazyHints.length }, 'Parent chat images skipped (lazy loading), metadata injected');
   }
 
-  if (downloadable.length === 0) return { images: [], lazyHints };
+  if (downloadable.length === 0) return { historyImagePaths: [], lazyHints };
 
   const toDownload = downloadable.slice(-MAX_HISTORY_IMAGES);
 
+  // 历史图片仅落盘 → 文本路径提示;不再嵌入多模态,避免污染上下文
   const results = await Promise.all(toDownload.map(async (ref) => {
     try {
       const buf = await feishuClient.downloadMessageImage(ref.messageId, ref.imageKey);
@@ -1409,23 +1455,192 @@ async function downloadHistoryImages(
         return null;
       }
       const mediaType = detectImageMediaType(buf);
-      const compressed = await compressImageForHistory(buf, mediaType);
-      return {
-        data: compressed.data.toString('base64'),
-        mediaType: compressed.mediaType,
-      } as ImageAttachment;
+      try {
+        const savedPath = await saveMessageFileToCache(
+          ref.messageId,
+          ref.imageKey,
+          buf,
+          `image${mediaTypeToExt(mediaType)}`,
+        );
+        return savedPath;
+      } catch (saveErr) {
+        logger.debug({ err: saveErr, messageId: ref.messageId, imageKey: ref.imageKey }, 'Failed to persist history image to cache (non-fatal)');
+        return null;
+      }
     } catch (err) {
       logger.warn({ err, messageId: ref.messageId, imageKey: ref.imageKey }, 'Failed to download history image, skipping');
       return null;
     }
   }));
-  const images = results.filter((img): img is ImageAttachment => img !== null);
+  const historyImagePaths = results.filter((p): p is string => !!p);
 
-  if (images.length > 0) {
-    logger.info({ count: images.length, totalRefs: refs.length, parentSkipped: lazyHints.length }, 'Downloaded history images');
+  if (historyImagePaths.length > 0) {
+    logger.info({ count: historyImagePaths.length, totalRefs: refs.length, parentSkipped: lazyHints.length }, 'Persisted history images (text-hint only)');
   }
 
-  return { images, lazyHints };
+  return { historyImagePaths, lazyHints };
+}
+
+/**
+ * 话题首条消息的图片单独 fetch + 下载,作为多模态图片(带标签)注入。
+ * 只在话题模式下调用(threadId 有值)。返回的图片自带 label='话题首条消息的图片'。
+ *
+ * 用 threadId 单独取根消息比依赖历史窗口更稳定 —— 历史窗口在 resume 时可能已经把根消息滑出去了,
+ * 而根消息往往承载用户问题的核心图片(如"看这张图有什么问题")。
+ *
+ * 进程内 LRU 缓存按 threadId 缓存结果,避免每轮 resume 都重复 fetch。
+ */
+const topicRootImagesCache = new Map<string, { rootMessageId: string; images: ImageAttachment[]; savedPaths: string[] }>();
+const TOPIC_ROOT_CACHE_MAX = 100;
+
+async function fetchTopicRootImages(threadId: string): Promise<{
+  rootMessageId?: string;
+  images: ImageAttachment[];
+  savedPaths: string[];
+}> {
+  const cached = topicRootImagesCache.get(threadId);
+  if (cached) {
+    // LRU: 命中后移到最近
+    topicRootImagesCache.delete(threadId);
+    topicRootImagesCache.set(threadId, cached);
+    // '' 是哨兵 (表示"已确认无可用首条图片"),对外暴露为 undefined
+    return {
+      rootMessageId: cached.rootMessageId || undefined,
+      images: cached.images,
+      savedPaths: cached.savedPaths,
+    };
+  }
+
+  // 负面缓存哨兵:任何无法定位/无图片/失败的情况都用空 entry 占位,
+  // 避免每轮 resume 都重复打 Feishu API。rootMessageId 为空串表示"已确认无图"
+  const cacheEmpty = (): { rootMessageId?: string; images: ImageAttachment[]; savedPaths: string[] } => {
+    const empty = { rootMessageId: '', images: [] as ImageAttachment[], savedPaths: [] as string[] };
+    _putTopicRootCache(threadId, empty);
+    return { rootMessageId: undefined, images: [], savedPaths: [] };
+  };
+
+  try {
+    const items = await feishuClient.getMessageById(threadId);
+    if (!items || items.length === 0) return cacheEmpty();
+    const rootMsg = items.find(m => m.message_id === threadId) ?? items[0];
+    if (!rootMsg) return cacheEmpty();
+
+    const rootMessageId = rootMsg.message_id;
+    if (!rootMessageId) return cacheEmpty();
+    const msgType = rootMsg.msg_type || 'text';
+    const imageKeys: string[] = [];
+
+    if (msgType === 'image') {
+      try {
+        const body = JSON.parse(rootMsg.body?.content ?? '{}') as Record<string, unknown>;
+        const key = body.image_key;
+        if (typeof key === 'string' && key.length > 0) imageKeys.push(key);
+      } catch { /* ignore */ }
+    } else if (msgType === 'post') {
+      try {
+        const body = JSON.parse(rootMsg.body?.content ?? '{}') as Record<string, unknown>;
+        // 飞书 post 可能直接含 content 数组,也可能按语言 key (zh_cn/en_us/ja_jp) 嵌套
+        const localized = (body.zh_cn || body.en_us || body.ja_jp) as Record<string, unknown> | undefined;
+        const postBody: Record<string, unknown> | undefined = Array.isArray(body.content)
+          ? body
+          : (localized && typeof localized === 'object' ? localized : undefined);
+        const paragraphs = postBody?.content;
+        if (Array.isArray(paragraphs)) {
+          for (const para of paragraphs) {
+            if (!Array.isArray(para)) continue;
+            for (const el of para) {
+              if (el && typeof el === 'object' && (el as Record<string, unknown>).tag === 'img') {
+                const key = (el as Record<string, unknown>).image_key;
+                if (typeof key === 'string' && key.length > 0) imageKeys.push(key);
+              }
+            }
+          }
+        }
+      } catch { /* ignore */ }
+    }
+
+    if (imageKeys.length === 0) {
+      const empty = { rootMessageId, images: [] as ImageAttachment[], savedPaths: [] as string[] };
+      _putTopicRootCache(threadId, empty);
+      return { rootMessageId, images: [], savedPaths: [] };
+    }
+
+    // 防御:截断异常的超长 imageKeys 列表,避免 post 携带巨量 img 元素时
+    // 把多模态 payload 撑爆 + 拖慢首条加载
+    const cappedKeys = imageKeys.slice(0, MAX_HISTORY_IMAGES);
+    if (cappedKeys.length < imageKeys.length) {
+      logger.warn({ threadId, total: imageKeys.length, kept: cappedKeys.length }, 'Topic-root image count capped');
+    }
+    const results = await Promise.all(cappedKeys.map(async (imageKey) => {
+      try {
+        const buf = await feishuClient.downloadMessageImage(rootMessageId, imageKey);
+        if (buf.length > MAX_IMAGE_SIZE_BYTES) {
+          logger.warn({ rootMessageId, imageKey, sizeBytes: buf.length }, 'Topic-root image too large, skipping');
+          return null;
+        }
+        const mediaType = detectImageMediaType(buf);
+        const compressed = await compressImageForHistory(buf, mediaType);
+        let savedPath: string | undefined;
+        try {
+          savedPath = await saveMessageFileToCache(
+            rootMessageId,
+            imageKey,
+            buf,
+            `image${mediaTypeToExt(mediaType)}`,
+          );
+        } catch (saveErr) {
+          logger.debug({ err: saveErr, rootMessageId, imageKey }, 'Failed to persist topic-root image to cache (non-fatal)');
+        }
+        const image: ImageAttachment = {
+          data: compressed.data.toString('base64'),
+          mediaType: compressed.mediaType,
+          label: '话题首条消息的图片',
+        };
+        return { image, savedPath };
+      } catch (err) {
+        logger.warn({ err, rootMessageId, imageKey }, 'Failed to download topic-root image');
+        return null;
+      }
+    }));
+
+    const ok = results.filter((r): r is { image: ImageAttachment; savedPath: string | undefined } => r !== null);
+    const images = ok.map(r => r.image);
+    const savedPaths = ok.map(r => r.savedPath).filter((p): p is string => !!p);
+
+    if (images.length > 0) {
+      logger.info({ threadId, rootMessageId, count: images.length }, 'Fetched topic-root images');
+    }
+
+    const result = { rootMessageId, images, savedPaths };
+    _putTopicRootCache(threadId, result);
+    return result;
+  } catch (err) {
+    logger.warn({ err, threadId }, 'Failed to fetch topic-root message');
+    // 失败也缓存哨兵 - 避免 transient 错误每轮 resume 都重复 hit Feishu API
+    return cacheEmpty();
+  }
+}
+
+function _putTopicRootCache(
+  threadId: string,
+  value: { rootMessageId: string; images: ImageAttachment[]; savedPaths: string[] },
+): void {
+  if (topicRootImagesCache.size >= TOPIC_ROOT_CACHE_MAX) {
+    const oldest = topicRootImagesCache.keys().next().value;
+    if (oldest) topicRootImagesCache.delete(oldest);
+  }
+  topicRootImagesCache.set(threadId, value);
+}
+
+/** mediaType → 文件扩展名（与 detectImageMediaType 配对） */
+function mediaTypeToExt(mediaType: ImageAttachment['mediaType']): string {
+  switch (mediaType) {
+    case 'image/jpeg': return '.jpg';
+    case 'image/png': return '.png';
+    case 'image/gif': return '.gif';
+    case 'image/webp': return '.webp';
+    default: return '.png';
+  }
 }
 
 /** 支持下载并嵌入 prompt 的文本类文件扩展名 */
@@ -1518,7 +1733,8 @@ async function downloadHistoryFiles(
 
   const toProcess = uniqueRefs.slice(-MAX_HISTORY_FILES);
   const MAX_PDF_SIZE = 30 * 1024 * 1024;
-  const MAX_TEXT_SIZE = 1 * 1024 * 1024;
+  const MAX_TEXT_SIZE = 30 * 1024 * 1024;
+  const INLINE_HISTORY_TEXT_THRESHOLD = 64 * 1024;
 
   const documents: DocumentAttachment[] = [];
   const fileTexts: string[] = [];
@@ -1542,10 +1758,19 @@ async function downloadHistoryFiles(
         }
       } else if (isTextFile(ref.fileName)) {
         const buf = await feishuClient.downloadMessageFile(ref.messageId, ref.fileKey);
-        if (buf.length <= MAX_TEXT_SIZE) {
+        if (buf.length > MAX_TEXT_SIZE) {
+          logger.warn({ messageId: ref.messageId, fileName: ref.fileName, sizeBytes: buf.length }, 'History text file too large, skipping');
+          return;
+        }
+        if (buf.length <= INLINE_HISTORY_TEXT_THRESHOLD) {
           const content = buf.toString('utf-8');
           fileTexts.push(`[历史消息中的文件: ${ref.fileName}]\n\n<file name="${ref.fileName}">\n${content}\n</file>`);
-          logger.info({ messageId: ref.messageId, fileName: ref.fileName, sizeBytes: buf.length }, 'History text file downloaded');
+          logger.info({ messageId: ref.messageId, fileName: ref.fileName, sizeBytes: buf.length }, 'History text file embedded inline');
+        } else {
+          const filePath = await saveMessageFileToCache(ref.messageId, ref.fileKey, buf, ref.fileName);
+          const sizeKB = (buf.length / 1024).toFixed(1);
+          fileTexts.push(`[历史消息中的文件: ${ref.fileName}（${sizeKB} KB），已保存到本地: ${filePath}\n请使用 Read 工具按需读取该文件，支持 offset/limit 分段；文件保留 24 小时。]`);
+          logger.info({ messageId: ref.messageId, fileName: ref.fileName, sizeBytes: buf.length, filePath }, 'History text file saved to cache for lazy read');
         }
       }
     } catch (err) {
@@ -1659,18 +1884,26 @@ async function buildHistoryContext(
       );
     }
 
+    // 话题模式下先单独 fetch 话题首条消息的图片(走多模态,带标签),
+    // 并把首条 messageId 传给 downloadHistoryImages 用于排重(避免重复下载/落盘)。
+    const topicRoot = threadId
+      ? await fetchTopicRootImages(threadId)
+      : { rootMessageId: undefined as string | undefined, images: [] as ImageAttachment[], savedPaths: [] as string[] };
+
     const [text, imagesResult, historyFiles] = await Promise.all([
       formatHistoryMessages(messages, chatId, selfBotOpenIds, parentMsgCount > 0 ? { parentMsgCount } : undefined),
-      downloadHistoryImages(messages, parentMsgCount),
+      downloadHistoryImages(messages, parentMsgCount, topicRoot.rootMessageId),
       downloadHistoryFiles(messages, parentMsgCount),
     ]);
     const fileTexts = [...historyFiles.fileTexts, ...imagesResult.lazyHints];
+    const historyImagePaths = [...topicRoot.savedPaths, ...imagesResult.historyImagePaths];
     return {
       text: text ?? undefined,
       newestMsgId,
-      ...(imagesResult.images.length > 0 ? { images: imagesResult.images } : {}),
+      ...(topicRoot.images.length > 0 ? { topicRootImages: topicRoot.images } : {}),
       ...(historyFiles.documents.length > 0 ? { documents: historyFiles.documents } : {}),
       ...(fileTexts.length > 0 ? { fileTexts } : {}),
+      ...(historyImagePaths.length > 0 ? { historyImagePaths } : {}),
     };
   } catch (err) {
     logger.error({ err, chatId, threadId }, errorLabel);
@@ -1794,6 +2027,9 @@ export const _testFormatHistoryMessages = formatHistoryMessages;
 /** 仅测试用：导出 downloadHistoryFiles */
 export const _testDownloadHistoryFiles = downloadHistoryFiles;
 export const _testDownloadHistoryImages = downloadHistoryImages;
+export const _testFetchTopicRootImages = fetchTopicRootImages;
+/** 仅测试用：清空话题首条图片缓存,防止用例之间相互干扰 */
+export const _testClearTopicRootCache = () => topicRootImagesCache.clear();
 
 /**
  * 格式化历史消息为上下文文本（共享逻辑）。
@@ -1923,7 +2159,7 @@ async function injectQuotedMessage(
   messageId: string,
   chatId: string,
   existingImages?: ImageAttachment[],
-): Promise<{ prompt: string; images?: ImageAttachment[] }> {
+): Promise<{ prompt: string; images?: ImageAttachment[]; savedImagePath?: string }> {
   if (!rootId || rootId === messageId) return { prompt: effectivePrompt, images: existingImages };
 
   try {
@@ -1936,6 +2172,7 @@ async function injectQuotedMessage(
     const rootMsgType = rootMsg.msg_type || 'text';
     let rootContent = '';
     let quotedImage: ImageAttachment | undefined;
+    let quotedSavedPath: string | undefined;
 
     if (rootMsgType === 'image') {
       // 图片消息：下载图片并追加到 images
@@ -1947,9 +2184,20 @@ async function injectQuotedMessage(
           if (buf.length <= MAX_IMAGE_SIZE_BYTES) {
             const mediaType = detectImageMediaType(buf);
             const compressed = await compressImage(buf, mediaType);
-            quotedImage = { data: compressed.data.toString('base64'), mediaType: compressed.mediaType };
+            quotedImage = { data: compressed.data.toString('base64'), mediaType: compressed.mediaType, label: '用户引用的消息中的图片' };
             rootContent = '[用户引用了一张图片]';
             logger.info({ rootId, imageSize: buf.length, compressedSize: compressed.data.length }, 'Downloaded quoted image');
+            // 同时落盘原图，工作区切换 restart 时通过 Read 工具兜底加载
+            try {
+              quotedSavedPath = await saveMessageFileToCache(
+                rootId,
+                imageKey,
+                buf,
+                `image${mediaTypeToExt(mediaType)}`,
+              );
+            } catch (saveErr) {
+              logger.debug({ err: saveErr, rootId, imageKey }, 'Failed to persist quoted image to cache (non-fatal)');
+            }
           } else {
             rootContent = '[用户引用了一张图片，但图片过大无法加载]';
           }
@@ -1995,7 +2243,7 @@ async function injectQuotedMessage(
       const mergedImages = quotedImage
         ? [...(existingImages || []), quotedImage]
         : existingImages;
-      return { prompt: newPrompt, images: mergedImages };
+      return { prompt: newPrompt, images: mergedImages, savedImagePath: quotedSavedPath };
     }
   } catch (err) {
     logger.warn({ err, rootId }, 'Failed to fetch rootId message for injection');
@@ -2108,6 +2356,7 @@ export async function executeClaudeTask(
   agentId: AgentId = 'dev',
   createTime?: string,
   messageType?: string,
+  currentImagePaths?: string[],
 ): Promise<void> {
   // 1. 解析话题上下文（thread + workingDir + greeting）
   const resolved = await resolveThreadContext({
@@ -2197,6 +2446,9 @@ export async function executeClaudeTask(
   // resume 时通过 afterMsgId 去重，只注入上次交互后新增的消息
   // 确保 dev-bot 能看到中间 @其他bot 的对话等未直接参与的消息
   let effectivePrompt = promptWithTime;
+  // workspace 切换 restart 时多模态 images 不会重传，需用落盘路径作为文本 fallback
+  // 包含当前消息内图片 + 历史消息内图片，restart 时拼成提示注入新 prompt
+  const restartImagePaths: string[] = [...(currentImagePaths ?? [])];
   if (!historySummaries) {
     // 收集所有自己管理的 bot open_id，用于历史消息差异化截断
     const selfBotOpenIds = accountManager.getAllBotOpenIds();
@@ -2204,6 +2456,9 @@ export async function executeClaudeTask(
 
     const afterMsgId = activeConversationId ? _historyDedup.get(sessionKey) : undefined;
     const history = await buildChatHistoryContext(chatId, threadId, messageId, afterMsgId, selfBotOpenIds);
+    if (history.historyImagePaths?.length) {
+      restartImagePaths.push(...history.historyImagePaths);
+    }
     if (history.text) {
       effectivePrompt = history.text + '\n\n---\n\n' + promptWithTime;
     }
@@ -2213,9 +2468,9 @@ export async function executeClaudeTask(
     // Resume 时跳过历史文件附件：SDK 会重放所有前序 turn，文件已在对话中，
     // 重复附加会导致 payload 累积膨胀（N turns × PDF size → 超 30MB 限制）
     if (activeConversationId) {
-      if (history.images?.length || history.documents?.length) {
+      if (history.topicRootImages?.length || history.documents?.length) {
         logger.info(
-          { historyImages: history.images?.length ?? 0, historyDocs: history.documents?.length ?? 0 },
+          { topicRootImages: history.topicRootImages?.length ?? 0, historyDocs: history.documents?.length ?? 0 },
           'Skipping history file attachments on resume — already in conversation',
         );
       }
@@ -2229,9 +2484,20 @@ export async function executeClaudeTask(
       }
     } else {
       // 非 resume：正常合并历史文件
-      // 合并历史消息中的图片
-      if (history.images && history.images.length > 0) {
-        images = [...(history.images), ...(images ?? [])];
+      // 当前消息图片打标签(用户主动发的图片)
+      if (images?.length) {
+        images = images.map(img => ({ ...img, label: img.label ?? '用户当前消息的图片' }));
+      }
+      // 话题首条图片(自带 label)合并进多模态
+      if (history.topicRootImages && history.topicRootImages.length > 0) {
+        images = [...(images ?? []), ...history.topicRootImages];
+      }
+      // 纯历史图片转成文本提示,前置到 effectivePrompt(避免污染多模态)
+      if (history.historyImagePaths && history.historyImagePaths.length > 0) {
+        const hint = formatHistoryImageHints(history.historyImagePaths);
+        if (hint) {
+          effectivePrompt = hint + '\n\n---\n\n' + effectivePrompt;
+        }
       }
       // 合并历史消息中的文档（PDF），按 fileName 去重 + 大小截断
       if (history.documents && history.documents.length > 0) {
@@ -2250,6 +2516,10 @@ export async function executeClaudeTask(
     const quoted = await injectQuotedMessage(effectivePrompt, rootId, messageId, chatId, images);
     effectivePrompt = quoted.prompt;
     images = quoted.images;
+    // 引用图片同样纳入工作区切换后落盘路径，避免 restart 丢失
+    if (quoted.savedImagePath) {
+      restartImagePaths.push(quoted.savedImagePath);
+    }
   }
 
   // 构造逐条 turn 回调
@@ -2417,7 +2687,7 @@ export async function executeClaudeTask(
           );
         } else {
           await sendResultCard(
-            prompt, { ...result, success: false, output: '', error: '工作区准备失败，目录不存在' },
+            { ...result, success: false, output: '', error: '工作区准备失败，目录不存在' },
             result.durationMs, result.costUsd,
             threadReplyMsgId, chatId,
           );
@@ -2455,9 +2725,14 @@ export async function executeClaudeTask(
       // - 不传 onWorkspaceChanged（不触发二次 restart）
       // - disableWorkspaceTool: 完全移除 setup_workspace MCP tool，防止无限循环
       // - 使用 effectivePrompt（含聊天历史）而非裸 prompt，避免 restart 后丢失对话上下文
+      // - restart 不重传多模态 images：将 S1 落盘的图片路径作为文本附加，让 agent 用 Read 工具按需查看
+      const restartImageHints = formatRestartImageHints(restartImagePaths);
+      const restartPromptWithImageHints = restartImageHints
+        ? `${restartImageHints}\n\n---\n\n${effectivePrompt}`
+        : effectivePrompt;
       const restartResult = await claudeExecutor.execute({
         sessionKey,
-        prompt: effectivePrompt,
+        prompt: restartPromptWithImageHints,
         workingDir: result.newWorkingDir,
         readOnly,
         model: agentCfg?.model,
@@ -2517,7 +2792,7 @@ export async function executeClaudeTask(
         );
       } else {
         await sendResultCard(
-          prompt, restartResult, totalDurationMs, totalCostUsd,
+          restartResult, totalDurationMs, totalCostUsd,
           threadReplyMsgId, chatId, undefined, turnCount,
         );
       }
@@ -2589,7 +2864,7 @@ export async function executeClaudeTask(
       );
     } else {
       await sendResultCard(
-        prompt, result, result.durationMs, result.costUsd,
+        result, result.durationMs, result.costUsd,
         threadReplyMsgId, chatId, undefined, turnCount,
       );
     }
@@ -2680,10 +2955,13 @@ export async function executeDirectTask(
   // /t 命令：强制创建话题，后续回复在话题中
   let threadReplyMsgId: string | undefined = eventThreadId ? rootId : undefined;
   let threadId: string | undefined = eventThreadId;
+  // ensureThread 创建新话题时返回的初始进度卡片 ID，结果出来后原地更新为完成态
+  let progressCardMsgId: string | undefined;
 
   if (options?.forceThread && !eventThreadId) {
     const threadResult = await ensureThread(chatId, userId, messageId, rootId, undefined, agentId);
     threadReplyMsgId = threadResult.threadReplyMsgId;
+    progressCardMsgId = threadResult.greetingMsgId;
     if (threadReplyMsgId) {
       const s = sessionManager.getOrCreate(chatId, userId, agentId);
       threadId = s.threadId;
@@ -2787,9 +3065,9 @@ export async function executeDirectTask(
     // Resume 时跳过历史文件附件：SDK 会重放所有前序 turn，文件已在对话中，
     // 重复附加会导致 payload 累积膨胀（N turns × PDF size → 超 30MB 限制）
     if (canResume) {
-      if (history.images?.length || history.documents?.length) {
+      if (history.topicRootImages?.length || history.documents?.length) {
         logger.info(
-          { historyImages: history.images?.length ?? 0, historyDocs: history.documents?.length ?? 0 },
+          { topicRootImages: history.topicRootImages?.length ?? 0, historyDocs: history.documents?.length ?? 0 },
           'Skipping history file attachments on resume — already in conversation',
         );
       }
@@ -2803,9 +3081,18 @@ export async function executeDirectTask(
       }
     } else {
       // 非 resume：正常合并历史文件
-      // 合并历史消息中的图片
-      if (history.images && history.images.length > 0) {
-        images = [...(history.images), ...(images ?? [])];
+      // 当前消息图片打默认标签
+      if (images?.length) {
+        images = images.map(img => ({ ...img, label: img.label ?? '用户当前消息的图片' }));
+      }
+      // 话题首条图片走多模态（已带标签）
+      if (history.topicRootImages && history.topicRootImages.length > 0) {
+        images = [...(images ?? []), ...history.topicRootImages];
+      }
+      // 纯历史图片走文本路径提示，前置到 prompt
+      if (history.historyImagePaths && history.historyImagePaths.length > 0) {
+        const hint = formatHistoryImageHints(history.historyImagePaths);
+        if (hint) effectivePrompt = hint + '\n\n---\n\n' + effectivePrompt;
       }
       // 合并历史消息中的文档（PDF），按 fileName 去重 + 大小截断
       if (history.documents && history.documents.length > 0) {
@@ -2898,7 +3185,8 @@ export async function executeDirectTask(
     }
 
     // 发送结果（统一走轻量回复，话题内通过 threadReplyMsgId 路由）
-    await sendDirectReply(messageId, chatId, result, threadReplyMsgId);
+    // progressCardMsgId 仅在 /t 创建新话题时有值，原地更新为完成态合并卡片
+    await sendDirectReply(messageId, chatId, result, threadReplyMsgId, progressCardMsgId);
 
     // 记忆抽取 (fire-and-forget)
     if (config.memory.enabled && result.success && result.output) {
@@ -2939,12 +3227,14 @@ interface HistoryResult {
   text?: string;
   /** 本次注入的最新 messageId（用于下次去重） */
   newestMsgId?: string;
-  /** 历史消息中提取的图片（已压缩） */
-  images?: ImageAttachment[];
+  /** 话题首条消息的图片(带 label,走多模态)。仅话题模式有值。 */
+  topicRootImages?: ImageAttachment[];
   /** 历史消息中提取的文档附件（PDF） */
   documents?: DocumentAttachment[];
   /** 历史消息中提取的文本文件内容（已格式化，可拼入 prompt） */
   fileTexts?: string[];
+  /** 历史消息中纯历史图片(含话题首条)的落盘路径,走文本提示 + restartImagePaths 兜底 */
+  historyImagePaths?: string[];
 }
 
 /**
@@ -2976,16 +3266,37 @@ async function buildDirectTaskHistory(
 }
 
 /**
- * 直接回复结果（轻量模式，短文本纯文字、长文本才用卡片）
+ * 直接回复结果（轻量模式，短文本纯文字、长文本或已有占位卡片走 combined card）
  *
  * @param threadReplyMsgId 话题内时传入，使用 replyTextInThread / replyCardInThread
+ * @param progressCardMsgId /t 创建话题时 ensureThread 返回的占位卡片 ID，原地更新为完成态
  */
 async function sendDirectReply(
   messageId: string,
   chatId: string,
   result: import('../claude/types.js').ClaudeResult,
   threadReplyMsgId?: string,
+  progressCardMsgId?: string,
 ): Promise<void> {
+  // progressCardMsgId 存在：始终原地更新占位卡片为完成态（避免遗留 "正在处理..."）
+  if (progressCardMsgId) {
+    const durationStr = formatDuration(result.durationMs);
+    const costInfo = result.costUsd ? ` | 💰 $${result.costUsd.toFixed(4)}` : '';
+    // 失败时也保留 partial output（执行器可能在 timeout/budget 触发前已产出文本）
+    const text = result.success
+      ? (result.output || '_(无输出)_')
+      : (result.output || '');
+    const card = buildCombinedProgressCard(text, [], 1, true, undefined, {
+      success: result.success,
+      durationStr: durationStr + costInfo,
+      error: result.error,
+    });
+    await feishuClient.updateCard(progressCardMsgId, card).catch((err) => {
+      logger.warn({ err, progressCardMsgId }, 'Failed to update direct-reply progress card');
+    });
+    return;
+  }
+
   // 成功但无输出（如模型 thinking 后决定不回复）→ 静默，不发 "(无输出)"
   if (result.success && !result.output) {
     logger.debug({ messageId }, 'Direct reply skipped — empty output (silent)');
@@ -3021,10 +3332,13 @@ async function sendDirectReply(
       await feishuClient.replyText(messageId, output);
     }
   } else {
-    // 长文本：卡片
+    // 长文本：合并卡片（无 header，含状态栏）
     const durationStr = formatDuration(result.durationMs);
     const costInfo = result.costUsd ? ` | 💰 $${result.costUsd.toFixed(4)}` : '';
-    const card = buildResultCard(output, output, true, durationStr + costInfo);
+    const card = buildCombinedProgressCard(output, [], 1, true, undefined, {
+      success: result.success,
+      durationStr: durationStr + costInfo,
+    });
     if (threadReplyMsgId) {
       await feishuClient.replyCardInThread(threadReplyMsgId, card);
     } else {
@@ -3035,9 +3349,11 @@ async function sendDirectReply(
 
 /**
  * 发送结果卡片（提取为独立函数，避免 restart 和正常流程重复代码）
+ *
+ * 仅在 progressCardMsgId 缺失时（极少见的兜底场景）作为新卡片发送。
+ * 统一使用合并卡片样式，与原地更新路径保持一致。
  */
 async function sendResultCard(
-  prompt: string,
   result: import('../claude/types.js').ClaudeResult,
   totalDurationMs: number,
   totalCostUsd: number | undefined,
@@ -3046,24 +3362,24 @@ async function sendResultCard(
   /** 最后一个缓冲的 turn（逐条模式），其内容合并进底部结果卡片 */
   lastTurn?: TurnInfo,
   /** 逐条模式的轮次计数 */
-  _turnCount?: number,
+  turnCount?: number,
 ): Promise<void> {
   const durationStr = formatDuration(totalDurationMs);
   const costInfo = totalCostUsd
     ? ` | 💰 $${totalCostUsd.toFixed(4)}`
     : '';
 
-  // 结果卡片：逐条模式包含最后一轮内容，否则包含完整输出
-  const resultCard = lastTurn
-    ? buildSimpleResultCard(prompt, result.success, durationStr + costInfo, result.error, lastTurn)
-    : buildResultCard(
-        prompt,
-        result.output || result.error || '(无输出)',
-        result.success,
-        durationStr + costInfo,
-      );
+  // 合并卡片：合并最后一轮文本 + 工具调用，附带状态栏
+  const text = lastTurn?.textContent ?? result.output ?? '';
+  const tools = lastTurn?.toolCalls ?? [];
+  const turns = turnCount ?? 1;
 
-  // 发送到话题底部（作为新消息）
+  const resultCard = buildCombinedProgressCard(text, tools, turns, true, undefined, {
+    success: result.success,
+    durationStr: durationStr + costInfo,
+    error: result.error,
+  });
+
   if (threadReplyMsgId) {
     await feishuClient.replyCardInThread(threadReplyMsgId, resultCard);
   } else {
@@ -3168,6 +3484,8 @@ async function parseMessage(data: MessageEventData): Promise<ParsedMessage | nul
   let text = '';
   let images: ImageAttachment[] | undefined;
   let documents: DocumentAttachment[] | undefined;
+  // 当前消息内图片同步落盘：workspace 切换后 restart 不重传 images，落盘路径作为 fallback 文本注入
+  const currentImagePaths: string[] = [];
 
   if (message.message_type === 'merge_forward') {
     // 合并转发消息：通过 API 获取子消息列表，解析后拼成可读文本
@@ -3338,6 +3656,12 @@ async function parseMessage(data: MessageEventData): Promise<ParsedMessage | nul
               logger.info({ imageKey, originalSize: buf.length, compressedSize: compressed.data.length, ratio: `${(compressed.data.length / buf.length * 100).toFixed(0)}%` }, 'Image compressed');
             }
             images.push({ data: compressed.data.toString('base64'), mediaType: compressed.mediaType });
+            try {
+              const path = await saveMessageFileToCache(message.message_id, imageKey, buf, `image${mediaTypeToExt(mediaType)}`);
+              currentImagePaths.push(path);
+            } catch (saveErr) {
+              logger.debug({ err: saveErr, messageId: message.message_id, imageKey }, 'Failed to persist post image to cache (non-fatal)');
+            }
           } catch (err) {
             logger.error({ err, messageId: message.message_id, imageKey }, 'Failed to download post image');
           }
@@ -3373,15 +3697,21 @@ async function parseMessage(data: MessageEventData): Promise<ParsedMessage | nul
         logger.info({ messageId: message.message_id, originalSize: buf.length, compressedSize: compressed.data.length, ratio: `${(compressed.data.length / buf.length * 100).toFixed(0)}%` }, 'Image compressed');
       }
       images = [{ data: compressed.data.toString('base64'), mediaType: compressed.mediaType }];
+      try {
+        const path = await saveMessageFileToCache(message.message_id, imageKey, buf, `image${mediaTypeToExt(mediaType)}`);
+        currentImagePaths.push(path);
+      } catch (saveErr) {
+        logger.debug({ err: saveErr, messageId: message.message_id, imageKey }, 'Failed to persist image to cache (non-fatal)');
+      }
     } catch (err) {
       logger.error({ err, messageId: message.message_id }, 'Failed to process image message');
       await feishuClient.replyText(message.message_id, '⚠️ 图片下载失败，请稍后重试');
       return null;
     }
   } else if (message.message_type === 'file') {
-    // 文件消息：支持 PDF（多模态）和文本类文件（嵌入 prompt）
+    // 文件消息：支持 PDF（多模态）和文本类文件（小文件嵌入 prompt，大文件落盘 lazy load）
     const MAX_FILE_SIZE_BYTES = 30 * 1024 * 1024; // 30MB
-    const MAX_TEXT_FILE_SIZE_BYTES = 1 * 1024 * 1024; // 1MB for text files
+    const INLINE_TEXT_FILE_THRESHOLD = 64 * 1024; // <= 64KB 直接嵌入 prompt，省一轮工具调用
     try {
       const content = JSON.parse(message.content);
       const fileKey = content.file_key as string | undefined;
@@ -3405,18 +3735,25 @@ async function parseMessage(data: MessageEventData): Promise<ParsedMessage | nul
         documents = [{ data: buf.toString('base64'), mediaType: 'application/pdf', fileName }];
         logger.info({ messageId: message.message_id, fileName, sizeBytes: buf.length }, 'PDF file downloaded');
       } else if (isTextFile(fileName)) {
-        // 文本类文件：下载后作为文本嵌入 prompt
+        // 文本类文件：小文件直接嵌入 prompt；大文件落盘，让 agent 用 Read 按需 offset/limit 分段读
         const buf = await feishuClient.downloadMessageFile(message.message_id, fileKey);
 
-        if (buf.length > MAX_TEXT_FILE_SIZE_BYTES) {
+        if (buf.length > MAX_FILE_SIZE_BYTES) {
           logger.warn({ messageId: message.message_id, sizeBytes: buf.length, fileName }, 'Text file too large, skipping');
-          await feishuClient.replyText(message.message_id, `⚠️ 文本文件太大（${(buf.length / 1024 / 1024).toFixed(1)}MB），请压缩到 1MB 以内后重试`);
+          await feishuClient.replyText(message.message_id, `⚠️ 文本文件太大（${(buf.length / 1024 / 1024).toFixed(1)}MB），上限 ${MAX_FILE_SIZE_BYTES / 1024 / 1024}MB`);
           return null;
         }
 
-        const fileContent = buf.toString('utf-8');
-        text = `[用户发送了文件: ${fileName}]\n\n<file name="${fileName}">\n${fileContent}\n</file>`;
-        logger.info({ messageId: message.message_id, fileName, sizeBytes: buf.length }, 'Text file downloaded and embedded in prompt');
+        if (buf.length <= INLINE_TEXT_FILE_THRESHOLD) {
+          const fileContent = buf.toString('utf-8');
+          text = `[用户发送了文件: ${fileName}]\n\n<file name="${fileName}">\n${fileContent}\n</file>`;
+          logger.info({ messageId: message.message_id, fileName, sizeBytes: buf.length }, 'Text file embedded inline');
+        } else {
+          const filePath = await saveMessageFileToCache(message.message_id, fileKey, buf, fileName);
+          const sizeKB = (buf.length / 1024).toFixed(1);
+          text = `[用户发送了文件: ${fileName}（${sizeKB} KB），已保存到本地: ${filePath}\n请使用 Read 工具按需读取该文件，支持 offset/limit 分段；文件保留 24 小时。]`;
+          logger.info({ messageId: message.message_id, fileName, sizeBytes: buf.length, filePath }, 'Text file saved to cache for lazy read');
+        }
       } else {
         text = `[用户发送了文件: ${fileName}，该文件类型暂不支持。支持的类型：PDF、常见文本/代码文件（.md, .txt, .json, .log, .py, .ts 等）]`;
       }
@@ -3462,14 +3799,20 @@ async function parseMessage(data: MessageEventData): Promise<ParsedMessage | nul
                 logger.warn({ messageId: message.message_id, sizeBytes: buf.length, fileName }, 'Quoted file too large, skipping');
               }
             } else if (isTextFile(fileName)) {
-              const MAX_TEXT_SIZE = 1 * 1024 * 1024;
+              const MAX_TEXT_SIZE = 30 * 1024 * 1024;
+              const INLINE_THRESHOLD = 64 * 1024;
               const buf = await feishuClient.downloadMessageFile(parent.message_id, fileKey);
-              if (buf.length <= MAX_TEXT_SIZE) {
+              if (buf.length > MAX_TEXT_SIZE) {
+                logger.warn({ messageId: message.message_id, sizeBytes: buf.length, fileName }, 'Quoted text file too large, skipping');
+              } else if (buf.length <= INLINE_THRESHOLD) {
                 const fileContent = buf.toString('utf-8');
                 text = `${text}\n\n[引用的文件: ${fileName}]\n\n<file name="${fileName}">\n${fileContent}\n</file>`;
-                logger.info({ messageId: message.message_id, parentId: message.parent_id, fileName, sizeBytes: buf.length }, 'Text file downloaded from quoted parent message');
+                logger.info({ messageId: message.message_id, parentId: message.parent_id, fileName, sizeBytes: buf.length }, 'Quoted text file embedded inline');
               } else {
-                logger.warn({ messageId: message.message_id, sizeBytes: buf.length, fileName }, 'Quoted text file too large, skipping');
+                const filePath = await saveMessageFileToCache(parent.message_id, fileKey, buf, fileName);
+                const sizeKB = (buf.length / 1024).toFixed(1);
+                text = `${text}\n\n[引用的文件: ${fileName}（${sizeKB} KB），已保存到本地: ${filePath}\n请使用 Read 工具按需读取该文件，支持 offset/limit 分段；文件保留 24 小时。]`;
+                logger.info({ messageId: message.message_id, parentId: message.parent_id, fileName, sizeBytes: buf.length, filePath }, 'Quoted text file saved to cache for lazy read');
               }
             }
           }
@@ -3532,6 +3875,7 @@ async function parseMessage(data: MessageEventData): Promise<ParsedMessage | nul
     messageType: message.message_type,
     senderType: sender.sender_type,
     createTime: message.create_time || undefined,
+    ...(currentImagePaths.length > 0 ? { currentImagePaths } : {}),
   };
 }
 

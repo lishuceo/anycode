@@ -1,5 +1,6 @@
 import { logger } from '../utils/logger.js';
 import { CronStore, computeNextRunAtMs } from './store.js';
+import { shouldSkip } from './holidays/index.js';
 import type { CronJob, CronJobCreate, CronJobPatch } from './types.js';
 
 /** 错误退避时间表 */
@@ -130,6 +131,37 @@ export class CronScheduler {
     const job = this.deps.store.get(jobSnapshot.id) ?? jobSnapshot;
 
     const startMs = Date.now();
+
+    // 节假日/周末跳过：仅推进 nextRunAtMs，不发消息、不算错误、不写 run
+    if (job.skipHolidays || job.skipWeekends) {
+      const skipResult = shouldSkip(
+        {
+          skipHolidays: job.skipHolidays,
+          skipWeekends: job.skipWeekends,
+          tz: job.schedule.tz,
+        },
+        startMs,
+      );
+      if (skipResult.skip) {
+        const nextRunAtMs = computeNextRunAtMs(job.schedule, startMs);
+        // 一次性任务（at）若无下次执行时间，删除以避免每 tick 重复触发 skip
+        if (job.deleteAfterRun && nextRunAtMs === undefined) {
+          this.deps.store.remove(job.id);
+          logger.info(
+            { jobId: job.id, jobName: job.name, reason: skipResult.reason },
+            'cron: one-shot job dropped (hit holiday/weekend)',
+          );
+          return;
+        }
+        this.deps.store.updateJobState(job.id, { nextRunAtMs });
+        logger.info(
+          { jobId: job.id, jobName: job.name, reason: skipResult.reason, nextRunAtMs },
+          'cron: job skipped (holiday/weekend)',
+        );
+        return;
+      }
+    }
+
     const runId = this.deps.store.insertRun({
       jobId: job.id,
       startedAtMs: startMs,
