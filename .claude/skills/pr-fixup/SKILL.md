@@ -207,6 +207,13 @@ gh pr view PR_NUMBER --json comments -q '.comments[] | select(.author.login != "
 
 满足上述任一规则的，把 review summary 段落里的条目当作待处理 review feedback，与 3a/3b 一起进入 Step 4。
 
+**去重（重要）**：3a 靠 `isResolved` 去重、3b 靠 `createdAt > LAST_PUSH` 去重，但 PR description 是静态的，Claude 修完代码 push 后 description 内容并不会变。为避免同一 `/pr-fixup` 调用内同一条 3c 条目被反复处理，必须做以下两件事之一：
+
+- **本轮内存记录**：在当前 `/pr-fixup` 执行流程中维护一个集合（如条目正文的前 50 字符 hash），处理过的 3c 条目下一轮直接跳过
+- **镜像到顶层 comment**：处理完 3c 条目后调用 `gh pr comment` 写一条 "Addressed (3c): <条目摘要>" 到 PR 主时间线，让后续轮次靠 3b 的 `LAST_PUSH` 过滤自动跳过
+
+推荐第一种（更便宜，不污染 PR 时间线）。
+
 如果没有 CI 失败（Step 2 已全部通过）且 3a/3b/3c 都没有未处理的反馈 → 输出 "✅ 所有 CI checks 通过，PR review 无阻塞问题" 并结束循环。
 
 ### Step 4: 分析并处理 Review 评论
@@ -294,9 +301,11 @@ gh api graphql -f query='mutation {
 - 输出 "🔄 第 N 轮：修复 X 个 CI 问题 + Y 个 review 问题，反驳 Z 个误报，等待新一轮 checks..."
 - 回到 Step 1
 
-**如果只有误报被 resolve（无代码修复）且 CI 全部通过：**
-- 输出 "✅ 第 N 轮：反驳 Y 个误报并 resolve，所有 CI checks 通过"
+**如果本轮所有 review 反馈都已处理（inline 已 reply+resolve、3b/3c 已 reply）且无代码修复且 CI 全部通过：**
+- 输出 "✅ 第 N 轮：处理 Y 个 review 反馈（含 Z 个反驳），所有 CI checks 通过"
 - 结束循环
+
+> 注意：3b/3c 没有 thread 可以 resolve，"已处理"的标准是已经发出 `gh pr comment` 回复。不要因为"没有 resolve 动作"就误判为未处理而陷入死循环。
 
 ---
 
