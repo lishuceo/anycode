@@ -144,6 +144,15 @@ export class CronScheduler {
       );
       if (skipResult.skip) {
         const nextRunAtMs = computeNextRunAtMs(job.schedule, startMs);
+        // 一次性任务（at）若无下次执行时间，删除以避免每 tick 重复触发 skip
+        if (job.deleteAfterRun && nextRunAtMs === undefined) {
+          this.deps.store.remove(job.id);
+          logger.info(
+            { jobId: job.id, jobName: job.name, reason: skipResult.reason },
+            'cron: one-shot job dropped (hit holiday/weekend)',
+          );
+          return;
+        }
         this.deps.store.updateJobState(job.id, { nextRunAtMs });
         logger.info(
           { jobId: job.id, jobName: job.name, reason: skipResult.reason, nextRunAtMs },

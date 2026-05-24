@@ -377,6 +377,36 @@ describe('CronScheduler', () => {
     expect(executeTask).toHaveBeenCalledTimes(1);
   });
 
+  it('drops one-shot `at` job that hits a holiday (no spin loop)', async () => {
+    // 注：addJob 内的 computeNextRunAtMs 用真实时间计算，所以 atTime 设为未来
+    // 然后用 fake timer 把"当前时间"拨到节假日触发 skip 路径
+    const job = await scheduler.addJob({
+      name: 'one-shot-holiday',
+      chatId: 'chat1',
+      userId: 'user1',
+      prompt: 'once',
+      schedule: { kind: 'at', atTime: '2099-01-01T09:00:00+08:00' },
+      skipHolidays: true,
+    });
+    expect(job.deleteAfterRun).toBe(true);
+
+    vi.useFakeTimers();
+    vi.setSystemTime(shanghaiMs('2026-10-01')); // 国庆 + atTime 早已"过去"（相对 setSystemTime 也未必，但 computeNextRunAtMs 在 skip 后会以 2026 年视角重算）
+
+    try {
+      // 把 atTime 改为过去，模拟 atTime 已到（直接改 DB 而非用 patch，避免 update 重算 nextRunAtMs）
+      store.update(job.id, { schedule: { kind: 'at', atTime: '2026-09-01T09:00:00+08:00' } });
+      await scheduler.triggerJob(job.id);
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(executeTask).not.toHaveBeenCalled();
+    expect(sendMessage).not.toHaveBeenCalled();
+    // 关键：job 已被删除，下次 tick 不会再被命中
+    expect(store.get(job.id)).toBeUndefined();
+  });
+
   it('does not skip when both flags are false (default)', async () => {
     const job = await scheduler.addJob({
       name: 'always-run',
