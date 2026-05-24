@@ -323,17 +323,163 @@ const results = await search.search({
 
 ---
 
-## 十一、验收标准
+## 十一、验收与测试设计
 
-1. 新建 anycode 群话题,讨论 maker 项目细节,抽取出的记忆 `repository = https://github.com/taptap/maker`
-2. 之后回 anycode 项目工作,`/memory list` 不显示 maker 记忆,injector 也不注入
-3. 用户偏好/人员角色类记忆在所有项目可见
-4. 跑回归: `npx vitest run` 全绿
-5. 新增 `tests/memory/scope.test.ts` 覆盖:
-   - 项目类记忆按 repository 过滤
-   - user 类记忆跨项目可见
-   - NULL repository 的项目类记忆默认屏蔽
-   - Prompt 拒绝"项目XX"泛化措辞
+记忆系统的 bug 难抓的根本原因:**沉默错误**(注入了脏数据但不报错) + **LLM 非确定性** + **跨边界长尾累积**。
+仅靠 happy-path 单测无法证明方案正确,必须组合**事故回放、确定性 mock、生产可观测**三层防线。
+
+### 11.1 L1 — 单元测试 (`tests/memory/`)
+
+测试矩阵(每行必须有对应 test case):
+
+| 模块 | 场景 | 期望 | 文件 |
+|------|------|------|------|
+| `scope.ts` | cwd 在 anycode worktree 内 | 返回 `https://github.com/lishuceo/anycode` | `scope.test.ts` |
+| `scope.ts` | cwd 在 maker bare cache 内 | 返回 `https://github.com/taptap/maker` | 同上 |
+| `scope.ts` | cwd 在非 git 目录 | 返回 `local://<path>` | 同上 |
+| `extractor.ts` | LLM 输出含"项目使用双 bare repo" | 被 `filterUnattributedProjectMemories` 拒绝 | `extractor-scope.test.ts` |
+| `extractor.ts` | LLM 输出含"taptap/maker: ..." + repository 字段 | 通过校验 | 同上 |
+| `extractor.ts` | LLM 输出 fact 但 repository=null 且 content 不含仓库名 | 项目类被拒,user 类(如"姜黎是黎叔") 放行 | 同上 |
+| `search.ts` | query.repository=anycode + memory.repository=maker + type=fact | 不返回 | `search-scope.test.ts` |
+| `search.ts` | query.repository=anycode + memory.repository=null + type=fact | 不返回(防污染) | 同上 |
+| `search.ts` | query.repository=anycode + memory.repository=null + type=preference | 返回 | 同上 |
+| `search.ts` | query.repository=anycode + memory.repository=maker + type=preference | 返回(user-scoped 不按 repo 过滤) | 同上 |
+| `injector.ts` | context.repository 传入后 search query 包含该字段 | 用 sinon/vi.fn 断言 search 被调用时参数正确 | `injector-scope.test.ts` |
+| migration | 回填 workspace_dir=/root/dev/maker 的记忆 | repository 被写为 maker 的 canonical URL | `migration-14.test.ts` |
+
+**关键技巧 — Mock LLM 抽取**:
+```ts
+// tests/memory/extractor-scope.test.ts
+import { mockExtractionClient } from './helpers.js';
+
+it('rejects unattributed project-scoped fact', async () => {
+  mockExtractionClient.respondWith([
+    { type: 'fact', content: '项目使用双 bare repo 架构', confidence: 0.9, entities: [] }
+  ]);
+  await extractMemories('讨论双 bare 架构', '已记录', { 
+    chatId: 'oc_anycode', repository: 'https://github.com/lishuceo/anycode' 
+  });
+  const stored = store.list({});
+  expect(stored).toHaveLength(0);  // 应被拒绝
+});
+```
+
+### 11.2 L2 — 事故回放测试 (`tests/memory/regression/`)
+
+**核心**: 用真实污染案例作为 fixture,确保方案能阻止历史 bug 重现。
+
+```ts
+// tests/memory/regression/maker-anycode-pollution.test.ts
+import polluedFixture from './fixtures/maker-anycode-2026-05-24.json';
+// fixture 内容: 从生产 memories.db 导出的 11:48 那次抽取的输入对话 + LLM 输出
+
+it('REGRESSION: maker→anycode pollution 2026-05-24', async () => {
+  // 1. 用 fixture 的对话原文重放抽取
+  mockExtractionClient.respondWith(polluedFixture.llmOutput);
+  await extractMemories(polluedFixture.userPrompt, polluedFixture.assistantOutput, {
+    chatId: 'oc_0e74...',
+    repository: 'https://github.com/lishuceo/anycode',  // 触发 bug 时的 cwd
+  });
+
+  // 2. 模拟稍后在 anycode 项目检索
+  const results = await search.search({
+    query: '工作区架构',
+    agentId: 'devbot',
+    repository: 'https://github.com/lishuceo/anycode',
+  });
+
+  // 3. 断言: "项目使用双 bare repo" 不在结果中
+  const contents = results.map(r => r.memory.content);
+  expect(contents.every(c => !/项目使用.*bare repo/.test(c))).toBe(true);
+  expect(contents.every(c => !/workspace_runtime\.git/.test(c))).toBe(true);
+});
+```
+
+**导出 fixture 脚本** `scripts/export-memory-fixture.mjs`:
+```
+从 memories.db 按 source_message_id 提取一次抽取的:
+- 原始对话 (需配合飞书 API 回查)
+- LLM 输出 JSON
+- 当时的 cwd / repository
+存为 tests/fixtures/<chat>-<date>.json
+```
+
+未来每次发现污染事件,都按此模板加一个回归测试,形成**事故防御网**。
+
+### 11.3 L3 — 端到端集成测试
+
+`tests/integration/memory-e2e.test.ts`:
+
+```
+场景 A: maker 群讨论 maker 架构 → 切换到 anycode 群 → 不应看到 maker 记忆
+1. setup: 启动真实 store + 真实 search,只 mock LLM extractor
+2. 在 maker 上下文(repository=maker)抽取 1 条 fact: "maker 用 bare repo"
+3. 切换上下文到 anycode (repository=anycode)
+4. injector 注入,断言: 注入字符串不含 "bare repo"
+5. preference (如"用户偏好简洁回复") 应仍被注入
+
+场景 B: 同项目跨话题应共享
+1. anycode 话题 A 抽取 fact: "anycode 用 SQLite"  
+2. anycode 话题 B 检索 → 应返回该记忆
+3. (反例) 旧的 chatId 隔离方案会让 B 拿不到 A 的记忆 — 本方案不应有此问题
+```
+
+### 11.4 L4 — 生产可观测
+
+不能"上线后就忘了",必须有持续指标判断方案是否真在工作:
+
+**结构化日志加 tag** (`src/memory/injector.ts`, `extractor.ts`):
+```ts
+logger.info({
+  event: 'memory.injected',
+  type: memory.type,
+  scope: getScope(memory),  // 'user' | 'repository' | 'chat'
+  memoryRepository: memory.repository,
+  queryRepository: query.repository,
+  match: memory.repository === query.repository,
+}, 'Memory injected');
+
+logger.info({
+  event: 'memory.rejected',
+  reason: 'unattributed_project_fact' | 'cross_repo_filtered',
+  type, content_preview, repository,
+}, 'Memory rejected');
+```
+
+**`/memory audit` 慢检查命令**:
+```
+扫描所有 memories,报告:
+- ⚠️ 项目类(fact/decision/relation)但 repository=NULL 的条数 → 应 →0
+- ⚠️ content 含 "项目使用/系统采用" 等泛化措辞的条数 → 应 →0
+- 📊 按 repository 分组的记忆数量(便于发现错绑)
+- 📊 跨 repo 注入(memoryRepo ≠ queryRepo)次数 → 应只发生在 preference/user 类
+```
+
+每周/每次发版后跑一次。
+
+**告警阈值** (可接 Pino → 监控):
+- `event: memory.rejected reason: unattributed_project_fact` 24h 内 > 50 次 → LLM prompt 可能漂移,人工 review
+- `event: memory.injected match: false type: fact` 出现 → 100% 报警(说明 search 过滤漏了)
+
+### 11.5 验收 Checklist
+
+P0-P2 MVP 上线前必须打勾:
+
+- [ ] 11.1 单元测试矩阵全部通过 (`npx vitest run tests/memory/`)
+- [ ] 11.2 maker-anycode 回放测试通过
+- [ ] 11.3 两个 e2e 场景通过
+- [ ] 11.4 生产日志包含 `event: memory.injected` 结构化字段
+- [ ] 全量回归: `npx vitest run` 全绿(1452 用例)
+- [ ] `/memory audit` 命令可运行,首次审计报告附在 PR 描述里
+- [ ] Feature flag 默认关闭,手动开启后能复现 e2e 行为
+- [ ] 手动在飞书测试: maker 群讨论 → 切 anycode 群讨论 → 检查 progress 卡片输出无 maker 痕迹
+
+灰度阶段(P4):
+- [ ] 1 周内 `event: memory.injected match: false type: fact` 零次
+- [ ] 1 周内无新增 unattributed_project_fact 拒绝率突增
+- [ ] 手动抽样检查 50 条新记忆,归属正确率 ≥ 95%
+
+**任一未达标不允许从 P4 进入默认开启阶段。**
 
 ---
 
