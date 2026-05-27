@@ -203,13 +203,8 @@ export const config = {
 
   // Session Fork 配置 (Plan 8)
   fork: {
-    /** 启用 /fork 命令（P0a 默认 opt-in，需显式 FORK_ENABLED=true 才启用） */
-    enabled: process.env.FORK_ENABLED === 'true',
-    /** 白名单用户 open_id (空则所有 allowed 用户可用) */
-    allowedUsers: (process.env.FORK_ALLOWED_USERS || '')
-      .split(',')
-      .map((s) => s.trim())
-      .filter(Boolean),
+    /** 启用 /fork 命令（默认开启,设 FORK_ENABLED=false 可关闭） */
+    enabled: process.env.FORK_ENABLED !== 'false',
   },
 
   // 服务配置
