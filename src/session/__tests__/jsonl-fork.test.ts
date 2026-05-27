@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -76,7 +76,6 @@ describe('copyJsonlAtomic', () => {
     const dst = join(workDir, 'dst.jsonl');
     writeFileSync(src, 'data');
     copyJsonlAtomic(src, dst);
-    const { readdirSync } = require('node:fs') as typeof import('node:fs');
     const leftover = readdirSync(workDir).filter((f) => f.includes('.tmp.'));
     expect(leftover).toEqual([]);
   });
