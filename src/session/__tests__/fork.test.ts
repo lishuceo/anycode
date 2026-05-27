@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync, existsSync, mkdirSync, readdirSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, existsSync, mkdirSync, readdirSync, readFileSync } from 'node:fs';
 import { tmpdir, homedir } from 'node:os';
 import { join } from 'node:path';
+import { execFileSync } from 'node:child_process';
 
 // 必须在 import 被测模块之前 mock 依赖。
 vi.mock('../../utils/logger.js', () => ({
@@ -155,22 +156,6 @@ describe('forkSession', () => {
     expect(result.reason).toBe('no_conversation');
   });
 
-  it('scenario_a_not_supported_yet:父话题已 setup_workspace', async () => {
-    const customDir = mkdtempSync(join(tmpdir(), 'fork-custom-'));
-    try {
-      getThreadSessionMock.mockReturnValue(makeParentSession({ workingDir: customDir }));
-      const result = await forkSession({
-        parentThreadId: PARENT_THREAD_ID, chatId: CHAT_ID, userId: USER_ID, triggerMessageId: TRIGGER_MSG_ID,
-      });
-      expect(result.ok).toBe(false);
-      if (result.ok) return;
-      expect(result.reason).toBe('scenario_a_not_supported_yet');
-      expect(sendTextMock).not.toHaveBeenCalled();
-    } finally {
-      rmSync(customDir, { recursive: true, force: true });
-    }
-  });
-
   it('parent_jsonl_missing:父 JSONL 文件不存在', async () => {
     rmSync(parentJsonl, { force: true });
     getThreadSessionMock.mockReturnValue(makeParentSession());
@@ -257,6 +242,180 @@ describe('forkSession', () => {
     expect(result.message).toContain('SQLite');
 
     const projectDir = join(parentJsonl, '..');
+    const leftoverForks = readdirSync(projectDir)
+      .filter((f) => f.endsWith('.jsonl') && !f.startsWith(PARENT_CONV_ID));
+    expect(leftoverForks).toEqual([]);
+  });
+});
+
+// ============================================================
+// 场景 A (P0b): 父话题已 setup_workspace,fork 需要新建 worktree + 继承 WIP
+// ============================================================
+
+function initGitRepo(dir: string): void {
+  execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: dir, timeout: 10_000 });
+  execFileSync('git', ['config', 'user.email', 'test@test'], { cwd: dir });
+  execFileSync('git', ['config', 'user.name', 'Test'], { cwd: dir });
+  writeFileSync(join(dir, 'README.md'), '# initial\n');
+  execFileSync('git', ['add', '.'], { cwd: dir });
+  execFileSync('git', ['commit', '-q', '-m', 'init', '--no-gpg-sign'], { cwd: dir });
+}
+
+function makeForkChildSession(workdir: string, conversationId: string = PARENT_CONV_ID) {
+  return {
+    threadId: PARENT_THREAD_ID,
+    chatId: CHAT_ID,
+    userId: USER_ID,
+    workingDir: workdir,
+    conversationId,
+    conversationCwd: workdir,
+    systemPromptHash: 'hash-abc',
+    approved: true,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  };
+}
+
+function seedJsonlAt(workdir: string, conversationId: string): string {
+  const path = resolveSessionJsonlPath(workdir, conversationId);
+  mkdirSync(join(path, '..'), { recursive: true });
+  writeFileSync(path, '{"role":"user","content":"hi"}\n');
+  return path;
+}
+
+describe('forkSession - 场景 A (worktree + WIP)', () => {
+  let parentWorkdir: string;
+  let parentJsonlPath: string;
+
+  beforeEach(() => {
+    sendTextMock.mockReset();
+    replyInThreadMock.mockReset();
+    getThreadSessionMock.mockReset();
+    createForkedThreadSessionMock.mockReset();
+    sendTextMock.mockResolvedValue('om_new_root');
+    replyInThreadMock.mockResolvedValue({ messageId: 'om_reply', threadId: 'omt_new_thread' });
+
+    parentWorkdir = mkdtempSync(join(tmpdir(), 'fork-parent-'));
+    initGitRepo(parentWorkdir);
+    parentJsonlPath = seedJsonlAt(parentWorkdir, PARENT_CONV_ID);
+    getThreadSessionMock.mockReturnValue(makeForkChildSession(parentWorkdir));
+  });
+
+  afterEach(() => {
+    // 先清 worktree(若有),否则父删了 worktree 引用是悬空的
+    try {
+      execFileSync('git', ['worktree', 'prune'], { cwd: parentWorkdir });
+    } catch { /* ignore */ }
+    rmSync(parentWorkdir, { recursive: true, force: true });
+    rmSync(`${parentWorkdir}-fork-*`, { recursive: true, force: true });
+    // JSONL 项目目录在 ~/.claude/projects/<encoded-parent-workdir>
+    const projectDir = join(parentJsonlPath, '..');
+    if (existsSync(projectDir)) rmSync(projectDir, { recursive: true, force: true });
+  });
+
+  it('默认继承父 WIP:staged + unstaged + untracked 全部带过来,父工作树不动', async () => {
+    // 准备父 WIP
+    writeFileSync(join(parentWorkdir, 'staged.txt'), 'staged-content\n');
+    execFileSync('git', ['add', 'staged.txt'], { cwd: parentWorkdir });
+    writeFileSync(join(parentWorkdir, 'README.md'), '# initial\nunstaged change\n');
+    writeFileSync(join(parentWorkdir, 'untracked.txt'), 'untracked-content\n');
+
+    // 记录父 fork 前 status
+    const parentStatusBefore = execFileSync('git', ['status', '--porcelain'],
+      { cwd: parentWorkdir, encoding: 'utf8' });
+
+    const result = await forkSession({
+      parentThreadId: PARENT_THREAD_ID, chatId: CHAT_ID, userId: USER_ID, triggerMessageId: TRIGGER_MSG_ID,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    // 子 worktree 应存在且包含 3 类 WIP 文件
+    expect(result.workingDir).toBe(`${parentWorkdir}-fork-${result.shortId}`);
+    expect(existsSync(result.workingDir)).toBe(true);
+    expect(existsSync(join(result.workingDir, 'staged.txt'))).toBe(true);
+    expect(existsSync(join(result.workingDir, 'untracked.txt'))).toBe(true);
+    expect(readFileSync(join(result.workingDir, 'README.md'), 'utf8')).toContain('unstaged change');
+
+    // 父工作树 status 与 fork 前完全一致
+    const parentStatusAfter = execFileSync('git', ['status', '--porcelain'],
+      { cwd: parentWorkdir, encoding: 'utf8' });
+    expect(parentStatusAfter).toBe(parentStatusBefore);
+
+    // DB 写入的 workingDir 是新 worktree 路径
+    expect(createForkedThreadSessionMock.mock.calls[0][0].workingDir).toBe(result.workingDir);
+  });
+
+  it('--clean 跳过 WIP 继承:子 worktree 是纯 HEAD,无未提交改动', async () => {
+    writeFileSync(join(parentWorkdir, 'wip.txt'), 'should-not-appear\n');
+    execFileSync('git', ['add', 'wip.txt'], { cwd: parentWorkdir });
+
+    const result = await forkSession({
+      parentThreadId: PARENT_THREAD_ID, chatId: CHAT_ID, userId: USER_ID, triggerMessageId: TRIGGER_MSG_ID,
+      clean: true,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(existsSync(join(result.workingDir, 'wip.txt'))).toBe(false);
+    const childStatus = execFileSync('git', ['status', '--porcelain'],
+      { cwd: result.workingDir, encoding: 'utf8' });
+    expect(childStatus.trim()).toBe('');
+  });
+
+  it('父无 WIP:stash create 返回空,子 worktree 也是纯净的,不报错', async () => {
+    // 父就是 init 后干净状态
+    const result = await forkSession({
+      parentThreadId: PARENT_THREAD_ID, chatId: CHAT_ID, userId: USER_ID, triggerMessageId: TRIGGER_MSG_ID,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const childStatus = execFileSync('git', ['status', '--porcelain'],
+      { cwd: result.workingDir, encoding: 'utf8' });
+    expect(childStatus.trim()).toBe('');
+  });
+
+  it('worktree_create_failed:父不是 git 仓库 → 干净回滚,无 JSONL/分支泄漏', async () => {
+    // 删掉父的 .git 模拟"无法 worktree add" 的失败场景
+    rmSync(join(parentWorkdir, '.git'), { recursive: true, force: true });
+
+    const result = await forkSession({
+      parentThreadId: PARENT_THREAD_ID, chatId: CHAT_ID, userId: USER_ID, triggerMessageId: TRIGGER_MSG_ID,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toBe('worktree_create_failed');
+    expect(sendTextMock).not.toHaveBeenCalled();
+    expect(createForkedThreadSessionMock).not.toHaveBeenCalled();
+
+    const projectDir = join(parentJsonlPath, '..');
+    const leftoverForks = readdirSync(projectDir)
+      .filter((f) => f.endsWith('.jsonl') && !f.startsWith(PARENT_CONV_ID));
+    expect(leftoverForks).toEqual([]);
+  });
+
+  it('feishu 失败时回滚 worktree + branch + JSONL', async () => {
+    sendTextMock.mockResolvedValue(undefined);
+
+    const result = await forkSession({
+      parentThreadId: PARENT_THREAD_ID, chatId: CHAT_ID, userId: USER_ID, triggerMessageId: TRIGGER_MSG_ID,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toBe('feishu_thread_create_failed');
+
+    // worktree 目录应被清理
+    const forkDirs = readdirSync(join(parentWorkdir, '..'))
+      .filter((f) => f.startsWith(`${parentWorkdir.split('/').pop()}-fork-`));
+    expect(forkDirs).toEqual([]);
+
+    // 分支应被删除(git branch --list 不返回 fork 分支)
+    const branches = execFileSync('git', ['branch', '--list', 'main-fork-*'],
+      { cwd: parentWorkdir, encoding: 'utf8' });
+    expect(branches.trim()).toBe('');
+
+    // JSONL 应被清理
+    const projectDir = join(parentJsonlPath, '..');
     const leftoverForks = readdirSync(projectDir)
       .filter((f) => f.endsWith('.jsonl') && !f.startsWith(PARENT_CONV_ID));
     expect(leftoverForks).toEqual([]);
