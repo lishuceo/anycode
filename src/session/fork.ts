@@ -89,70 +89,93 @@ export async function forkSession(opts: ForkOptions): Promise<ForkResult | ForkE
   const newConversationId = randomUUID();
   const newJsonl = resolveSessionJsonlPath(parent.conversationCwd, newConversationId);
 
+  // 把整段流程包在 try/catch 里，任何 throw（Feishu 5xx / SDK 异常 / SQLite 写失败）
+  // 都回滚已创建的 JSONL，避免出现「fork 看起来成功但新话题无记忆」的孤儿。
+  let newJsonlCreated = false;
+  let rootMessageId: string | undefined;
   try {
     copyJsonlAtomic(parentJsonl, newJsonl);
+    newJsonlCreated = true;
+
+    // 在父话题里贴一条 "🔱 …" 的 top-level 消息作为新话题根。
+    // 注意：reply_in_thread=true 在父消息已属于话题时会留在原话题里，所以这里直接用 sendText
+    // 发到主聊天区，得到一条非话题消息；再在其上 replyInThread 形成新话题。
+    const rootTitle = buildRootTitle(opts.description, shortId);
+    rootMessageId = await feishuClient.sendText(opts.chatId, rootTitle);
+    if (!rootMessageId) {
+      throw new ForkAbort('feishu_thread_create_failed', '创建新话题根消息失败');
+    }
+
+    const systemMsg = buildLineageMessage({
+      parentThreadId: opts.parentThreadId,
+      parentWorkdir: parent.workingDir,
+      newWorkdir: parent.workingDir,
+      shortId,
+    });
+    const { messageId: replyMsgId, threadId: newThreadId } = await feishuClient.replyInThread(
+      rootMessageId,
+      systemMsg,
+    );
+
+    if (!newThreadId) {
+      logger.error({ rootMessageId, replyMsgId }, 'fork: replyInThread did not return threadId');
+      throw new ForkAbort('feishu_thread_create_failed', '新话题创建失败（无 thread_id 返回）');
+    }
+
+    // DB 写入必须在 Feishu 消息发送成功之后。如果 DB 写失败，catch 仍会回滚 JSONL，
+    // 但 Feishu 上两条消息会留下（飞书无可靠 message recall API）——这是「孤儿消息」
+    // 与「新话题丢失继承历史」之间的折中：宁可留两条无害的消息，也不能让没有 DB 行
+    // 的新话题在下一条消息时创建全新 conversationId 而把父对话历史悄悄丢光。
+    sessionManager.createForkedThreadSession({
+      threadId: newThreadId,
+      chatId: opts.chatId,
+      userId: opts.userId,
+      workingDir: parent.workingDir,
+      conversationId: newConversationId,
+      conversationCwd: parent.conversationCwd,
+      systemPromptHash: parent.systemPromptHash,
+      parentTopicId: opts.parentThreadId,
+      forkShortId: shortId,
+      forkedFromMessageId: opts.triggerMessageId,
+      forkPoint: fingerprint,
+      approved: parent.approved ?? true,
+      agentId,
+    });
+
+    logger.info(
+      { parentThreadId: opts.parentThreadId, newThreadId, shortId, newConversationId },
+      'fork: created new thread',
+    );
+
+    return {
+      ok: true,
+      newThreadId,
+      newConversationId,
+      newRootMessageId: rootMessageId,
+      shortId,
+      workingDir: parent.workingDir,
+    };
   } catch (err) {
-    logger.error({ err, parentJsonl, newJsonl }, 'fork: failed to copy JSONL');
-    return { ok: false, reason: 'unknown', message: `复制 JSONL 失败: ${(err as Error).message}` };
+    if (newJsonlCreated) {
+      try { unlinkSync(newJsonl); } catch { /* ignore cleanup failure */ }
+    }
+    if (err instanceof ForkAbort) {
+      logger.warn({ reason: err.reason, rootMessageId }, 'fork: aborted with explicit reason');
+      return { ok: false, reason: err.reason, message: err.message };
+    }
+    logger.error(
+      { err, parentJsonl, newJsonl, rootMessageId },
+      'fork: aborted by exception, JSONL rolled back',
+    );
+    return { ok: false, reason: 'unknown', message: `Fork 失败: ${(err as Error).message}` };
   }
+}
 
-  // 在父话题里贴一条 "🔱 …" 的 top-level 消息作为新话题根。
-  // 注意：reply_in_thread=true 在父消息已属于话题时会留在原话题里，所以这里直接用 sendText
-  // 发到主聊天区，得到一条非话题消息；再在其上 replyInThread 形成新话题。
-  const rootTitle = buildRootTitle(opts.description, shortId);
-  const rootMessageId = await feishuClient.sendText(opts.chatId, rootTitle);
-  if (!rootMessageId) {
-    // 回滚 JSONL
-    try { unlinkSync(newJsonl); } catch { /* ignore */ }
-    return { ok: false, reason: 'feishu_thread_create_failed', message: '创建新话题根消息失败' };
+/** 内部 sentinel：把"已知失败原因"穿过 try/catch 边界，与意外异常区分。 */
+class ForkAbort extends Error {
+  constructor(public readonly reason: ForkFailureReason, message: string) {
+    super(message);
   }
-
-  const systemMsg = buildLineageMessage({
-    parentThreadId: opts.parentThreadId,
-    parentWorkdir: parent.workingDir,
-    newWorkdir: parent.workingDir,
-    shortId,
-  });
-  const { messageId: replyMsgId, threadId: newThreadId } = await feishuClient.replyInThread(
-    rootMessageId,
-    systemMsg,
-  );
-
-  if (!newThreadId) {
-    logger.error({ rootMessageId, replyMsgId }, 'fork: replyInThread did not return threadId');
-    try { unlinkSync(newJsonl); } catch { /* ignore */ }
-    return { ok: false, reason: 'feishu_thread_create_failed', message: '新话题创建失败（无 thread_id 返回）' };
-  }
-
-  sessionManager.createForkedThreadSession({
-    threadId: newThreadId,
-    chatId: opts.chatId,
-    userId: opts.userId,
-    workingDir: parent.workingDir,
-    conversationId: newConversationId,
-    conversationCwd: parent.conversationCwd,
-    systemPromptHash: parent.systemPromptHash,
-    parentTopicId: opts.parentThreadId,
-    forkShortId: shortId,
-    forkedFromMessageId: opts.triggerMessageId,
-    forkPoint: fingerprint,
-    approved: parent.approved ?? true,
-    agentId,
-  });
-
-  logger.info(
-    { parentThreadId: opts.parentThreadId, newThreadId, shortId, newConversationId },
-    'fork: created new thread',
-  );
-
-  return {
-    ok: true,
-    newThreadId,
-    newConversationId,
-    newRootMessageId: rootMessageId,
-    shortId,
-    workingDir: parent.workingDir,
-  };
 }
 
 function buildRootTitle(description: string | undefined, shortId: string): string {

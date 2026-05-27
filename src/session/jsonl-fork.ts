@@ -7,6 +7,11 @@ import { dirname, join, resolve } from 'node:path';
  *   ~/.claude/projects/<encoded-cwd>/<conversationId>.jsonl
  * 编码规则：path.replaceAll('/', '-').replaceAll('.', '-')
  * 绝对路径首字符 '/' 也会变成 '-'，所以最终形如 `-root-dev-...`。
+ *
+ * ⚠️ 该规则是基于 @anthropic-ai/claude-agent-sdk 当前行为的观察，并非由 SDK 公开 API
+ * 保证。若 SDK 升级后改变了编码（如处理 Windows 路径、加 hash 命名空间），本函数会
+ * 返回一个不存在的路径。调用方应通过 jsonlFingerprint() 检测路径不存在的情况，并把
+ * 「encoding 假设失效」与「无前序对话」区分开记录，便于故障排查。
  */
 export function encodeProjectDir(workingDir: string): string {
   const abs = resolve(workingDir);
