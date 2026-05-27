@@ -1291,20 +1291,10 @@ async function handleSlashCommand(
     return true;
   }
 
-  // /fork [描述] - Session Fork (Plan 8)
+  // /fork [--clean] [描述] - Session Fork (Plan 8)
   if (trimmed === '/fork' || trimmed.startsWith('/fork ')) {
     if (!config.fork.enabled) {
       const reply = '⚠️ /fork 命令未启用 (FORK_ENABLED=false)';
-      if (threadReplyMsgId) {
-        await feishuClient.replyTextInThread(threadReplyMsgId, reply);
-      } else {
-        await feishuClient.replyText(messageId, reply);
-      }
-      return true;
-    }
-    const allowed = config.fork.allowedUsers;
-    if (!isOwner(userId) && allowed.length > 0 && !allowed.includes(userId)) {
-      const reply = '⚠️ /fork 命令需要管理员或白名单用户权限';
       if (threadReplyMsgId) {
         await feishuClient.replyTextInThread(threadReplyMsgId, reply);
       } else {
@@ -1319,7 +1309,14 @@ async function handleSlashCommand(
       return true;
     }
 
-    const description = trimmed === '/fork' ? '' : trimmed.slice('/fork '.length).trim();
+    // 解析 /fork [--clean] [描述]: --clean 必须在 description 之前
+    const rawArgs = trimmed === '/fork' ? '' : trimmed.slice('/fork '.length).trim();
+    let clean = false;
+    let description = rawArgs;
+    if (rawArgs === '--clean' || rawArgs.startsWith('--clean ')) {
+      clean = true;
+      description = rawArgs === '--clean' ? '' : rawArgs.slice('--clean '.length).trim();
+    }
     const result = await forkSession({
       parentThreadId: effectiveThreadId,
       chatId,
@@ -1327,6 +1324,7 @@ async function handleSlashCommand(
       triggerMessageId: messageId,
       description,
       agentId,
+      clean,
     });
 
     if (!result.ok) {
