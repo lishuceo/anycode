@@ -248,7 +248,6 @@ export class MemoryDatabase {
       CREATE INDEX IF NOT EXISTS idx_memories_type ON memories(type);
       CREATE INDEX IF NOT EXISTS idx_memories_valid ON memories(invalid_at);
       CREATE INDEX IF NOT EXISTS idx_memories_workspace ON memories(workspace_dir);
-      CREATE INDEX IF NOT EXISTS idx_memories_repository ON memories(repository);
     `);
 
     // vec0 virtual table (conditional, with cosine distance)
