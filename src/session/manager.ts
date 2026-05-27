@@ -320,6 +320,50 @@ export class SessionManager {
   }
 
   /**
+   * 创建一个 fork 出来的 thread session（Plan 8）。
+   * 与 upsertThreadSession 不同：直接写入 conversationId + fork 血缘字段。
+   * fork 字段在 ON CONFLICT 时不会被覆盖（见 stmtUpsertThreadSession），所以同一 threadId 反复调用是安全的。
+   */
+  createForkedThreadSession(params: {
+    threadId: string;
+    chatId: string;
+    userId: string;
+    workingDir: string;
+    conversationId: string;
+    conversationCwd: string;
+    parentTopicId: string;
+    forkShortId: string;
+    forkedFromMessageId?: string;
+    forkPoint?: string;
+    systemPromptHash?: string;
+    approved?: boolean;
+    agentId?: string;
+  }): void {
+    const agentId = params.agentId ?? 'dev';
+    const key = this.makeThreadKey(params.threadId, agentId);
+    const now = new Date();
+    this.db.upsertThreadSession({
+      threadId: key,
+      chatId: params.chatId,
+      userId: params.userId,
+      workingDir: params.workingDir,
+      conversationId: params.conversationId,
+      conversationCwd: params.conversationCwd,
+      systemPromptHash: params.systemPromptHash,
+      parentTopicId: this.makeThreadKey(params.parentTopicId, agentId),
+      forkedFromMessageId: params.forkedFromMessageId,
+      forkPoint: params.forkPoint,
+      forkShortId: params.forkShortId,
+      approved: params.approved,
+      createdAt: now,
+      updatedAt: now,
+    });
+    if (params.approved !== undefined) {
+      this.db.setThreadApproved(key, params.approved);
+    }
+  }
+
+  /**
    * 构建 session key，包含 agentId 前缀
    * 格式: agent:{agentId}:{chatId}:{userId}
    */

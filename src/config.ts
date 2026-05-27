@@ -201,6 +201,17 @@ export const config = {
     defaultBudgetUsd: parseFloat(process.env.CRON_DEFAULT_BUDGET || '5'),
   },
 
+  // Session Fork 配置 (Plan 8)
+  fork: {
+    /** 启用 /fork 命令（P0a 默认 opt-in，需显式 FORK_ENABLED=true 才启用） */
+    enabled: process.env.FORK_ENABLED === 'true',
+    /** 白名单用户 open_id (空则所有 allowed 用户可用) */
+    allowedUsers: (process.env.FORK_ALLOWED_USERS || '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean),
+  },
+
   // 服务配置
   server: {
     port: parseInt(process.env.PORT || '3000', 10),

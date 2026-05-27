@@ -2,6 +2,7 @@ import * as lark from '@larksuiteoapi/node-sdk';
 import { logger } from '../utils/logger.js';
 import { isUserAllowed, containsDangerousCommand, isOwner, autoDetectOwner } from '../utils/security.js';
 import { sessionManager } from '../session/manager.js';
+import { forkSession } from '../session/fork.js';
 import { taskQueue } from '../session/queue.js';
 import { claudeExecutor } from '../claude/executor.js';
 import { DEFAULT_IMAGE_PROMPT, DEFAULT_DOCUMENT_PROMPT } from '../claude/types.js';
@@ -1290,6 +1291,68 @@ async function handleSlashCommand(
     return true;
   }
 
+  // /fork [描述] - Session Fork (Plan 8)
+  if (trimmed === '/fork' || trimmed.startsWith('/fork ')) {
+    if (!config.fork.enabled) {
+      const reply = '⚠️ /fork 命令未启用 (FORK_ENABLED=false)';
+      if (threadReplyMsgId) {
+        await feishuClient.replyTextInThread(threadReplyMsgId, reply);
+      } else {
+        await feishuClient.replyText(messageId, reply);
+      }
+      return true;
+    }
+    const allowed = config.fork.allowedUsers;
+    if (!isOwner(userId) && allowed.length > 0 && !allowed.includes(userId)) {
+      const reply = '⚠️ /fork 命令需要管理员或白名单用户权限';
+      if (threadReplyMsgId) {
+        await feishuClient.replyTextInThread(threadReplyMsgId, reply);
+      } else {
+        await feishuClient.replyText(messageId, reply);
+      }
+      return true;
+    }
+
+    if (!effectiveThreadId) {
+      const reply = '⚠️ /fork 必须在话题内执行（先进入一个话题再 /fork）';
+      await feishuClient.replyText(messageId, reply);
+      return true;
+    }
+
+    const description = trimmed === '/fork' ? '' : trimmed.slice('/fork '.length).trim();
+    const result = await forkSession({
+      parentThreadId: effectiveThreadId,
+      chatId,
+      userId,
+      triggerMessageId: messageId,
+      description,
+      agentId,
+    });
+
+    if (!result.ok) {
+      const reply = `⚠️ Fork 失败: ${result.message}`;
+      if (threadReplyMsgId) {
+        await feishuClient.replyTextInThread(threadReplyMsgId, reply);
+      } else {
+        await feishuClient.replyText(messageId, reply);
+      }
+      return true;
+    }
+
+    const ok = [
+      `🔱 Fork 完成 (id=${result.shortId})`,
+      `- 新话题已创建，继承了完整对话历史`,
+      `- 工作目录: ${result.workingDir}`,
+      `- 在新话题里继续发消息即可,与本话题互不影响`,
+    ].join('\n');
+    if (threadReplyMsgId) {
+      await feishuClient.replyTextInThread(threadReplyMsgId, ok);
+    } else {
+      await feishuClient.replyText(messageId, ok);
+    }
+    return true;
+  }
+
   // /memory - 记忆管理
   if (trimmed === '/memory' || trimmed.startsWith('/memory ')) {
     const memoryArgs = trimmed === '/memory' ? '' : trimmed.slice('/memory '.length).trim();
@@ -1383,6 +1446,15 @@ async function handleSlashCommand(
       '  方案 → 方案审查 → 实现 → 代码审查 → 推送 → PR 修复',
       '`/t <text>` — 强制开话题回复（适用于 direct 模式）',
     ];
+
+    if (config.fork.enabled) {
+      helpLines.push(
+        '',
+        '**── 话题 Fork ──**',
+        '`/fork [描述]` — 从当前话题派生新话题，继承完整对话历史 🔒',
+        '  适合在深入讨论中开辟新思路而不污染原话题',
+      );
+    }
 
     // 条件性功能
     if (config.memory.enabled) {
