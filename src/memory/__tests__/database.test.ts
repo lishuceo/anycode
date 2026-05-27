@@ -23,6 +23,7 @@ function makeRow(overrides: Partial<MemoryRow> = {}): MemoryRow {
     user_id: 'user1',
     chat_id: 'chat1',
     workspace_dir: '/projects/test',
+    repository: null,
     type: 'fact',
     content: 'Test memory content',
     tags: '["test"]',

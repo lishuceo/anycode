@@ -6,7 +6,7 @@ import { PHASE_META } from '../pipeline/types.js';
 import type { PipelinePhase } from '../pipeline/types.js';
 import type { TurnInfo, ToolCallInfo } from '../claude/types.js';
 import type { Memory, MemorySearchResult } from '../memory/types.js';
-import { MEMORY_PAGE_SIZE } from '../memory/types.js';
+import { MEMORY_PAGE_SIZE, PROJECT_SCOPED_TYPES } from '../memory/types.js';
 
 /** 构建新会话问候卡片（初始状态） */
 export function buildGreetingCard(): Record<string, unknown> {
@@ -1034,6 +1034,20 @@ function formatMemoryDate(iso: string): string {
 }
 
 /**
+ * Render a memory's repository attribution as a short label.
+ *   https://github.com/taptap/maker  →  taptap/maker
+ *   local:///root/dev/foo            →  local
+ *   null                             →  null (will be shown as "未绑定")
+ */
+function formatRepositoryLabel(repository: string | null): string | null {
+  if (!repository) return null;
+  if (repository.startsWith('local://')) return 'local';
+  // Capture the full path (org/[subgroup/...]/repo) so nested GitLab groups don't get truncated.
+  const m = repository.match(/^https?:\/\/[^/]+\/(.+?)(?:\.git)?(?:[?#].*)?$/);
+  return m ? m[1] : repository;
+}
+
+/**
  * 记忆列表卡片（含统计摘要 + 分页 + 删除按钮）
  */
 export function buildMemoryListCard(
@@ -1069,11 +1083,17 @@ export function buildMemoryListCard(
       const mem = memories[i];
       const idx = (page - 1) * MEMORY_PAGE_SIZE + i + 1;
       const typeLabel = MEMORY_TYPE_LABELS[mem.type] ?? mem.type;
-      const meta = [
+      const repoLabel = formatRepositoryLabel(mem.repository);
+      const metaParts = [
         `置信度: ${mem.confidence.toFixed(2)}`,
         `证据: ${mem.evidenceCount} 次`,
         `更新: ${formatMemoryDate(mem.updatedAt)}`,
-      ].join(' | ');
+      ];
+      // Only show repository for project-scoped types — preference/state would just be noise.
+      if (PROJECT_SCOPED_TYPES.has(mem.type)) {
+        metaParts.push(`仓库: ${repoLabel ?? '未绑定'}`);
+      }
+      const meta = metaParts.join(' | ');
 
       elements.push({
         tag: 'div',

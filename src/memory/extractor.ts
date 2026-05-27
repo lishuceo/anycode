@@ -7,6 +7,8 @@ import { logger } from '../utils/logger.js';
 import { getMemoryStore } from './init.js';
 import type { MemoryStore } from './store.js';
 import type { MemoryCreateInput, MemoryType } from './types.js';
+import { getMemoryScope } from './types.js';
+import { isLocalRepository } from './scope.js';
 
 /** Context for memory extraction */
 export interface ExtractionContext {
@@ -17,6 +19,13 @@ export interface ExtractionContext {
   messageId?: string;
   /** Current user's display name (for entity disambiguation in extraction prompt) */
   userName?: string;
+  /**
+   * Canonical repository URL (e.g. https://github.com/org/repo) for the current
+   * session's working directory. Project-scoped memories (fact/decision/relation)
+   * are attached to this repository so they only surface in the same project.
+   * null/undefined means the session has no resolvable repo (general user chat).
+   */
+  repository?: string | null;
 }
 
 /** Raw extraction result from LLM */
@@ -156,10 +165,12 @@ export async function extractMemories(
       conversation = conversation.slice(0, MAX_CONVERSATION_CHARS) + '\n...(截断)';
     }
 
+    const systemPrompt = EXTRACTION_PROMPT + buildRepositoryContextSuffix(context.repository ?? null);
+
     const response = await client.chat.completions.create({
       model: config.memory.extractionModel,
       messages: [
-        { role: 'system', content: EXTRACTION_PROMPT },
+        { role: 'system', content: systemPrompt },
         { role: 'user', content: conversation },
       ],
       temperature: 0.1,
@@ -190,6 +201,19 @@ export async function extractMemories(
   } catch (err) {
     logger.warn({ err, chatId: context.chatId }, 'Memory extraction failed (non-blocking)');
   }
+}
+
+/**
+ * Build a per-call prompt suffix that anchors project-scoped extraction
+ * to the current repository. Without this, the extractor can attribute
+ * facts heard in one repo's session to whichever repo the user later
+ * switches to (the bug plan-9 fixes).
+ */
+export function buildRepositoryContextSuffix(repository: string | null): string {
+  if (!repository || isLocalRepository(repository)) {
+    return `\n\n## 当前仓库上下文\n- 本次会话**没有绑定到具体仓库**。\n- 只提取与具体仓库无关的内容（用户偏好 / 跨项目通用约定）。\n- **不要提取**任何形如"项目使用 X"、"某模块依赖 Y"的事实——你无法判断它属于哪个仓库。\n`;
+  }
+  return `\n\n## 当前仓库上下文\n- 本次会话的当前仓库是: **${repository}**\n- 提取的 fact/decision/relation 必须是关于**这个仓库**的信息。\n- 如果对话提到了其他仓库（如用户说"X 仓库用了 Y"），**不要提取**这条事实——它会被错误地归到当前仓库下，污染未来的会话。\n- 仅当对话明确讨论了当前仓库的代码、架构、决策时才提取项目事实。\n`;
 }
 
 /**
@@ -343,6 +367,7 @@ function buildCreateInput(
     userId: context.userId,
     chatId: context.chatId,
     workspaceDir: context.workspaceDir,
+    repository: resolveRepositoryForMemory(mem.type, context.repository ?? null),
     type: mem.type,
     content: mem.content,
     confidence: mem.confidence,
@@ -353,4 +378,25 @@ function buildCreateInput(
     sourceChatId: context.chatId,
     sourceMessageId: context.messageId,
   };
+}
+
+/**
+ * Decide which repository (if any) a new memory should be attached to,
+ * based on its type's scope:
+ *   - project-scoped (fact/decision/relation): inherit the session's repository
+ *   - user-scoped (preference) / chat-scoped (state): never attached to a repo
+ *
+ * Returns null when no repo should be attached.
+ */
+export function resolveRepositoryForMemory(
+  type: MemoryType,
+  sessionRepository: string | null,
+): string | null {
+  const scope = getMemoryScope(type);
+  if (scope !== 'repository') return null;
+  if (!sessionRepository) return null;
+  // local:// fallback paths are not stable identifiers for cross-session sharing.
+  // Treat them as "no repo" to avoid surfacing the memory in unrelated sessions.
+  if (isLocalRepository(sessionRepository)) return null;
+  return sessionRepository;
 }

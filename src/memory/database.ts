@@ -15,6 +15,8 @@ export interface MemoryRow {
   user_id: string | null;
   chat_id: string | null;
   workspace_dir: string | null;
+  /** Canonical repo URL (https://host/org/repo) or null. See Memory.repository. */
+  repository: string | null;
   type: string;
   content: string;
   tags: string;
@@ -82,14 +84,14 @@ export class MemoryDatabase {
     // ── Prepared statements ──
     this.stmtInsert = db.prepare(`
       INSERT INTO memories (
-        id, agent_id, user_id, chat_id, workspace_dir,
+        id, agent_id, user_id, chat_id, workspace_dir, repository,
         type, content, tags, metadata,
         confidence, confidence_level, evidence_count,
         valid_at, invalid_at, superseded_by, ttl,
         source_chat_id, source_message_id,
         created_at, updated_at, last_accessed_at
       ) VALUES (
-        @id, @agent_id, @user_id, @chat_id, @workspace_dir,
+        @id, @agent_id, @user_id, @chat_id, @workspace_dir, @repository,
         @type, @content, @tags, @metadata,
         @confidence, @confidence_level, @evidence_count,
         @valid_at, @invalid_at, @superseded_by, @ttl,
@@ -199,6 +201,7 @@ export class MemoryDatabase {
         user_id TEXT,
         chat_id TEXT,
         workspace_dir TEXT,
+        repository TEXT,
         type TEXT NOT NULL CHECK (type IN ('fact', 'preference', 'state', 'decision', 'relation')),
         content TEXT NOT NULL,
         tags TEXT DEFAULT '[]',
@@ -245,6 +248,7 @@ export class MemoryDatabase {
       CREATE INDEX IF NOT EXISTS idx_memories_type ON memories(type);
       CREATE INDEX IF NOT EXISTS idx_memories_valid ON memories(invalid_at);
       CREATE INDEX IF NOT EXISTS idx_memories_workspace ON memories(workspace_dir);
+      CREATE INDEX IF NOT EXISTS idx_memories_repository ON memories(repository);
     `);
 
     // vec0 virtual table (conditional, with cosine distance)
@@ -449,6 +453,7 @@ export class MemoryDatabase {
       userId: row.user_id,
       chatId: row.chat_id,
       workspaceDir: row.workspace_dir,
+      repository: row.repository ?? null,
       type: row.type as MemoryType,
       content: row.content,
       tags: JSON.parse(row.tags) as string[],
@@ -475,6 +480,7 @@ export class MemoryDatabase {
       user_id: row.user_id,
       chat_id: row.chat_id,
       workspace_dir: row.workspace_dir,
+      repository: row.repository,
       type: row.type,
       content: row.content,
       tags: row.tags,
@@ -500,7 +506,7 @@ export class MemoryDatabase {
 // ============================================================
 
 /** Current migration version. Bump when adding new migrations. */
-const CURRENT_MIGRATION_VERSION = 2;
+const CURRENT_MIGRATION_VERSION = 3;
 
 /**
  * Run idempotent data migrations guarded by PRAGMA user_version.
@@ -521,6 +527,9 @@ function runDataMigrations(db: Database.Database): void {
     }
     if (version < 2) {
       migrationV2_renameRepoUrl(db);
+    }
+    if (version < 3) {
+      migrationV3_addRepositoryColumn(db);
     }
 
     db.pragma(`user_version = ${CURRENT_MIGRATION_VERSION}`);
@@ -571,6 +580,39 @@ function migrationV2_renameRepoUrl(db: Database.Database): void {
 
   if (result.changes > 0) {
     logger.info({ updated: result.changes }, 'Migration v2: renamed repo URL anywhere-code → anycode');
+  }
+}
+
+/**
+ * Migration v3: Add `repository` column for cross-repo scope isolation.
+ *
+ * Strategy:
+ *   - Add nullable TEXT column + index (DDL is idempotent inside transaction)
+ *   - Backfill from workspace_dir when it looks like a normalized repo path
+ *     (`host/org/repo.git` form, written by migration v1/v2)
+ *   - Leave other rows NULL — they'll be treated as "unattributed" by search
+ *     and excluded from PROJECT_SCOPED_TYPES results to prevent pollution.
+ */
+function migrationV3_addRepositoryColumn(db: Database.Database): void {
+  // Add column if missing (PRAGMA check first — ALTER TABLE is not idempotent)
+  const cols = db.prepare(`PRAGMA table_info(memories)`).all() as Array<{ name: string }>;
+  if (!cols.some(c => c.name === 'repository')) {
+    db.exec(`ALTER TABLE memories ADD COLUMN repository TEXT`);
+  }
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_memories_repository ON memories(repository)`);
+
+  // Backfill: workspace_dir like "github.com/org/repo.git" → "https://github.com/org/repo"
+  const result = db.prepare(`
+    UPDATE memories
+    SET repository = 'https://' || substr(workspace_dir, 1, length(workspace_dir) - 4)
+    WHERE repository IS NULL
+      AND workspace_dir IS NOT NULL
+      AND workspace_dir LIKE '%.git'
+      AND workspace_dir NOT LIKE '/%'
+  `).run();
+
+  if (result.changes > 0) {
+    logger.info({ backfilled: result.changes }, 'Migration v3: backfilled repository from workspace_dir');
   }
 }
 

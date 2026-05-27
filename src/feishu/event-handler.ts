@@ -36,6 +36,7 @@ import { createDiscussionMcpServer } from '../agent/tools/discussion.js';
 import { generateAuthUrl, hasCallbackUrl, handleManualCode } from './oauth.js';
 import { injectMemories } from '../memory/injector.js';
 import { extractMemories } from '../memory/extractor.js';
+import { resolveRepositoryForCwd } from '../memory/scope.js';
 import { handleMemoryCommand, handleMemoryCardAction } from '../memory/commands.js';
 import { getRepoIdentity } from '../workspace/identity.js';
 import { parseRepoNameFromWorkspaceDir } from '../workspace/manager.js';
@@ -2652,7 +2653,7 @@ export async function executeClaudeTask(
     // 使用 repo identity（而非带随机后缀的工作区路径）确保同仓库记忆互通
     const repoIdentity = getRepoIdentity(workingDir);
     const memoryContext = config.memory.enabled
-      ? await injectMemories(rawPrompt, { agentId, userId, workspaceDir: repoIdentity, chatId })
+      ? await injectMemories(rawPrompt, { agentId, userId, workspaceDir: repoIdentity, chatId, repository: resolveRepositoryForCwd(workingDir) })
       : '';
 
     // Bot 身份上下文（多 bot 模式下告诉 agent 自己是谁、群内有哪些其他 bot）
@@ -2884,6 +2885,7 @@ export async function executeClaudeTask(
         extractMemories(prompt, restartResult.output, {
           agentId, userId, chatId, workspaceDir: getRepoIdentity(result.newWorkingDir!), messageId,
           userName: _userNameCache.get(userId),
+          repository: resolveRepositoryForCwd(result.newWorkingDir!),
         }).catch((err) => logger.warn({ err }, 'Memory extraction failed'));
       }
       return;
@@ -2956,6 +2958,7 @@ export async function executeClaudeTask(
       extractMemories(rawPrompt, result.output, {
         agentId, userId, chatId, workspaceDir: repoIdentity, messageId,
         userName: _userNameCache.get(userId),
+        repository: resolveRepositoryForCwd(workingDir),
       }).catch((err) => logger.warn({ err }, 'Memory extraction failed'));
     }
 
@@ -3217,7 +3220,7 @@ export async function executeDirectTask(
     // 记忆注入（使用 repo identity 确保同仓库记忆互通）
     const repoIdentity = getRepoIdentity(workingDir);
     const memoryContext = config.memory.enabled
-      ? await injectMemories(rawPrompt, { agentId, userId, workspaceDir: repoIdentity, chatId })
+      ? await injectMemories(rawPrompt, { agentId, userId, workspaceDir: repoIdentity, chatId, repository: resolveRepositoryForCwd(workingDir) })
       : '';
 
     // Bot 身份上下文（多 bot 模式下告诉 agent 自己是谁、群内有哪些其他 bot）
@@ -3275,6 +3278,7 @@ export async function executeDirectTask(
       extractMemories(rawPrompt, result.output, {
         agentId, userId, chatId, workspaceDir: repoIdentity, messageId,
         userName: _userNameCache.get(userId),
+        repository: resolveRepositoryForCwd(workingDir),
       }).catch((err) => logger.warn({ err }, 'Memory extraction failed'));
     }
 
