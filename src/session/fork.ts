@@ -239,7 +239,10 @@ export async function forkSession(opts: ForkOptions): Promise<ForkResult | ForkE
       workingDir: newWorkdir,
     };
   } catch (err) {
-    // 回滚顺序: JSONL → worktree → branch。父工作树未被动过(stash create 不修改),无需回滚。
+    // 回滚顺序: JSONL → worktree → branch。
+    // 父工作树状态:正常路径 push+pop 已成对完成,无需回滚;
+    // 若进入 CRITICAL 分支(子 apply 成功、父 pop 失败),父 WIP 仍卡在 stash@{0},
+    // 由上方 logger.error 提示用户手动 `git stash pop`,此处不再尝试。
     if (newJsonlCreated) {
       try { unlinkSync(newJsonl); } catch { /* ignore */ }
     }

@@ -307,7 +307,16 @@ describe('forkSession - 场景 A (worktree + WIP)', () => {
       execFileSync('git', ['worktree', 'prune'], { cwd: parentWorkdir });
     } catch { /* ignore */ }
     rmSync(parentWorkdir, { recursive: true, force: true });
-    rmSync(`${parentWorkdir}-fork-*`, { recursive: true, force: true });
+    // rmSync 不支持 glob,必须手动 readdir + filter 清理 fork 出来的子 worktree
+    const tmpRoot = join(parentWorkdir, '..');
+    const baseName = parentWorkdir.split('/').pop()!;
+    if (existsSync(tmpRoot)) {
+      for (const entry of readdirSync(tmpRoot)) {
+        if (entry.startsWith(`${baseName}-fork-`)) {
+          rmSync(join(tmpRoot, entry), { recursive: true, force: true });
+        }
+      }
+    }
     // JSONL 项目目录在 ~/.claude/projects/<encoded-parent-workdir>
     const projectDir = join(parentJsonlPath, '..');
     if (existsSync(projectDir)) rmSync(projectDir, { recursive: true, force: true });
