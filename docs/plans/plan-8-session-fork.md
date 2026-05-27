@@ -1,6 +1,6 @@
 ---
 summary: "Session Fork：从已有话题分叉出新会话，继承对话历史、工作区状态与隐性共识"
-status: draft
+status: in_progress
 owner: lishuceo
 last_updated: "2026-05-27"
 read_when:
@@ -102,18 +102,22 @@ fork 后:       /root/dev/.workspaces/abc-foo-fork-<id>  (branch: feat/foo-fork-
 2. **继承未提交修改**（**默认行为**，staged / unstaged / untracked 全要）：
    ```bash
    cd <原工作区>
-   STASH_REF=$(git stash create -u)   # 含 untracked,不入 stash 栈、不动工作树
-   if [ -n "$STASH_REF" ]; then
-     cd <新工作区>
-     git stash apply $STASH_REF       # 失败则 abort 整个 fork
-   fi
+   # 1) 把 WIP 推到 stash 栈(含 untracked),父工作树短暂变干净
+   git stash push --include-untracked --quiet -m "fork-temp-<shortId>"
+   STASH_SHA=$(git rev-parse stash@{0})       # 父无任何 WIP 时 push 不创建条目,直接跳过
+
+   cd <新工作区>
+   git stash apply $STASH_SHA                  # 失败则父先 pop 恢复,再 abort 整个 fork
+
+   cd <原工作区>
+   git stash pop --quiet                       # 父恢复
    ```
    **关键性质**:
-   - `git stash create` 仅生成 stash commit object,不 push 到栈、**完全不修改父工作树** — 父话题继续工作零干扰
-   - 父无任何 WIP 时 `STASH_REF` 为空字符串,跳过 apply,新 worktree 就是干净 HEAD
+   - **不能用 `git stash create -u`** — `create` 不接受 `-u` 选项(`-u` 被当成 stash message),无法包含 untracked。必须走 push+pop 路径
+   - 父工作树有亚秒级的"清空"窗口(push 之后、pop 之前);/fork 是用户同步触发的,期间父话题 Claude idle 不写文件,可接受
+   - 父无任何 WIP 时 `stash push` 不创建条目,整段跳过,新 worktree 就是干净 HEAD
    - 子 worktree apply 后所有改动都是 unstaged(staged/unstaged 区分会丢失);如果业务上一定要保留 index 状态,需要额外 `git diff --cached` → `git apply --cached`,P0b 暂不做
-   - `-u` 含 untracked 文件(node_modules 等大产物的取舍见下文「未跟踪产物处理」)
-   - 备选:`rsync` 差异文件(git stash 在 submodule/特殊文件场景的兜底)
+   - 最危险分支:子 apply 成功但父 pop 失败 → 父 WIP 卡在 stash@{0},日志 CRITICAL 提示用户手动 `git stash pop` 恢复
 
    **可选 `--clean` 标志**:`/fork --clean` 时跳过本步骤,新 worktree 从纯 HEAD 起步。适用于「我想用同样的对话历史但从干净代码起点重新试」。默认不带 `--clean`,因为绝大多数 fork 场景都是「在当前进行中的工作上分两条路试」,带 WIP 才符合直觉。
 
