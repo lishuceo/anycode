@@ -14,7 +14,7 @@
 // 这是跨整个系统的 repo 主键。
 
 import { execFileSync } from 'node:child_process';
-import { existsSync, statSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { toCanonicalUrl } from '../workspace/registry.js';
 import { config } from '../config.js';
@@ -68,14 +68,8 @@ function findGitDir(start: string): string | null {
   let cur = start;
   for (let i = 0; i < 30; i++) {
     const gitPath = `${cur}/.git`;
-    if (existsSync(gitPath)) {
-      // .git 既可以是目录(普通仓库),也可以是文件(worktree)
-      try {
-        return statSync(gitPath).isDirectory() || statSync(gitPath).isFile() ? cur : null;
-      } catch {
-        return null;
-      }
-    }
+    // .git 既可以是目录(普通仓库),也可以是文件(worktree) — existsSync 已经覆盖两种情况
+    if (existsSync(gitPath)) return cur;
     const parent = dirname(cur);
     if (parent === cur) return null;
     cur = parent;

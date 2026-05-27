@@ -6,7 +6,7 @@ import { PHASE_META } from '../pipeline/types.js';
 import type { PipelinePhase } from '../pipeline/types.js';
 import type { TurnInfo, ToolCallInfo } from '../claude/types.js';
 import type { Memory, MemorySearchResult } from '../memory/types.js';
-import { MEMORY_PAGE_SIZE } from '../memory/types.js';
+import { MEMORY_PAGE_SIZE, PROJECT_SCOPED_TYPES } from '../memory/types.js';
 
 /** 构建新会话问候卡片（初始状态） */
 export function buildGreetingCard(): Record<string, unknown> {
@@ -1042,7 +1042,8 @@ function formatMemoryDate(iso: string): string {
 function formatRepositoryLabel(repository: string | null): string | null {
   if (!repository) return null;
   if (repository.startsWith('local://')) return 'local';
-  const m = repository.match(/^https?:\/\/[^/]+\/([^/]+\/[^/?#]+)/);
+  // Capture the full path (org/[subgroup/...]/repo) so nested GitLab groups don't get truncated.
+  const m = repository.match(/^https?:\/\/[^/]+\/(.+?)(?:\.git)?(?:[?#].*)?$/);
   return m ? m[1] : repository;
 }
 
@@ -1089,7 +1090,7 @@ export function buildMemoryListCard(
         `更新: ${formatMemoryDate(mem.updatedAt)}`,
       ];
       // Only show repository for project-scoped types — preference/state would just be noise.
-      if (mem.type === 'fact' || mem.type === 'decision' || mem.type === 'relation') {
+      if (PROJECT_SCOPED_TYPES.has(mem.type)) {
         metaParts.push(`仓库: ${repoLabel ?? '未绑定'}`);
       }
       const meta = metaParts.join(' | ');
