@@ -783,9 +783,13 @@ export class ClaudeExecutor {
         abortController,
         stderr: (data: string) => logger.warn({ stderr: data.trim() }, 'Claude Code stderr'),
 
-        // SDK 0.2.111+: env 覆盖 process.env 而非替换，只需传差异项
-        // CLAUDECODE 嵌套检测变量由 SDK 自动清除，无需手动处理
-        ...(config.claude.apiBaseUrl ? { env: { ANTHROPIC_BASE_URL: config.claude.apiBaseUrl } } : {}),
+        // SDK 0.3.x: env 传入后会**完全替换**子进程环境（不与 process.env 合并）。
+        // 必须自行展开 process.env，否则子进程会丢失 ANTHROPIC_API_KEY / PATH / HOME 等，
+        // 导致 "Not logged in · Please run /login"。仅在配了代理 BaseUrl 时才覆盖该项。
+        // CLAUDECODE 嵌套检测变量由 SDK 自动清除，无需手动处理。
+        ...(config.claude.apiBaseUrl
+          ? { env: { ...process.env, ANTHROPIC_BASE_URL: config.claude.apiBaseUrl } }
+          : {}),
 
         // 权限：acceptEdits 自动接受文件编辑，canUseTool 自动批准其余工具调用
         // 注意：不使用 bypassPermissions，因为 root 用户下会被拒绝
