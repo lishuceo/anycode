@@ -68,8 +68,8 @@ export const config = {
     apiBaseUrl: process.env.ANTHROPIC_BASE_URL || '',
     /** 单步空闲超时 (秒)：某步骤长时间无 SDK 消息活动时 abort。不限制总执行时长 */
     timeoutSeconds: parseInt(process.env.CLAUDE_TIMEOUT || '300', 10),
-    /** 模型名称，默认 claude-opus-4-7 (Opus 4.7) */
-    model: process.env.CLAUDE_MODEL || 'claude-opus-4-7',
+    /** 模型名称，默认 claude-opus-4-8 (Opus 4.8) */
+    model: process.env.CLAUDE_MODEL || 'claude-opus-4-8',
     /** thinking 模式: 'adaptive' (自适应思考) | 'disabled' */
     thinking: (process.env.CLAUDE_THINKING || 'adaptive') as 'adaptive' | 'disabled',
     /** effort 等级: 'low' | 'medium' | 'high' | 'max' */
