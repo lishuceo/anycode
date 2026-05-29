@@ -526,6 +526,9 @@ async function* buildMultimodalPrompt(
   }
 
   for (const img of images) {
+    if (img.label) {
+      contentBlocks.push({ type: 'text', text: `[图片说明: ${img.label}]` });
+    }
     contentBlocks.push({
       type: 'image',
       source: {
@@ -550,6 +553,9 @@ async function* buildMultimodalPrompt(
     session_id: '',
   } as import('@anthropic-ai/claude-agent-sdk').SDKUserMessage;
 }
+
+/** 仅测试用：导出 buildMultimodalPrompt */
+export const _testBuildMultimodalPrompt = buildMultimodalPrompt;
 
 export class ClaudeExecutor {
   /** 运行中的 query 实例 (用于 abort) */

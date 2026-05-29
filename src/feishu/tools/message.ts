@@ -1,12 +1,9 @@
 import { tool } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
-import { writeFile, mkdir } from 'fs/promises';
-import { join } from 'path';
-import { tmpdir } from 'os';
 import { feishuClient } from '../client.js';
+import { saveMessageFileToCache } from '../file-cache.js';
 import { logger } from '../../utils/logger.js';
 
-const DOWNLOAD_DIR = join(tmpdir(), 'feishu-downloads');
 const MAX_FILE_SIZE = 30 * 1024 * 1024; // 30MB
 
 /**
@@ -43,13 +40,7 @@ export function feishuMessageFileTool() {
           };
         }
 
-        // 确保下载目录存在
-        await mkdir(DOWNLOAD_DIR, { recursive: true });
-
-        // 文件名：messageId-fileKey 避免冲突
-        const safeFileName = `${args.message_id}-${args.file_key}`.replace(/[^a-zA-Z0-9_-]/g, '_');
-        const filePath = join(DOWNLOAD_DIR, safeFileName);
-        await writeFile(filePath, buf);
+        const filePath = await saveMessageFileToCache(args.message_id, args.file_key, buf);
 
         logger.info(
           { messageId: args.message_id, fileKey: args.file_key, sizeBytes: buf.length, filePath },

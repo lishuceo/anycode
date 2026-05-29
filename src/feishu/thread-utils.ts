@@ -56,3 +56,21 @@ export async function ensureThread(
   logger.warn({ chatId, userId }, 'Failed to create thread, falling back to main chat');
   return {};
 }
+
+/**
+ * 初始化进度卡片消息 ID。
+ *
+ * 优先复用 ensureThread 创建的问候卡片（greetingMsgId），避免出现"空白残留卡片"：
+ * - 新话题首条消息：ensureThread 已发送一张卡片，直接复用
+ * - 话题内后续消息：无 greetingMsgId，需新建一张可后续更新的卡片
+ * - 主聊天（无话题）：返回 undefined，由调用方走轻量文本回复路径
+ */
+export async function initProgressCardMsgId(
+  greetingMsgId: string | undefined,
+  threadReplyMsgId: string | undefined,
+  replyCardInThread: (anchorMsgId: string) => Promise<string | undefined>,
+): Promise<string | undefined> {
+  if (greetingMsgId) return greetingMsgId;
+  if (threadReplyMsgId) return await replyCardInThread(threadReplyMsgId);
+  return undefined;
+}
