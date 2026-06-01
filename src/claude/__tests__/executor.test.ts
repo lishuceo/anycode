@@ -581,4 +581,37 @@ describe('ClaudeExecutor', () => {
       expect(opts.env).toBeUndefined();
     });
   });
+
+  describe('result message terminates loop (idle-timeout regression)', () => {
+    it('should return success immediately when SDK stream hangs after the result message', async () => {
+      // 复现线上 bug：SDK 发出 result(success) 后不关闭异步迭代器，next() 永不 resolve。
+      // 修复前 for-await 会继续阻塞等待下一条永不到来的消息，600s 后被 idle timer 误判
+      // 为超时，把已成功的 query 当成错误抛出（日志特征 lastResetSource=msg:result:success）。
+      // 修复后收到 result 立即 break，不再调用 next()，query 正常返回成功结果。
+      const messages = [
+        { type: 'system', subtype: 'init', session_id: 'sess-1', model: 'claude', tools: [] },
+        { type: 'result', subtype: 'success', session_id: 'sess-1', result: 'hello', duration_ms: 100 },
+      ];
+      let nextCallCount = 0;
+      const returnSpy = vi.fn(() => Promise.resolve({ value: undefined, done: true }));
+      mockQueryInstance[Symbol.asyncIterator].mockReturnValue({
+        next: () => {
+          nextCallCount++;
+          if (nextCallCount <= messages.length) {
+            return Promise.resolve({ value: messages[nextCallCount - 1], done: false });
+          }
+          // 第三次及以后：永不 resolve（模拟 SDK 在 result 后卡住不关闭流）
+          return new Promise(() => {});
+        },
+        return: returnSpy,
+      });
+
+      const result = await executor.execute(makeInput());
+
+      expect(result.success).toBe(true);
+      expect(result.output).toBe('hello');
+      // 只应读取 init + result 两条消息，绝不尝试读取第三条（那会永久阻塞）
+      expect(nextCallCount).toBe(2);
+    });
+  });
 });
