@@ -984,6 +984,7 @@ export class ClaudeExecutor {
 
     try {
       // 遍历 SDK 流式消息
+      messageLoop:
       for await (const message of q) {
         // 每收到消息重置 idle 计时器
         resetIdleTimer(`msg:${message.type}${'subtype' in message ? ':' + (message as Record<string, unknown>).subtype : ''}`);
@@ -1123,7 +1124,12 @@ export class ClaudeExecutor {
 
           case 'result':
             resultMessage = message;
-            break;
+            // result 是 query 的终止消息。SDK 偶发在发出 result 后不关闭异步迭代器，
+            // 导致 for-await 继续阻塞等待永不到来的下一条消息，最终被 idle timer 误判
+            // 为超时（即使 query 已成功），把成功结果当成错误抛给用户（见 idle timeout
+            // lastResetSource=msg:result:success 的线上案例）。收到 result 立即跳出循环，
+            // 主动结束，避免空转到超时。break 标签确保跳出 for-await 而非仅 switch。
+            break messageLoop;
 
           default:
             // tool_progress, stream_event 等其他消息类型 — 记录以便诊断 idle timeout 间隙
