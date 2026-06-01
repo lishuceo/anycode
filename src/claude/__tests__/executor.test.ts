@@ -612,6 +612,8 @@ describe('ClaudeExecutor', () => {
       expect(result.output).toBe('hello');
       // 只应读取 init + result 两条消息，绝不尝试读取第三条（那会永久阻塞）
       expect(nextCallCount).toBe(2);
+      // for-await 通过 break 提前退出时会调用 iterator.return()，触发 SDK 内部清理
+      expect(returnSpy).toHaveBeenCalled();
     });
   });
 });
