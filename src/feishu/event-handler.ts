@@ -42,7 +42,7 @@ import { handleMemoryCommand, handleMemoryCardAction } from '../memory/commands.
 import { getRepoIdentity } from '../workspace/identity.js';
 import { parseRepoNameFromWorkspaceDir } from '../workspace/manager.js';
 import { generateQuickAck } from '../utils/quick-ack.js';
-import { checkThreadRelevance } from '../utils/thread-relevance.js';
+import { evaluateThreadBypass, type ThreadBypassDeps } from './thread-participants.js';
 import { compressImage, compressImageForHistory } from '../utils/image-compress.js';
 
 // 注册审批通过后的消息重新入队回调（避免 approval.ts → event-handler.ts 循环依赖）
@@ -187,6 +187,13 @@ interface PendingQuestion {
 }
 
 /** questionId → PendingQuestion */
+// 共享 bypass 判定的依赖注入：所有都是 module-level singleton，构造一次复用
+const threadBypassDeps: ThreadBypassDeps = {
+  client: feishuClient,
+  getThreadSession: (threadId, agentId) => sessionManager.getThreadSession(threadId, agentId),
+  isOwner,
+};
+
 const pendingQuestions = new Map<string, PendingQuestion>();
 
 /** AskUserQuestion 等待超时（毫秒）。0 表示永不超时（默认）。 */
@@ -543,7 +550,7 @@ interface MentionGateInput {
 }
 
 async function resolveMentionGate(input: MentionGateInput): Promise<string | undefined> {
-  const { chatType, mentionedBot, mentions, threadId, messageId, text, userId, chatId, agentId, accountId, images, documents } = input;
+  const { chatType, mentionedBot, mentions, threadId, messageId, text, userId, chatId, agentId, accountId } = input;
 
   // 私聊始终放行
   if (chatType === 'p2p') return 'p2p';
@@ -562,24 +569,21 @@ async function resolveMentionGate(input: MentionGateInput): Promise<string | und
     const anyBotMentioned = mentions.some(m => knownBotIds.has(m.id.open_id ?? ''));
 
     // 话题内 thread bypass：话题创建者 bot 无需 @mention
+    // 走共享 evaluateThreadBypass —— session 创建者 + 单人话题直接放行；多人话题保守要求 @
     if (threadId && !anyBotMentioned && isThreadCreatorAgent(threadId, agentId)) {
-      const ts = sessionManager.getThreadSession(threadId, agentId);
-      if (ts && (isOwner(userId) || ts.userId === userId)) {
-        const recentMsgs = await feishuClient.fetchRecentMessages(threadId, 'thread', 10);
-        const humanSenders = new Set(recentMsgs.filter(m => m.senderType === 'user').map(m => m.senderId));
-
-        if (humanSenders.size <= 1) {
-          return 'thread_bypass_exclusive';
-        }
-
-        const botDisplayName = agentRegistry.get(agentId)?.displayName ?? 'bot';
-        const context = await formatThreadContext(recentMsgs, botDisplayName, chatId, accountId);
-        const relevant = await checkThreadRelevance(text, botDisplayName, context);
-        if (relevant) {
-          return 'thread_bypass';
-        }
-        logger.info({ threadId, agentId, text: text.slice(0, 100), humanCount: humanSenders.size }, 'Thread bypass skipped — message not directed at bot');
+      const result = await evaluateThreadBypass(threadBypassDeps, {
+        threadId, chatId, agentId, senderUserId: userId, messageId,
+      });
+      if (result.allow) {
+        return 'thread_bypass';
       }
+      if (result.reason === 'multi_user') {
+        logger.info(
+          { threadId, agentId, sessionUserId: result.sessionUserId, text: text?.slice(0, 100) },
+          'Thread bypass skipped — multi-user thread without @mention',
+        );
+      }
+      // no_session / not_creator：静默落回 @mention 路由
     }
 
     // @mention / commander 路由
@@ -593,72 +597,21 @@ async function resolveMentionGate(input: MentionGateInput): Promise<string | und
   if (mentionedBot) return 'mentioned';
   if (chatType !== 'group') return 'non_group';
 
-  // 群聊未 @mention：仅话题内 session 创建者可放行
-  const ts = threadId ? sessionManager.getThreadSession(threadId) : undefined;
-  if (!ts || (!isOwner(userId) && ts.userId !== userId)) {
-    return undefined;
-  }
-
-  if (images?.length || documents?.length) {
-    logger.info({ messageId, threadId }, 'Thread session owner: image/doc bypass');
-    return 'thread_session_media';
-  }
-
-  const recentMsgs = threadId ? await feishuClient.fetchRecentMessages(threadId, 'thread', 10) : [];
-  const humanSenders = new Set(recentMsgs.filter(m => m.senderType === 'user').map(m => m.senderId));
-
-  if (humanSenders.size <= 1) {
-    return 'thread_session_owner';
-  }
-
-  const botDisplayName = agentRegistry.get(agentId)?.displayName ?? 'bot';
-  const context = await formatThreadContext(recentMsgs, botDisplayName, chatId, accountId);
-  const relevant = await checkThreadRelevance(text, botDisplayName, context);
-  if (!relevant) {
-    logger.info({ messageId, threadId, text: text?.slice(0, 100), humanCount: humanSenders.size }, 'Thread session owner: semantically not directed at bot');
-    return undefined;
-  }
-
-  logger.info({ messageId, threadId }, 'Thread session owner: semantically relevant');
-  return 'thread_session_owner';
-}
-
-/**
- * 将话题最近消息格式化为 Qwen 可读的对话记录。
- * 用于多人话题场景的语义判断，让 Qwen 看清谁在跟谁说话。
- */
-async function formatThreadContext(
-  messages: Array<{ senderId: string; senderType: string; content: string }>,
-  botName: string,
-  chatId: string,
-  accountId: string,
-): Promise<string> {
-  const userIds = [...new Set(messages.filter(m => m.senderType === 'user').map(m => m.senderId))];
-  await resolveUserNames(userIds, chatId);
-
-  const selfBotOpenId = accountManager.getBotOpenId(accountId) ?? '';
-  const botNameMap = new Map<string, string>();
-  for (const acc of accountManager.allAccounts()) {
-    if (acc.botOpenId) botNameMap.set(acc.botOpenId, acc.botName);
-  }
-  const lines: string[] = [];
-  let totalLen = 0;
-  for (const m of messages) {
-    let name: string;
-    if (m.senderType === 'app') {
-      name = m.senderId === selfBotOpenId
-        ? `${botName}(bot)`
-        : `${botNameMap.get(m.senderId) ?? chatBotRegistry.getBots(chatId).find(b => b.openId === m.senderId)?.name ?? '其他bot'}(bot)`;
-    } else {
-      name = _userNameCache.get(m.senderId) ?? '用户';
+  // 群聊未 @mention：仅话题内 session 创建者可放行（共享判定逻辑，与多 bot 一致）
+  if (!threadId) return undefined;
+  const result = await evaluateThreadBypass(threadBypassDeps, {
+    threadId, chatId, senderUserId: userId, messageId,
+  });
+  if (!result.allow) {
+    if (result.reason === 'multi_user') {
+      logger.info(
+        { messageId, threadId, sessionUserId: result.sessionUserId, text: text?.slice(0, 100) },
+        'Single-bot thread bypass skipped — multi-user thread without @mention',
+      );
     }
-    const content = m.senderType === 'app' ? m.content.slice(0, 100) : m.content;
-    const line = `[${name}]: ${content}`;
-    if (totalLen + line.length > 1500) break;
-    lines.push(line);
-    totalLen += line.length;
+    return undefined;
   }
-  return lines.join('\n');
+  return 'thread_session_owner';
 }
 
 // ============================================================

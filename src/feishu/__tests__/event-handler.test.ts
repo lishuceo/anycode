@@ -107,6 +107,7 @@ vi.mock('../../utils/logger.js', () => ({
 vi.mock('../../utils/security.js', () => ({
   isUserAllowed: vi.fn(() => true),
   containsDangerousCommand: vi.fn(() => false),
+  isOwner: vi.fn(() => false),
 }));
 
 vi.mock('../../config.js', () => ({
@@ -168,7 +169,6 @@ vi.mock('../../memory/commands.js', () => ({
 }));
 vi.mock('../../workspace/identity.js', () => ({ getRepoIdentity: vi.fn((p: string) => p) }));
 vi.mock('../../utils/quick-ack.js', () => ({ generateQuickAck: vi.fn() }));
-vi.mock('../../utils/thread-relevance.js', () => ({ checkThreadRelevance: vi.fn() }));
 
 vi.mock('../../workspace/manager.js', () => ({
   setupWorkspace: vi.fn(),
@@ -942,17 +942,21 @@ describe('parseMessage empty @mention handling', () => {
 // 单 bot 模式群聊图片/文档消息 @mention 过滤回归测试
 //
 // 回归 PR #220 的 BUG：群聊中纯图片/文档消息不应绕过 @mention 检查
+// 后续修复（多人话题图片插嘴）：话题里若已有非 session 创建者参与过，
+// 即使是 session 创建者发图，也要求显式 @ bot 才响应。
+//
 // 正确行为：
 //   - 主聊天区：没 @bot 的图片消息 → 不响应（无论有没有图片）
-//   - 话题内 session 创建者：图片消息 → 放行（无需语义判断）
+//   - 话题内 session 创建者 + 无第三方参与：图片/文档消息 → 放行（无需语义判断）
+//   - 话题内 session 创建者 + 已有第三方参与：图片/文档消息 → 不响应（避免插嘴）
 //   - 话题内非 session 创建者：图片消息 → 不响应
 // ============================================================
 
 describe('single-bot group image/doc @mention filtering (regression PR #220)', () => {
   /**
-   * 模拟 event-handler.ts 第 778-796 行的单 bot 群聊过滤逻辑。
+   * 模拟 event-handler.ts 第 778-820 行的单 bot 群聊过滤逻辑。
    *
-   * @returns 'allow' 放行 | 'block' 拦截 | 'semantic_check' 需语义判断
+   * @returns 'allow' 放行 | 'block' 拦截
    */
   function singleBotGroupFilter(params: {
     chatType: string;
@@ -962,8 +966,13 @@ describe('single-bot group image/doc @mention filtering (regression PR #220)', (
     isSessionCreatorOrOwner: boolean;
     hasImages: boolean;
     hasDocuments: boolean;
-  }): 'allow' | 'block' | 'semantic_check' {
-    const { chatType, mentionedBot, threadId, hasThreadSession, isSessionCreatorOrOwner, hasImages, hasDocuments } = params;
+    /** 话题里是否已有非 session 创建者的人类用户参与过 */
+    threadHasOtherParticipants?: boolean;
+  }): 'allow' | 'block' {
+    const {
+      chatType, mentionedBot, threadId, hasThreadSession, isSessionCreatorOrOwner,
+      threadHasOtherParticipants = false,
+    } = params;
 
     // 非群聊 或 已 @bot → 直接放行
     if (chatType !== 'group' || mentionedBot) return 'allow';
@@ -972,9 +981,12 @@ describe('single-bot group image/doc @mention filtering (regression PR #220)', (
     const ts = threadId && hasThreadSession;
     if (!ts || !isSessionCreatorOrOwner) return 'block';
 
-    // 话题内 session 创建者
-    if (hasImages || hasDocuments) return 'allow';  // 图片/文档直接放行
-    return 'semantic_check';  // 文本消息需语义判断
+    // 多人话题保守策略：只要话题里有非 session 创建者的人类参与过，
+    // 任何未 @ bot 的消息（图/文档/文字）都不放行，避免插嘴。
+    if (threadHasOtherParticipants) return 'block';
+
+    // 单人话题：session 创建者发什么都直接放行（话题就是 user vs bot 的对话载体）
+    return 'allow';
   }
 
   // --- 主聊天区（无话题）---
@@ -1003,30 +1015,85 @@ describe('single-bot group image/doc @mention filtering (regression PR #220)', (
     })).toBe('allow');
   });
 
-  // --- 话题内 session 创建者 ---
+  // --- 话题内 session 创建者（无第三方参与）---
 
-  it('should ALLOW image in thread from session creator (skip semantic check)', () => {
+  it('should ALLOW image in solo thread from session creator', () => {
     expect(singleBotGroupFilter({
       chatType: 'group', mentionedBot: false,
       threadId: 'thread-1', hasThreadSession: true, isSessionCreatorOrOwner: true,
       hasImages: true, hasDocuments: false,
+      threadHasOtherParticipants: false,
     })).toBe('allow');
   });
 
-  it('should ALLOW document in thread from session creator', () => {
+  it('should ALLOW document in solo thread from session creator', () => {
     expect(singleBotGroupFilter({
       chatType: 'group', mentionedBot: false,
       threadId: 'thread-1', hasThreadSession: true, isSessionCreatorOrOwner: true,
       hasImages: false, hasDocuments: true,
+      threadHasOtherParticipants: false,
     })).toBe('allow');
   });
 
-  it('should require SEMANTIC_CHECK for text in thread from session creator', () => {
+  it('should ALLOW text in solo thread from session creator (no semantic check needed)', () => {
+    // 单人话题里 session 创建者发的消息基本就是冲 bot 来的，没必要再用 Qwen 二次判断
     expect(singleBotGroupFilter({
       chatType: 'group', mentionedBot: false,
       threadId: 'thread-1', hasThreadSession: true, isSessionCreatorOrOwner: true,
       hasImages: false, hasDocuments: false,
-    })).toBe('semantic_check');
+    })).toBe('allow');
+  });
+
+  // --- 话题内 session 创建者（有第三方参与，方案 1）---
+
+  it('should BLOCK image in multi-user thread from session creator (avoid butting in)', () => {
+    // 场景：话题里有另一个人参与过讨论，session 创建者发图给那个人看
+    // 期望：bot 不响应，必须显式 @ bot
+    expect(singleBotGroupFilter({
+      chatType: 'group', mentionedBot: false,
+      threadId: 'thread-1', hasThreadSession: true, isSessionCreatorOrOwner: true,
+      hasImages: true, hasDocuments: false,
+      threadHasOtherParticipants: true,
+    })).toBe('block');
+  });
+
+  it('should BLOCK document in multi-user thread from session creator', () => {
+    expect(singleBotGroupFilter({
+      chatType: 'group', mentionedBot: false,
+      threadId: 'thread-1', hasThreadSession: true, isSessionCreatorOrOwner: true,
+      hasImages: false, hasDocuments: true,
+      threadHasOtherParticipants: true,
+    })).toBe('block');
+  });
+
+  it('should ALLOW image in multi-user thread from session creator WITH @mention', () => {
+    // 显式 @ bot 时，无论是否多人话题都应放行
+    expect(singleBotGroupFilter({
+      chatType: 'group', mentionedBot: true,
+      threadId: 'thread-1', hasThreadSession: true, isSessionCreatorOrOwner: true,
+      hasImages: true, hasDocuments: false,
+      threadHasOtherParticipants: true,
+    })).toBe('allow');
+  });
+
+  it('should BLOCK text in multi-user thread from session creator', () => {
+    // 场景：话题里有第三人参与过，session 创建者发文字也不放行（避免插嘴）
+    // 期望：直接 block，要求显式 @ bot
+    expect(singleBotGroupFilter({
+      chatType: 'group', mentionedBot: false,
+      threadId: 'thread-1', hasThreadSession: true, isSessionCreatorOrOwner: true,
+      hasImages: false, hasDocuments: false,
+      threadHasOtherParticipants: true,
+    })).toBe('block');
+  });
+
+  it('should ALLOW text in multi-user thread from session creator WITH @mention', () => {
+    expect(singleBotGroupFilter({
+      chatType: 'group', mentionedBot: true,
+      threadId: 'thread-1', hasThreadSession: true, isSessionCreatorOrOwner: true,
+      hasImages: false, hasDocuments: false,
+      threadHasOtherParticipants: true,
+    })).toBe('allow');
   });
 
   // --- 话题内非 session 创建者 ---
@@ -1047,6 +1114,105 @@ describe('single-bot group image/doc @mention filtering (regression PR #220)', (
       hasThreadSession: false, isSessionCreatorOrOwner: false,
       hasImages: true, hasDocuments: false,
     })).toBe('allow');
+  });
+});
+
+// ============================================================
+// 多 bot 模式 thread creator bypass 多人话题过滤
+//
+// 对应 event-handler.ts 多 bot 模式 bypass 逻辑：
+// - 话题创建者 bot 在单人话题内无需 @ 即可响应
+// - 多人话题里跳过 bypass，要求显式 @
+// ============================================================
+
+describe('multi-bot thread creator bypass — multi-user filtering', () => {
+  /**
+   * 模拟 event-handler.ts 多 bot 模式 thread creator bypass 流程。
+   *
+   * @returns 'bypass' bypass 生效（响应）| 'skip' 不响应
+   */
+  function multiBotThreadBypass(params: {
+    isThreadCreatorAgent: boolean;
+    anyBotMentioned: boolean;
+    hasThreadSession: boolean;
+    isOwnerOrCreator: boolean;
+    threadHasOtherParticipants: boolean;
+  }): 'bypass' | 'skip' {
+    const {
+      isThreadCreatorAgent, anyBotMentioned, hasThreadSession, isOwnerOrCreator,
+      threadHasOtherParticipants,
+    } = params;
+
+    // 没匹配 bypass 前提 → 不进入 bypass 分支
+    if (anyBotMentioned || !isThreadCreatorAgent) return 'skip';
+    if (!hasThreadSession || !isOwnerOrCreator) return 'skip';
+
+    // 多人话题：直接 skip，不响应
+    if (threadHasOtherParticipants) return 'skip';
+
+    // 单人话题：直接 bypass
+    return 'bypass';
+  }
+
+  it('should BYPASS when solo thread + creator agent + session creator', () => {
+    expect(multiBotThreadBypass({
+      isThreadCreatorAgent: true,
+      anyBotMentioned: false,
+      hasThreadSession: true,
+      isOwnerOrCreator: true,
+      threadHasOtherParticipants: false,
+    })).toBe('bypass');
+  });
+
+  it('should SKIP when multi-user thread (avoid butting in)', () => {
+    // 黎叔的场景：话题里出现过第三人，即使消息看起来在跟 bot 说话，也不响应
+    expect(multiBotThreadBypass({
+      isThreadCreatorAgent: true,
+      anyBotMentioned: false,
+      hasThreadSession: true,
+      isOwnerOrCreator: true,
+      threadHasOtherParticipants: true,
+    })).toBe('skip');
+  });
+
+  it('should SKIP when not thread creator agent', () => {
+    expect(multiBotThreadBypass({
+      isThreadCreatorAgent: false,
+      anyBotMentioned: false,
+      hasThreadSession: true,
+      isOwnerOrCreator: true,
+      threadHasOtherParticipants: false,
+    })).toBe('skip');
+  });
+
+  it('should SKIP when no thread session', () => {
+    expect(multiBotThreadBypass({
+      isThreadCreatorAgent: true,
+      anyBotMentioned: false,
+      hasThreadSession: false,
+      isOwnerOrCreator: true,
+      threadHasOtherParticipants: false,
+    })).toBe('skip');
+  });
+
+  it('should SKIP when sender is not session creator nor owner', () => {
+    expect(multiBotThreadBypass({
+      isThreadCreatorAgent: true,
+      anyBotMentioned: false,
+      hasThreadSession: true,
+      isOwnerOrCreator: false,
+      threadHasOtherParticipants: false,
+    })).toBe('skip');
+  });
+
+  it('should SKIP when any bot was @mentioned (defer to normal shouldRespond)', () => {
+    expect(multiBotThreadBypass({
+      isThreadCreatorAgent: true,
+      anyBotMentioned: true,
+      hasThreadSession: true,
+      isOwnerOrCreator: true,
+      threadHasOtherParticipants: false,
+    })).toBe('skip');
   });
 });
 

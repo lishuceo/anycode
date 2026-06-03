@@ -61,7 +61,7 @@ vi.mock('../message-builder.js', () => ({
   buildProgressCard: vi.fn(), buildCombinedProgressCard: vi.fn(), buildStatusCard: vi.fn(),
 }));
 vi.mock('../../utils/security.js', () => ({
-  isUserAllowed: vi.fn(() => true), containsDangerousCommand: vi.fn(() => false),
+  isUserAllowed: vi.fn(() => true), containsDangerousCommand: vi.fn(() => false), isOwner: vi.fn(() => false),
 }));
 vi.mock('../../pipeline/store.js', () => ({
   pipelineStore: { get: vi.fn(), findPendingByChat: vi.fn(), tryStart: vi.fn() },
