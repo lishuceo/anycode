@@ -119,4 +119,37 @@ describe('threadHasOtherHumanParticipant', () => {
       threadHasOtherHumanParticipant(client, 'thread-1', 'chat-1', SESSION_USER, CURRENT_MSG),
     ).resolves.toBe(true);
   });
+
+  // ============================================================
+  // 动态切换：单人话题 → 加入第三人 → 后续消息变成多人话题
+  //
+  // 重要边界：不能缓存"这个话题是单人/多人"的判定，必须每条消息都
+  // 实时拉历史。否则第三人加入后，session 创建者再发的消息仍会被
+  // 当作单人话题放行，导致插嘴。
+  // ============================================================
+  it('transitions from solo to multi-user as third party joins', async () => {
+    // 模拟话题历史随时间累积：先只有 session creator，然后第三人加入
+    const history: Array<{ messageId: string; senderId: string; senderType: 'user' | 'app' }> = [
+      { messageId: 'om_1', senderId: SESSION_USER, senderType: 'user' },
+    ];
+    const client = {
+      fetchRecentMessages: vi.fn().mockImplementation(async () => [...history]),
+    };
+
+    // T1: 单人话题，session creator 发消息 → 判定为单人，可 bypass
+    await expect(
+      threadHasOtherHumanParticipant(client, 'thread-1', 'chat-1', SESSION_USER, 'om_t1'),
+    ).resolves.toBe(false);
+
+    // T2: 第三人插话（这条消息本身不会触发 bot，但会进入飞书话题历史）
+    history.push({ messageId: 'om_2', senderId: 'ou_third_party', senderType: 'user' });
+
+    // T3: session creator 再发消息 → 实时拉历史能看到第三人 → 切换到保守模式
+    await expect(
+      threadHasOtherHumanParticipant(client, 'thread-1', 'chat-1', SESSION_USER, 'om_t3'),
+    ).resolves.toBe(true);
+
+    // 每次都现拉，没缓存
+    expect(client.fetchRecentMessages).toHaveBeenCalledTimes(2);
+  });
 });

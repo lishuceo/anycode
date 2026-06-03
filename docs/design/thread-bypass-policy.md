@@ -48,6 +48,16 @@ last_updated: "2026-06-03"
 
 **bot 自己的历史消息不算第三方**（senderType === `'app'` 一律忽略）。
 
+### 动态切换：单人 → 多人
+
+判定不缓存。每条消息进入 `handleMessageEvent` 时都会**实时**拉一次 `fetchRecentMessages`，所以：
+
+- 单人话题里 session 创建者发消息 → bypass 放行
+- 第三人插话（这条消息因不是 session 创建者，被 isSessionCreatorOrOwner 检查挡掉，bot 不响应，但消息进入飞书话题历史）
+- session 创建者**下一条**消息处理时，拉历史能看到第三人 → 切换到多人模式 → 要求 @bot
+
+代价是每条消息一次 API 调用，但 fetchRecentMessages 本身已在多处复用，开销可接受。回归测试覆盖：`thread-participants.test.ts > transitions from solo to multi-user as third party joins`。
+
 ## 单 bot vs 多 bot 模式差异
 
 | 维度 | 单 bot 模式 | 多 bot 模式 |
