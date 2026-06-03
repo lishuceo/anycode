@@ -17,6 +17,10 @@ interface ThreadSessionRow {
   pipeline_context: string | null;
   approved: number | null;
   inplace_edit: number | null;
+  parent_topic_id: string | null;
+  forked_from_message_id: string | null;
+  fork_point: string | null;
+  fork_short_id: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -258,6 +262,19 @@ export class SessionDatabase {
       this.db.exec('UPDATE schema_version SET version = 14');
     }
 
+    // Migration v14 → v15: add fork-related columns to thread_sessions (Plan 8)
+    if (version < 15) {
+      const cols = this.db.prepare("PRAGMA table_info(thread_sessions)").all() as Array<{ name: string }>;
+      if (!cols.some((c) => c.name === 'parent_topic_id')) {
+        this.db.exec('ALTER TABLE thread_sessions ADD COLUMN parent_topic_id TEXT');
+        this.db.exec('ALTER TABLE thread_sessions ADD COLUMN forked_from_message_id TEXT');
+        this.db.exec('ALTER TABLE thread_sessions ADD COLUMN fork_point TEXT');
+        this.db.exec('ALTER TABLE thread_sessions ADD COLUMN fork_short_id TEXT');
+        this.db.exec('CREATE INDEX IF NOT EXISTS idx_thread_sessions_parent ON thread_sessions(parent_topic_id)');
+      }
+      this.db.exec('UPDATE schema_version SET version = 15');
+    }
+
     this.stmtUpsert = this.db.prepare(`
       INSERT INTO sessions (key, chat_id, user_id, working_dir, conversation_id, conversation_cwd, thread_id, thread_root_message_id, status, created_at, last_active_at)
       VALUES (@key, @chat_id, @user_id, @working_dir, @conversation_id, @conversation_cwd, @thread_id, @thread_root_message_id, @status, @created_at, @last_active_at)
@@ -337,8 +354,8 @@ export class SessionDatabase {
     );
 
     this.stmtUpsertThreadSession = this.db.prepare(`
-      INSERT INTO thread_sessions (thread_id, chat_id, user_id, working_dir, conversation_id, conversation_cwd, created_at, updated_at)
-      VALUES (@thread_id, @chat_id, @user_id, @working_dir, @conversation_id, @conversation_cwd, @created_at, @updated_at)
+      INSERT INTO thread_sessions (thread_id, chat_id, user_id, working_dir, conversation_id, conversation_cwd, parent_topic_id, forked_from_message_id, fork_point, fork_short_id, created_at, updated_at)
+      VALUES (@thread_id, @chat_id, @user_id, @working_dir, @conversation_id, @conversation_cwd, @parent_topic_id, @forked_from_message_id, @fork_point, @fork_short_id, @created_at, @updated_at)
       ON CONFLICT(thread_id) DO UPDATE SET
         working_dir      = @working_dir,
         conversation_id  = @conversation_id,
@@ -517,6 +534,10 @@ export class SessionDatabase {
       working_dir: session.workingDir,
       conversation_id: session.conversationId ?? null,
       conversation_cwd: session.conversationCwd ?? null,
+      parent_topic_id: session.parentTopicId ?? null,
+      forked_from_message_id: session.forkedFromMessageId ?? null,
+      fork_point: session.forkPoint ?? null,
+      fork_short_id: session.forkShortId ?? null,
       created_at: session.createdAt.toISOString(),
       updated_at: session.updatedAt.toISOString(),
     });
@@ -671,6 +692,10 @@ export class SessionDatabase {
       pipelineContext,
       approved: row.approved === 1 ? true : row.approved === 0 ? false : undefined,
       inplaceEdit: !!row.inplace_edit,
+      parentTopicId: row.parent_topic_id ?? undefined,
+      forkedFromMessageId: row.forked_from_message_id ?? undefined,
+      forkPoint: row.fork_point ?? undefined,
+      forkShortId: row.fork_short_id ?? undefined,
       createdAt: new Date(row.created_at),
       updatedAt: new Date(row.updated_at),
     };

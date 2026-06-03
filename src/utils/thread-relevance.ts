@@ -7,7 +7,7 @@ import { config } from '../config.js';
 import { logger } from './logger.js';
 import { getClient } from './quick-ack.js';
 
-const RELEVANCE_PROMPT = `你是一个消息路由判断器。在一个群聊话题中，机器人之前参与了对话。
+const RELEVANCE_PROMPT_SIMPLE = `你是一个消息路由判断器。在一个群聊话题中，机器人之前参与了对话。
 现在收到一条新消息（没有 @机器人），判断这条消息是否**明确需要机器人回复**。
 
 严格按 JSON 格式回复，不要输出任何其他内容：
@@ -25,6 +25,23 @@ respond: false 的条件：
 - 短句/语气词/感叹（如"哦"、"好的"、"噗"、"可以"、"稳了"）
 - 无法确定是否在跟机器人说话 → false（宁可不回）`;
 
+const RELEVANCE_PROMPT_WITH_CONTEXT = `你是一个消息路由判断器。在一个群聊话题中，有多人参与对话，其中包括机器人。
+现在收到一条新消息（没有 @机器人），根据对话上下文判断这条消息是否在跟机器人说话。
+
+严格按 JSON 格式回复，不要输出任何其他内容：
+{"respond": true} 或 {"respond": false}
+
+respond: true 的条件（必须满足至少一条）：
+- 消息在回应机器人刚才的回复（追问、反馈、确认）
+- 消息**明确**在向机器人提问、请求帮助、布置任务
+- 消息提到了机器人的名字并期望它做某事
+
+respond: false 的条件：
+- 从对话上下文看，消息是在跟其他人说话
+- 消息是回应其他人（非机器人）的发言
+- 消息是自言自语、告知状态
+- 无法确定是否在跟机器人说话 → false（宁可不回）`;
+
 /**
  * 判断话题内无 @mention 的消息是否需要 bot 回复。
  *
@@ -32,30 +49,37 @@ respond: false 的条件：
  *
  * @param message 用户消息文本
  * @param botName bot 显示名称
+ * @param conversationContext 话题最近对话记录（多人场景提供，帮助 Qwen 判断消息在跟谁说话）
  * @returns true = 应该回复, false = 不应该回复
  */
 export async function checkThreadRelevance(
   message: string,
   botName: string,
+  conversationContext?: string,
 ): Promise<boolean> {
-  if (!config.quickAck.enabled) return false; // 未配置小模型，宁可不回，用户可 @bot 明确触发
+  if (!config.quickAck.enabled) return false;
 
   const client = await getClient();
   if (!client) return false;
+
+  const systemPrompt = conversationContext ? RELEVANCE_PROMPT_WITH_CONTEXT : RELEVANCE_PROMPT_SIMPLE;
+  const userContent = conversationContext
+    ? `机器人名称：${botName}\n\n最近对话：\n${conversationContext}\n\n当前消息：\n${message.slice(0, 300)}`
+    : `机器人名称：${botName}\n消息内容：${message.slice(0, 300)}`;
 
   try {
     const result = await Promise.race([
       client.chat.completions.create({
         model: config.quickAck.model,
         messages: [
-          { role: 'system', content: RELEVANCE_PROMPT },
-          { role: 'user', content: `机器人名称：${botName}\n消息内容：${message.slice(0, 300)}` },
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userContent },
         ],
         max_tokens: 20,
         temperature: 0,
         enable_thinking: false,
       } as never),
-      new Promise<null>((resolve) => setTimeout(() => resolve(null), 2000)),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 3000)),
     ]);
 
     if (!result) {

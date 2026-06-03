@@ -28,6 +28,7 @@ import type { ClaudeResult, ExecuteOptions, ProgressCallback, TurnInfo, ToolCall
 // Anthropic API 定价（per million tokens）
 // https://docs.anthropic.com/en/docs/about-claude/pricing
 const MODEL_PRICING: Record<string, { input: number; output: number; cacheWrite: number; cacheRead: number }> = {
+  'claude-opus-4-8':          { input: 5,   output: 25,  cacheWrite: 6.25,  cacheRead: 0.50 },
   'claude-opus-4-7':          { input: 5,   output: 25,  cacheWrite: 6.25,  cacheRead: 0.50 },
   'claude-opus-4-6':          { input: 5,   output: 25,  cacheWrite: 6.25,  cacheRead: 0.50 },
   'claude-opus-4-5-20250620': { input: 5,   output: 25,  cacheWrite: 6.25,  cacheRead: 0.50 },
@@ -525,6 +526,9 @@ async function* buildMultimodalPrompt(
   }
 
   for (const img of images) {
+    if (img.label) {
+      contentBlocks.push({ type: 'text', text: `[图片说明: ${img.label}]` });
+    }
     contentBlocks.push({
       type: 'image',
       source: {
@@ -549,6 +553,9 @@ async function* buildMultimodalPrompt(
     session_id: '',
   } as import('@anthropic-ai/claude-agent-sdk').SDKUserMessage;
 }
+
+/** 仅测试用：导出 buildMultimodalPrompt */
+export const _testBuildMultimodalPrompt = buildMultimodalPrompt;
 
 export class ClaudeExecutor {
   /** 运行中的 query 实例 (用于 abort) */
@@ -776,9 +783,13 @@ export class ClaudeExecutor {
         abortController,
         stderr: (data: string) => logger.warn({ stderr: data.trim() }, 'Claude Code stderr'),
 
-        // SDK 0.2.111+: env 覆盖 process.env 而非替换，只需传差异项
-        // CLAUDECODE 嵌套检测变量由 SDK 自动清除，无需手动处理
-        ...(config.claude.apiBaseUrl ? { env: { ANTHROPIC_BASE_URL: config.claude.apiBaseUrl } } : {}),
+        // SDK 0.3.x: env 传入后会**完全替换**子进程环境（不与 process.env 合并）。
+        // 必须自行展开 process.env，否则子进程会丢失 ANTHROPIC_API_KEY / PATH / HOME 等，
+        // 导致 "Not logged in · Please run /login"。仅在配了代理 BaseUrl 时才覆盖该项。
+        // CLAUDECODE 嵌套检测变量由 SDK 自动清除，无需手动处理。
+        ...(config.claude.apiBaseUrl
+          ? { env: { ...process.env, ANTHROPIC_BASE_URL: config.claude.apiBaseUrl } }
+          : {}),
 
         // 权限：acceptEdits 自动接受文件编辑，canUseTool 自动批准其余工具调用
         // 注意：不使用 bypassPermissions，因为 root 用户下会被拒绝

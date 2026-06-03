@@ -88,22 +88,23 @@ export function validateBindings(bindings: AgentBinding[]): string[] {
   return warnings;
 }
 
+/** 放行原因 — 用于 @mention 过滤器的白名单日志 */
+export type RespondReason = 'p2p' | 'mentioned' | 'commander';
+
 /**
- * 群内 @mention 路由 — 判断当前 bot 是否应该响应此消息
+ * 群内 @mention 路由 — 返回放行原因，undefined 表示不响应。
  *
  * 优先级：显式 @mention > commander 模式 > 不响应
  */
-export function shouldRespond(
+export function getRespondReason(
   chatType: string,
   mentions: Array<{ id: { open_id?: string } }>,
   botOpenId: string,
   allBotOpenIds: Set<string>,
   commanderBotOpenId?: string,
-): boolean {
-  // 私聊：始终响应
-  if (chatType === 'p2p') return true;
+): RespondReason | undefined {
+  if (chatType === 'p2p') return 'p2p';
 
-  // 群聊：分析 @mention
   const mentionedBotIds = new Set<string>();
   for (const m of mentions) {
     if (m.id.open_id && allBotOpenIds.has(m.id.open_id)) {
@@ -111,16 +112,22 @@ export function shouldRespond(
     }
   }
 
-  // 规则 1: 消息明确 @了某个 bot → 只有被 @的 bot 响应
   if (mentionedBotIds.size > 0) {
-    return mentionedBotIds.has(botOpenId);
+    return mentionedBotIds.has(botOpenId) ? 'mentioned' : undefined;
   }
 
-  // 规则 2: 没有 @任何 bot → commander 响应
-  if (commanderBotOpenId && botOpenId === commanderBotOpenId) {
-    return true;
-  }
+  if (commanderBotOpenId && botOpenId === commanderBotOpenId) return 'commander';
 
-  // 规则 3: 没有 @，也没有 commander → 不响应
-  return false;
+  return undefined;
+}
+
+/** 向后兼容 wrapper */
+export function shouldRespond(
+  chatType: string,
+  mentions: Array<{ id: { open_id?: string } }>,
+  botOpenId: string,
+  allBotOpenIds: Set<string>,
+  commanderBotOpenId?: string,
+): boolean {
+  return getRespondReason(chatType, mentions, botOpenId, allBotOpenIds, commanderBotOpenId) !== undefined;
 }

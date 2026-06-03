@@ -2,7 +2,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // vi.hoisted runs before vi.mock factories — safe to reference in factory
-const { mockConfig, mockDocTool, mockWikiTool, mockDriveTool, mockBitableTool, mockChatTool, mockContactTool, mockTaskTool, mockCalendarTool, mockMainChatTool, mockMessageFileTool, mockCreateSdkMcpServer } = vi.hoisted(() => {
+const { mockConfig, mockDocTool, mockWikiTool, mockDriveTool, mockBitableTool, mockChatTool, mockContactTool, mockTaskTool, mockCalendarTool, mockMainChatTool, mockMessageFileTool, mockMessageImageTool, mockCreateSdkMcpServer } = vi.hoisted(() => {
   const mockConfig = {
     feishu: {
       tools: {
@@ -30,6 +30,7 @@ const { mockConfig, mockDocTool, mockWikiTool, mockDriveTool, mockBitableTool, m
     mockCalendarTool: vi.fn(() => ({ name: 'feishu_calendar' })),
     mockMainChatTool: vi.fn(() => ({ name: 'feishu_send_to_chat' })),
     mockMessageFileTool: vi.fn(() => ({ name: 'feishu_download_message_file' })),
+    mockMessageImageTool: vi.fn(() => ({ name: 'feishu_download_message_image' })),
     mockCreateSdkMcpServer: vi.fn((opts: unknown) => ({ ...(opts as object), type: 'mcp-server' })),
   };
 });
@@ -46,6 +47,7 @@ vi.mock('../task.js', () => ({ feishuTaskTool: () => mockTaskTool() }));
 vi.mock('../calendar.js', () => ({ feishuCalendarTool: () => mockCalendarTool() }));
 vi.mock('../main-chat.js', () => ({ feishuMainChatTool: () => mockMainChatTool() }));
 vi.mock('../message.js', () => ({ feishuMessageFileTool: () => mockMessageFileTool() }));
+vi.mock('../image.js', () => ({ feishuMessageImageTool: () => mockMessageImageTool() }));
 vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
   createSdkMcpServer: (opts: unknown) => mockCreateSdkMcpServer(opts),
 }));
@@ -72,8 +74,8 @@ describe('createFeishuToolsMcpServer', () => {
     expect(mockCreateSdkMcpServer).toHaveBeenCalledTimes(1);
     const call = mockCreateSdkMcpServer.mock.calls[0][0];
     expect(call.name).toBe('feishu-tools');
-    // 8 config-gated tools + 1 always-on message file tool = 9
-    expect(call.tools).toHaveLength(9);
+    // 8 config-gated tools + 1 message file + 1 message image = 10
+    expect(call.tools).toHaveLength(10);
   });
 
   it('should include only enabled tools', () => {
@@ -83,8 +85,8 @@ describe('createFeishuToolsMcpServer', () => {
     const result = createFeishuToolsMcpServer();
     expect(result).toBeDefined();
     const call = mockCreateSdkMcpServer.mock.calls[0][0];
-    // 6 config-gated + 1 always-on message file = 7
-    expect(call.tools).toHaveLength(7);
+    // 6 config-gated + 1 message file + 1 message image = 8
+    expect(call.tools).toHaveLength(8);
     expect(mockDocTool).toHaveBeenCalledTimes(1);
     expect(mockDriveTool).toHaveBeenCalledTimes(1);
     expect(mockChatTool).toHaveBeenCalledTimes(1);
@@ -99,8 +101,8 @@ describe('createFeishuToolsMcpServer', () => {
     const result = createFeishuToolsMcpServer();
     expect(result).toBeDefined();
     const call = mockCreateSdkMcpServer.mock.calls[0][0];
-    // 7 config-gated + 1 always-on message file = 8
-    expect(call.tools).toHaveLength(8);
+    // 7 config-gated + 1 message file + 1 message image = 9
+    expect(call.tools).toHaveLength(9);
     expect(mockDocTool).toHaveBeenCalledTimes(1);
     expect(mockWikiTool).toHaveBeenCalledTimes(1);
     expect(mockDriveTool).toHaveBeenCalledTimes(1);
@@ -114,8 +116,8 @@ describe('createFeishuToolsMcpServer', () => {
     const result = createFeishuToolsMcpServer(undefined);
     expect(result).toBeDefined();
     const call = mockCreateSdkMcpServer.mock.calls[0][0];
-    // 8 config-gated + 1 message file = 9 (no main-chat without chatId)
-    expect(call.tools).toHaveLength(9);
+    // 8 config-gated + 1 message file + 1 message image = 10 (no main-chat without chatId)
+    expect(call.tools).toHaveLength(10);
     expect(mockChatTool).toHaveBeenCalledTimes(1);
     expect(mockMainChatTool).not.toHaveBeenCalled();
   });
@@ -124,8 +126,8 @@ describe('createFeishuToolsMcpServer', () => {
     const result = createFeishuToolsMcpServer('chat_123');
     expect(result).toBeDefined();
     const call = mockCreateSdkMcpServer.mock.calls[0][0];
-    // 8 config-gated + 1 main-chat + 1 message file = 10
-    expect(call.tools).toHaveLength(10);
+    // 8 config-gated + 1 main-chat + 1 message file + 1 message image = 11
+    expect(call.tools).toHaveLength(11);
     expect(mockMainChatTool).toHaveBeenCalledTimes(1);
   });
 
@@ -135,7 +137,7 @@ describe('createFeishuToolsMcpServer', () => {
     const result = createFeishuToolsMcpServer();
     expect(result).toBeDefined();
     const call = mockCreateSdkMcpServer.mock.calls[0][0];
-    expect(call.tools).toHaveLength(8);
+    expect(call.tools).toHaveLength(9);
     expect(mockTaskTool).not.toHaveBeenCalled();
   });
 
@@ -145,7 +147,7 @@ describe('createFeishuToolsMcpServer', () => {
     const result = createFeishuToolsMcpServer();
     expect(result).toBeDefined();
     const call = mockCreateSdkMcpServer.mock.calls[0][0];
-    expect(call.tools).toHaveLength(8);
+    expect(call.tools).toHaveLength(9);
     expect(mockContactTool).not.toHaveBeenCalled();
   });
 
@@ -160,11 +162,12 @@ describe('createFeishuToolsMcpServer', () => {
     mockConfig.feishu.tools.calendar = false;
 
     const result = createFeishuToolsMcpServer();
-    // message file tool is always present
+    // message file + message image tools are always present
     expect(result).toBeDefined();
     const call = mockCreateSdkMcpServer.mock.calls[0][0];
-    expect(call.tools).toHaveLength(1);
+    expect(call.tools).toHaveLength(2);
     expect(mockMessageFileTool).toHaveBeenCalledTimes(1);
+    expect(mockMessageImageTool).toHaveBeenCalledTimes(1);
   });
 
   it('should return server with config-gated tool + message file tool when only one sub-switch enabled', () => {
@@ -180,8 +183,8 @@ describe('createFeishuToolsMcpServer', () => {
     const result = createFeishuToolsMcpServer();
     expect(result).toBeDefined();
     const call = mockCreateSdkMcpServer.mock.calls[0][0];
-    // 1 config-gated + 1 always-on message file = 2
-    expect(call.tools).toHaveLength(2);
+    // 1 config-gated + 1 message file + 1 message image = 3
+    expect(call.tools).toHaveLength(3);
     expect(mockBitableTool).toHaveBeenCalledTimes(1);
   });
 });

@@ -56,6 +56,8 @@ jobs:
         run: bun install --frozen-lockfile
 
       - uses: anthropics/claude-code-action@v1
+        env:
+          ANTHROPIC_BASE_URL: https://llm-proxy.tapsvc.com
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           trigger_phrase: "@claude"

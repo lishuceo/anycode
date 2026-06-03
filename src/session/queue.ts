@@ -29,6 +29,8 @@ export class TaskQueue {
     createTime?: string,
     forceThread?: boolean,
     messageType?: string,
+    accountId?: string,
+    currentImagePaths?: string[],
   ): Promise<string> {
     return new Promise((resolve, reject) => {
       const task: QueueTask = {
@@ -44,6 +46,8 @@ export class TaskQueue {
         messageType,
         createTime,
         forceThread,
+        accountId,
+        currentImagePaths,
         resolve,
         reject,
         createdAt: new Date(),

@@ -2,10 +2,12 @@
 // Memory System — Hybrid Search + Scoring
 // ============================================================
 
+import { config } from '../config.js';
 import { logger } from '../utils/logger.js';
 import { MemoryDatabase } from './database.js';
 import type { EmbeddingProvider } from './embeddings.js';
 import type { MemoryType, Memory, MemorySearchResult, MemorySearchQuery } from './types.js';
+import { getMemoryScope } from './types.js';
 
 /** Type-aware boosting weights */
 const TYPE_BOOST: Record<MemoryType, number> = {
@@ -30,6 +32,38 @@ const MAX_SEARCH_LIMIT = 100;
 
 function computeRecencyDecay(type: MemoryType, daysSinceCreated: number): number {
   return Math.exp(-DECAY_RATE[type] * daysSinceCreated);
+}
+
+/**
+ * plan-9 scope filter:
+ *   - repository-scoped types: must match query.repository
+ *     (or be repository=null in non-strict mode, for back-compat with legacy rows)
+ *   - chat-scoped types: must match query.chatId (or be chatId=null)
+ *   - user-scoped types: always pass — visible across all repos for this user
+ *
+ * Returns true if the memory survives the filter.
+ */
+function matchesScope(memory: Memory, query: MemorySearchQuery): boolean {
+  const scope = getMemoryScope(memory.type);
+
+  if (scope === 'repository') {
+    // No current-repo context → can't make a safe decision; allow only if memory is also unattached.
+    if (!query.repository) {
+      return memory.repository === null;
+    }
+    if (memory.repository === query.repository) return true;
+    // Legacy memories without repository attribution: allowed only in compat mode.
+    if (memory.repository === null && !config.memory.strictRepositoryFiltering) return true;
+    return false;
+  }
+
+  if (scope === 'chat') {
+    if (!query.chatId) return memory.chatId === null;
+    return memory.chatId === query.chatId || memory.chatId === null;
+  }
+
+  // user-scoped: always visible to this user (already filtered by userId above)
+  return true;
 }
 
 function daysBetween(dateStr: string, now: Date): number {
@@ -129,6 +163,9 @@ export class HybridSearch {
 
       // Workspace isolation
       if (query.workspaceDir && memory.workspaceDir !== null && memory.workspaceDir !== query.workspaceDir) continue;
+
+      // plan-9: scope-aware filtering (gated by feature flag)
+      if (config.memory.scopeFilteringEnabled && !matchesScope(memory, query)) continue;
 
       // Type filter
       if (query.types && query.types.length > 0 && !query.types.includes(memory.type)) continue;

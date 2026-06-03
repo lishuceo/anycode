@@ -66,6 +66,14 @@ export interface ThreadSession {
   approved?: boolean;
   /** 该 thread 是否为原地编辑模式（/edit 命令触发，跳过源仓库保护） */
   inplaceEdit?: boolean;
+  /** Fork 来源话题 ID（被 /fork 创建的话题才有此值） */
+  parentTopicId?: string;
+  /** Fork 时父 session 最后一条消息 ID（P1「从历史点 fork」会用） */
+  forkedFromMessageId?: string;
+  /** Fork 时父 session 的 JSONL 末尾标识（P2 时光机会用） */
+  forkPoint?: string;
+  /** 4-6 字符短 id，用于人类可读的视觉提示（目录名、分支名后缀） */
+  forkShortId?: string;
   /** 创建时间 */
   createdAt: Date;
   /** 最后更新时间 */
@@ -92,6 +100,8 @@ export interface QueueTask {
   rootId?: string;
   /** 飞书话题 ID (message.thread_id)，用于话题标识 */
   threadId?: string;
+  /** bot 账号标识，用于恢复 feishuClient 上下文 */
+  accountId?: string;
   /** 图片附件列表 (用户发送图片消息时) */
   images?: import('../claude/types.js').ImageAttachment[];
   /** 文档附件列表 (用户发送 PDF 等文件时) */
@@ -102,6 +112,8 @@ export interface QueueTask {
   createTime?: string;
   /** 强制使用话题模式（/t 命令触发） */
   forceThread?: boolean;
+  /** 当前消息中图片已落盘的本地路径，用于工作区切换重启时透传给 agent */
+  currentImagePaths?: string[];
   resolve: (result: string) => void;
   reject: (error: Error) => void;
   createdAt: Date;
