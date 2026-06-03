@@ -39,6 +39,7 @@ import { getRepoIdentity } from '../workspace/identity.js';
 import { parseRepoNameFromWorkspaceDir } from '../workspace/manager.js';
 import { generateQuickAck } from '../utils/quick-ack.js';
 import { checkThreadRelevance } from '../utils/thread-relevance.js';
+import { threadHasOtherHumanParticipant } from './thread-participants.js';
 import { compressImage, compressImageForHistory } from '../utils/image-compress.js';
 
 // 注册审批通过后的消息重新入队回调（避免 approval.ts → event-handler.ts 循环依赖）
@@ -757,14 +758,26 @@ async function handleMessageEvent(data: MessageEventData, accountId: string = 'd
     if (threadId && !anyBotMentioned && isThreadCreatorAgent(threadId, agentId)) {
       const ts = sessionManager.getThreadSession(threadId, agentId);
       if (ts && (isOwner(userId) || ts.userId === userId)) {
-        // 语义判断：用 Qwen 小模型判断无 @mention 的消息是否在跟 bot 对话
-        const botDisplayName = agentRegistry.get(agentId)?.displayName ?? 'bot';
-        const relevant = await checkThreadRelevance(text, botDisplayName);
-        if (relevant) {
-          threadBypass = true;
-          logger.debug({ threadId, agentId, accountId }, 'Thread creator bypass: responding without @mention');
+        // 多人话题保守策略：先看话题里是否有非 session 创建者的人类参与过；
+        // 有的话直接关掉 bypass，要求显式 @ bot 才回，避免插嘴。
+        const otherHumanInThread = await threadHasOtherHumanParticipant(
+          feishuClient, threadId, chatId, ts.userId, messageId,
+        );
+        if (otherHumanInThread) {
+          logger.info(
+            { threadId, agentId, sessionUserId: ts.userId, text: text?.slice(0, 100) },
+            'Thread creator bypass skipped — multi-user thread without @mention',
+          );
         } else {
-          logger.info({ threadId, agentId, text: text.slice(0, 100) }, 'Thread bypass skipped — message not directed at bot');
+          // 单人话题：用 Qwen 小模型判断无 @mention 的消息是否在跟 bot 对话
+          const botDisplayName = agentRegistry.get(agentId)?.displayName ?? 'bot';
+          const relevant = await checkThreadRelevance(text, botDisplayName);
+          if (relevant) {
+            threadBypass = true;
+            logger.debug({ threadId, agentId, accountId }, 'Thread creator bypass: responding without @mention');
+          } else {
+            logger.info({ threadId, agentId, text: text.slice(0, 100) }, 'Thread bypass skipped — message not directed at bot');
+          }
         }
       }
     }
@@ -780,11 +793,35 @@ async function handleMessageEvent(data: MessageEventData, accountId: string = 'd
       if (!ts || (!isOwner(userId) && ts.userId !== userId)) {
         return;
       }
-      // 纯图片/文档消息没有文本可做语义判断，话题内 session 创建者直接放行
+      // 多人话题保守策略：若话题里已经有非 session 创建者的人类参与过讨论，
+      // 任何未显式 @ bot 的消息（图片/文档/文字）都不响应——避免在多人讨论里自作多情插嘴。
+      // 拉历史失败时 threadHasOtherHumanParticipant 默认返回 true（保守）。
+      const otherHumanInThread = threadId
+        ? await threadHasOtherHumanParticipant(feishuClient, threadId, chatId, ts.userId, messageId)
+        : false;
+      if (otherHumanInThread) {
+        logger.info(
+          {
+            messageId,
+            threadId,
+            sessionUserId: ts.userId,
+            hasImages: !!images?.length,
+            hasDocuments: !!documents?.length,
+            text: text?.slice(0, 100),
+          },
+          'Single-bot thread bypass skipped — multi-user thread without @mention',
+        );
+        return;
+      }
+
       if (images?.length || documents?.length) {
-        logger.debug({ messageId, threadId }, 'Message allowed in group thread: image/doc from session creator');
+        // 单人话题里的图片/文档：直接放行
+        logger.debug(
+          { messageId, threadId },
+          'Message allowed in group thread: image/doc from session creator (no other human participants)',
+        );
       } else {
-        // 语义判断：与多 bot 模式对齐，用 Qwen 小模型判断消息是否在跟 bot 对话
+        // 单人话题里的文字：仍走 Qwen 语义判断，避免 session 创建者自言自语也被回复
         const botDisplayName = agentRegistry.get(agentId)?.displayName ?? 'bot';
         const relevant = await checkThreadRelevance(text, botDisplayName);
         if (!relevant) {
