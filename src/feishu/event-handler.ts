@@ -38,7 +38,6 @@ import { handleMemoryCommand, handleMemoryCardAction } from '../memory/commands.
 import { getRepoIdentity } from '../workspace/identity.js';
 import { parseRepoNameFromWorkspaceDir } from '../workspace/manager.js';
 import { generateQuickAck } from '../utils/quick-ack.js';
-import { checkThreadRelevance } from '../utils/thread-relevance.js';
 import { threadHasOtherHumanParticipant } from './thread-participants.js';
 import { compressImage, compressImageForHistory } from '../utils/image-compress.js';
 
@@ -769,15 +768,9 @@ async function handleMessageEvent(data: MessageEventData, accountId: string = 'd
             'Thread creator bypass skipped — multi-user thread without @mention',
           );
         } else {
-          // 单人话题：用 Qwen 小模型判断无 @mention 的消息是否在跟 bot 对话
-          const botDisplayName = agentRegistry.get(agentId)?.displayName ?? 'bot';
-          const relevant = await checkThreadRelevance(text, botDisplayName);
-          if (relevant) {
-            threadBypass = true;
-            logger.debug({ threadId, agentId, accountId }, 'Thread creator bypass: responding without @mention');
-          } else {
-            logger.info({ threadId, agentId, text: text.slice(0, 100) }, 'Thread bypass skipped — message not directed at bot');
-          }
+          // 单人话题：session 创建者发消息基本就是冲 bot 来的（话题本身就是对话载体），直接 bypass
+          threadBypass = true;
+          logger.debug({ threadId, agentId, accountId }, 'Thread creator bypass: solo thread, responding without @mention');
         }
       }
     }
@@ -814,22 +807,12 @@ async function handleMessageEvent(data: MessageEventData, accountId: string = 'd
         return;
       }
 
-      if (images?.length || documents?.length) {
-        // 单人话题里的图片/文档：直接放行
-        logger.debug(
-          { messageId, threadId },
-          'Message allowed in group thread: image/doc from session creator (no other human participants)',
-        );
-      } else {
-        // 单人话题里的文字：仍走 Qwen 语义判断，避免 session 创建者自言自语也被回复
-        const botDisplayName = agentRegistry.get(agentId)?.displayName ?? 'bot';
-        const relevant = await checkThreadRelevance(text, botDisplayName);
-        if (!relevant) {
-          logger.info({ messageId, threadId, text: text?.slice(0, 100) }, 'Single-bot thread bypass skipped — message not directed at bot');
-          return;
-        }
-        logger.debug({ messageId, threadId }, 'Message allowed in group thread: sender is session creator + semantically relevant');
-      }
+      // 单人话题里的图片/文档/文字：直接放行
+      // session 创建者在专属话题里发的消息基本就是冲 bot 来的，没必要再用 Qwen 二次判断
+      logger.debug(
+        { messageId, threadId },
+        'Message allowed in group thread: session creator in solo thread',
+      );
     }
   }
 
