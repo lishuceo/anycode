@@ -38,7 +38,7 @@ import { handleMemoryCommand, handleMemoryCardAction } from '../memory/commands.
 import { getRepoIdentity } from '../workspace/identity.js';
 import { parseRepoNameFromWorkspaceDir } from '../workspace/manager.js';
 import { generateQuickAck } from '../utils/quick-ack.js';
-import { threadHasOtherHumanParticipant } from './thread-participants.js';
+import { evaluateThreadBypass, type ThreadBypassDeps } from './thread-participants.js';
 import { compressImage, compressImageForHistory } from '../utils/image-compress.js';
 
 // 注册审批通过后的消息重新入队回调（避免 approval.ts → event-handler.ts 循环依赖）
@@ -113,6 +113,13 @@ interface PendingQuestion {
 }
 
 /** questionId → PendingQuestion */
+// 共享 bypass 判定的依赖注入：所有都是 module-level singleton，构造一次复用
+const threadBypassDeps: ThreadBypassDeps = {
+  client: feishuClient,
+  getThreadSession: (threadId, agentId) => sessionManager.getThreadSession(threadId, agentId),
+  isOwner,
+};
+
 const pendingQuestions = new Map<string, PendingQuestion>();
 
 /** AskUserQuestion 等待超时（5 分钟） */
@@ -755,24 +762,23 @@ async function handleMessageEvent(data: MessageEventData, accountId: string = 'd
     const anyBotMentioned = mentions.some(m => knownBotIds.has(m.id.open_id ?? ''));
     let threadBypass = false;
     if (threadId && !anyBotMentioned && isThreadCreatorAgent(threadId, agentId)) {
-      const ts = sessionManager.getThreadSession(threadId, agentId);
-      if (ts && (isOwner(userId) || ts.userId === userId)) {
-        // 多人话题保守策略：先看话题里是否有非 session 创建者的人类参与过；
-        // 有的话直接关掉 bypass，要求显式 @ bot 才回，避免插嘴。
-        const otherHumanInThread = await threadHasOtherHumanParticipant(
-          feishuClient, threadId, chatId, ts.userId, messageId,
+      // 共享 bypass 判定（session 创建者 + 多人话题保守策略）；外层 @ 路由各模式仍分别处理
+      const result = await evaluateThreadBypass(threadBypassDeps, {
+        threadId, chatId, agentId, senderUserId: userId, messageId,
+      });
+      if (result.allow) {
+        threadBypass = true;
+        logger.debug(
+          { threadId, agentId, accountId },
+          'Thread creator bypass: solo thread, responding without @mention',
         );
-        if (otherHumanInThread) {
-          logger.info(
-            { threadId, agentId, sessionUserId: ts.userId, text: text?.slice(0, 100) },
-            'Thread creator bypass skipped — multi-user thread without @mention',
-          );
-        } else {
-          // 单人话题：session 创建者发消息基本就是冲 bot 来的（话题本身就是对话载体），直接 bypass
-          threadBypass = true;
-          logger.debug({ threadId, agentId, accountId }, 'Thread creator bypass: solo thread, responding without @mention');
-        }
+      } else if (result.reason === 'multi_user') {
+        logger.info(
+          { threadId, agentId, sessionUserId: result.sessionUserId, text: text?.slice(0, 100) },
+          'Thread creator bypass skipped — multi-user thread without @mention',
+        );
       }
+      // no_session / not_creator：静默落回 shouldRespond
     }
 
     if (!threadBypass && !shouldRespond(chatType, mentions, botOpenId, knownBotIds, commanderOpenId)) {
@@ -780,35 +786,25 @@ async function handleMessageEvent(data: MessageEventData, accountId: string = 'd
     }
   } else {
     // 单 bot 模式：群聊中需要 @机器人 才响应
-    // 例外：话题内后续消息，需同时满足：① 发送者是 session 创建者 ② 语义判断消息在跟 bot 对话
+    // 例外：话题内 session 创建者发的消息——通过 evaluateThreadBypass 走和多 bot 一致的 bypass 判定
     if (chatType === 'group' && !mentionedBot) {
-      const ts = threadId ? sessionManager.getThreadSession(threadId) : undefined;
-      if (!ts || (!isOwner(userId) && ts.userId !== userId)) {
+      if (!threadId) return;
+      const result = await evaluateThreadBypass(threadBypassDeps, {
+        threadId, chatId, senderUserId: userId, messageId,
+      });
+      if (!result.allow) {
+        if (result.reason === 'multi_user') {
+          logger.info(
+            {
+              messageId, threadId, sessionUserId: result.sessionUserId,
+              hasImages: !!images?.length, hasDocuments: !!documents?.length,
+              text: text?.slice(0, 100),
+            },
+            'Single-bot thread bypass skipped — multi-user thread without @mention',
+          );
+        }
         return;
       }
-      // 多人话题保守策略：若话题里已经有非 session 创建者的人类参与过讨论，
-      // 任何未显式 @ bot 的消息（图片/文档/文字）都不响应——避免在多人讨论里自作多情插嘴。
-      // 拉历史失败时 threadHasOtherHumanParticipant 默认返回 true（保守）。
-      const otherHumanInThread = threadId
-        ? await threadHasOtherHumanParticipant(feishuClient, threadId, chatId, ts.userId, messageId)
-        : false;
-      if (otherHumanInThread) {
-        logger.info(
-          {
-            messageId,
-            threadId,
-            sessionUserId: ts.userId,
-            hasImages: !!images?.length,
-            hasDocuments: !!documents?.length,
-            text: text?.slice(0, 100),
-          },
-          'Single-bot thread bypass skipped — multi-user thread without @mention',
-        );
-        return;
-      }
-
-      // 单人话题里的图片/文档/文字：直接放行
-      // session 创建者在专属话题里发的消息基本就是冲 bot 来的，没必要再用 Qwen 二次判断
       logger.debug(
         { messageId, threadId },
         'Message allowed in group thread: session creator in solo thread',

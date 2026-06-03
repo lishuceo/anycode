@@ -107,6 +107,7 @@ vi.mock('../../utils/logger.js', () => ({
 vi.mock('../../utils/security.js', () => ({
   isUserAllowed: vi.fn(() => true),
   containsDangerousCommand: vi.fn(() => false),
+  isOwner: vi.fn(() => false),
 }));
 
 vi.mock('../../config.js', () => ({

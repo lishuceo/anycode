@@ -1,5 +1,5 @@
 ---
-summary: "话题内消息是否触发 bot 响应的过滤策略：单人放行 / 多人强制 @mention"
+summary: "话题内消息是否触发 bot 响应的过滤策略：单人放行 / 多人强制 @mention。单 bot 与多 bot 模式共享 evaluateThreadBypass 判定"
 related_paths:
   - src/feishu/event-handler.ts
   - src/feishu/thread-participants.ts
@@ -26,12 +26,23 @@ last_updated: "2026-06-03"
    3.4. 如果没有 → 单人话题：图片/文档/文字 全部直接放行
 ```
 
-代码入口：`src/feishu/event-handler.ts` 的 `handleMessageEvent`。
+代码入口：`src/feishu/event-handler.ts` 的 `handleMessageEvent` 在两处分支（单 bot / 多 bot）调用同一个共享判定 `evaluateThreadBypass()`（位于 `src/feishu/thread-participants.ts`）。
 
-| 模式 | 职责 |
-|------|------|
-| 多 bot 模式 thread creator bypass | 话题创建者 bot 在单人话题里无需 @；多人话题里跳过 |
-| 单 bot 模式 | 话题内 session 创建者在单人话题里无需 @；多人话题里跳过 |
+| 模式 | 进入 bypass 的前置条件 | bypass 判定本体 |
+|------|----------------------|----------------|
+| 多 bot | 当前 bot 是话题创建者 + 所有 bot 都没被 @ | `evaluateThreadBypass(deps, { ..., agentId })` |
+| 单 bot | 无 bot 被 @ | `evaluateThreadBypass(deps, { ... })`（不传 agentId） |
+
+`evaluateThreadBypass` 返回 `{ allow, reason }`，reason 取值：
+
+| reason | 含义 |
+|--------|------|
+| `no_session` | 话题没有 session 记录（陌生话题 / 已清理） |
+| `not_creator` | 发送者不是 session 创建者，也不是 owner |
+| `multi_user` | 话题里已有非 session 创建者的人类参与过 → 保守要求 @ |
+| `solo` | 单人话题 + session 创建者 → 放行 |
+
+只有 `solo` 时 `allow = true`，其他三种都返回 `allow = false` 让外层 return。两个分支共用同一份判定，避免一边漏改导致策略不一致。
 
 ## 「多人话题」的定义
 
@@ -45,6 +56,7 @@ last_updated: "2026-06-03"
 |------|------|
 | `hasOtherHumanInMessages(messages, sessionUserId, currentMessageId)` | 纯函数，便于单测 |
 | `threadHasOtherHumanParticipant(client, threadId, chatId, sessionUserId, currentMessageId, limit=10)` | 异步 wrapper，调用飞书 API 拉历史 |
+| `evaluateThreadBypass(deps, params)` | 完整 bypass 判定，串起 session 创建者校验 + 多人话题检测 |
 
 **bot 自己的历史消息不算第三方**（senderType === `'app'` 一律忽略）。
 
@@ -80,7 +92,10 @@ last_updated: "2026-06-03"
 
 ## 测试覆盖
 
-- `src/feishu/__tests__/thread-participants.test.ts`：纯函数 + 异步 wrapper + 失败 fallback
+- `src/feishu/__tests__/thread-participants.test.ts`：
+  - `hasOtherHumanInMessages` 纯函数边界
+  - `threadHasOtherHumanParticipant` 异步 wrapper + 失败 fallback + 动态切换
+  - `evaluateThreadBypass` 完整判定（no_session / not_creator / owner bypass / multi_user / solo / fetch 失败 / agentId 透传）
 - `src/feishu/__tests__/event-handler.test.ts`：
   - `single-bot group image/doc @mention filtering` —— 单 bot 模式所有组合（图/文档/文字 × 多人/单人 × @/无 @）
   - `multi-bot thread creator bypass — multi-user filtering` —— 多 bot 模式 bypass 行为
@@ -90,4 +105,5 @@ last_updated: "2026-06-03"
 1. **v1**：话题内 bypass 只有"session 创建者 + Qwen 语义判断（文字）"。
 2. **v2**：发现纯图片/文档消息没有文字可送进 Qwen → 退化成"直接放行" → 多人话题里被滥用。
 3. **v3**：引入"多人话题保守策略" —— 多人话题里干掉所有 bypass。Qwen 仍然保留在单人话题文字消息上。
-4. **v4（当前）**：发现 Qwen 在单人话题里也是累赘 —— 它拿不到对话上下文，把延续上文的简短反馈（如「不用新分支，但是文档需要更新」）误判成"不是跟 bot 说话"。话题本就是 user vs bot 的对话载体，单人话题里没必要二次判断，直接放行。
+4. **v4**：发现 Qwen 在单人话题里也是累赘 —— 它拿不到对话上下文，把延续上文的简短反馈（如「不用新分支，但是文档需要更新」）误判成"不是跟 bot 说话"。话题本就是 user vs bot 的对话载体，单人话题里没必要二次判断，直接放行。
+5. **v5（当前）**：把单 bot 和多 bot 模式的 bypass 判定抽到 `evaluateThreadBypass()` 共享，event-handler 里两个分支只剩"判 @mention 状态 + 调共享函数"，再不会出现一边改一边漏的策略漂移。

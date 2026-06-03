@@ -8,7 +8,9 @@ vi.mock('../../utils/logger.js', () => ({
 import {
   hasOtherHumanInMessages,
   threadHasOtherHumanParticipant,
+  evaluateThreadBypass,
   type ParticipantMessage,
+  type ThreadBypassDeps,
 } from '../thread-participants.js';
 
 // ============================================================
@@ -151,5 +153,122 @@ describe('threadHasOtherHumanParticipant', () => {
 
     // 每次都现拉，没缓存
     expect(client.fetchRecentMessages).toHaveBeenCalledTimes(2);
+  });
+});
+
+// ============================================================
+// evaluateThreadBypass — 单 bot / 多 bot 模式共享的完整 bypass 判定
+// ============================================================
+describe('evaluateThreadBypass', () => {
+  const SESSION_USER = 'ou_session_creator';
+  const CURRENT_MSG = 'om_current';
+
+  /** 构造一份可复用的 deps，按需覆盖单字段 */
+  function makeDeps(overrides: Partial<ThreadBypassDeps> = {}): ThreadBypassDeps {
+    return {
+      client: { fetchRecentMessages: vi.fn().mockResolvedValue([]) },
+      getThreadSession: vi.fn().mockReturnValue({ userId: SESSION_USER }),
+      isOwner: vi.fn().mockReturnValue(false),
+      ...overrides,
+    };
+  }
+
+  const baseParams = {
+    threadId: 'thread-1',
+    chatId: 'chat-1',
+    senderUserId: SESSION_USER,
+    messageId: CURRENT_MSG,
+  };
+
+  it('returns no_session when thread has no session record', async () => {
+    const deps = makeDeps({ getThreadSession: vi.fn().mockReturnValue(undefined) });
+    const result = await evaluateThreadBypass(deps, baseParams);
+    expect(result).toEqual({ allow: false, reason: 'no_session' });
+  });
+
+  it('returns not_creator when sender is neither owner nor session creator', async () => {
+    const deps = makeDeps();
+    const result = await evaluateThreadBypass(deps, {
+      ...baseParams,
+      senderUserId: 'ou_outsider',
+    });
+    expect(result).toEqual({
+      allow: false,
+      reason: 'not_creator',
+      sessionUserId: SESSION_USER,
+    });
+    // 不应走到拉历史
+    expect((deps.client.fetchRecentMessages as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled();
+  });
+
+  it('allows owner to bypass even if not session creator', async () => {
+    // owner 是平台管理员，话题里发啥都按 session 创建者待遇处理
+    const deps = makeDeps({ isOwner: vi.fn().mockReturnValue(true) });
+    const result = await evaluateThreadBypass(deps, {
+      ...baseParams,
+      senderUserId: 'ou_admin',
+    });
+    expect(result).toEqual({
+      allow: true,
+      reason: 'solo',
+      sessionUserId: SESSION_USER,
+    });
+  });
+
+  it('returns multi_user when other human present in history', async () => {
+    const deps = makeDeps({
+      client: {
+        fetchRecentMessages: vi.fn().mockResolvedValue([
+          { messageId: 'om_old', senderId: 'ou_third_party', senderType: 'user' as const },
+        ]),
+      },
+    });
+    const result = await evaluateThreadBypass(deps, baseParams);
+    expect(result).toEqual({
+      allow: false,
+      reason: 'multi_user',
+      sessionUserId: SESSION_USER,
+    });
+  });
+
+  it('returns solo when session creator alone in thread', async () => {
+    const deps = makeDeps({
+      client: {
+        fetchRecentMessages: vi.fn().mockResolvedValue([
+          { messageId: 'om_1', senderId: SESSION_USER, senderType: 'user' as const },
+        ]),
+      },
+    });
+    const result = await evaluateThreadBypass(deps, baseParams);
+    expect(result).toEqual({
+      allow: true,
+      reason: 'solo',
+      sessionUserId: SESSION_USER,
+    });
+  });
+
+  it('treats fetch failure as multi_user (conservative)', async () => {
+    const deps = makeDeps({
+      client: {
+        fetchRecentMessages: vi.fn().mockRejectedValue(new Error('boom')),
+      },
+    });
+    const result = await evaluateThreadBypass(deps, baseParams);
+    expect(result.allow).toBe(false);
+    expect(result.reason).toBe('multi_user');
+  });
+
+  it('passes agentId through to getThreadSession (multi-bot mode)', async () => {
+    const getThreadSession = vi.fn().mockReturnValue({ userId: SESSION_USER });
+    const deps = makeDeps({ getThreadSession });
+    await evaluateThreadBypass(deps, { ...baseParams, agentId: 'pm' });
+    expect(getThreadSession).toHaveBeenCalledWith('thread-1', 'pm');
+  });
+
+  it('calls getThreadSession with undefined agentId in single-bot mode', async () => {
+    const getThreadSession = vi.fn().mockReturnValue({ userId: SESSION_USER });
+    const deps = makeDeps({ getThreadSession });
+    await evaluateThreadBypass(deps, baseParams);
+    expect(getThreadSession).toHaveBeenCalledWith('thread-1', undefined);
   });
 });
