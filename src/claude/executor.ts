@@ -322,7 +322,7 @@ export function listKnownOrgs(cacheDir: string): string[] {
 }
 
 /** 构建工作区管理系统提示词（注入实际目录路径 + 可用项目列表） */
-function buildWorkspaceSystemPrompt(workingDir?: string, options?: { isRestart?: boolean }): string {
+export function buildWorkspaceSystemPrompt(workingDir?: string, options?: { isRestart?: boolean }): string {
   const projectsDir = config.claude.defaultWorkDir;
   const cacheDir = config.repoCache.dir;
   const workspacesDir = config.workspace.baseDir;
@@ -483,8 +483,8 @@ cd /some/other/dir && gh pr view 123
 对于需要 5 分钟以上才能完成的后台任务（如跑批、大规模测试、编译）：
 
 1. 用 \`nohup ... &\` 或 \`... &\` 启动任务，确保脱离子进程
-2. 用 cron 工具（\`manage_cron\`）设一个一次性定时检查（\`schedule_kind: "at"\`），在预计完成时间触发
-3. 立即返回结果，告知用户任务已启动、预计完成时间、以及会自动回来检查
+${config.cron.enabled ? `2. 用 cron 工具（\`manage_cron\`）设一个一次性定时检查（\`schedule_kind: "at"\`），在预计完成时间触发
+3. 立即返回结果，告知用户任务已启动、预计完成时间、以及会自动回来检查` : `2. 立即返回结果，告知用户任务已启动、预计完成时间，建议用户稍后手动追问检查结果`}
 
 ### 权限交互
 
