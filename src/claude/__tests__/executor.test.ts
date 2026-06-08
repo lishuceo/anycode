@@ -69,7 +69,7 @@ vi.mock('../../cron/init.js', () => ({
   getCronScheduler: vi.fn(() => null),
 }));
 
-import { ClaudeExecutor } from '../executor.js';
+import { ClaudeExecutor, buildWorkspaceSystemPrompt } from '../executor.js';
 
 // ============================================================
 // Helpers
@@ -579,6 +579,23 @@ describe('ClaudeExecutor', () => {
       await executor.execute(makeInput());
       const opts = mockQuery.mock.calls[0][0].options;
       expect(opts.env).toBeUndefined();
+    });
+  });
+
+  describe('buildWorkspaceSystemPrompt — platform constraints', () => {
+    it('includes platform execution constraints section', () => {
+      const prompt = buildWorkspaceSystemPrompt('/tmp/work');
+      expect(prompt).toContain('平台执行约束');
+      expect(prompt).toContain('子进程生命周期');
+      expect(prompt).toContain('不要用 Monitor 等待超过 5 分钟的后台任务结果');
+      expect(prompt).toContain('权限交互');
+    });
+
+    it('omits cron guidance when cron is disabled', () => {
+      // config mock has cron.enabled = false
+      const prompt = buildWorkspaceSystemPrompt('/tmp/work');
+      expect(prompt).not.toContain('manage_cron');
+      expect(prompt).toContain('建议用户稍后手动追问检查结果');
     });
   });
 });
