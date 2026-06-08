@@ -973,7 +973,8 @@ export class ClaudeExecutor {
 
     try {
       // 遍历 SDK 流式消息
-      for await (const message of q) {
+      // label 用于在收到 result 后跳出循环（result 是 SDK 协议的终止消息）
+      messageLoop: for await (const message of q) {
         // 每收到消息重置 idle 计时器
         resetIdleTimer(`msg:${message.type}${'subtype' in message ? ':' + (message as Record<string, unknown>).subtype : ''}`);
 
@@ -1112,7 +1113,7 @@ export class ClaudeExecutor {
 
           case 'result':
             resultMessage = message;
-            break;
+            break messageLoop;
 
           default:
             // tool_progress, stream_event 等其他消息类型 — 记录以便诊断 idle timeout 间隙
@@ -1121,6 +1122,10 @@ export class ClaudeExecutor {
             break;
         }
       }
+
+      // 提前 break（收到 result）时子进程可能仍在运行（如有 background task），
+      // 主动 close 确保不泄漏；正常迭代结束时 close 是幂等的 no-op
+      q.close();
     } catch (err) {
       clearTimeout(idleTimer);
       if (hardTimer) clearTimeout(hardTimer);
