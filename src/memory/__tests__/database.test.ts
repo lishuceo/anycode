@@ -23,6 +23,7 @@ function makeRow(overrides: Partial<MemoryRow> = {}): MemoryRow {
     user_id: 'user1',
     chat_id: 'chat1',
     workspace_dir: '/projects/test',
+    repository: null,
     type: 'fact',
     content: 'Test memory content',
     tags: '["test"]',
@@ -404,6 +405,50 @@ describe('MemoryDatabase', () => {
       expect(db2.getMemory('mig_tr_4')!.invalid_at).not.toBeNull(); // decision with 修复方案
 
       db2.close();
+    });
+
+    it('should open a legacy DB that pre-dates the repository column without crashing', async () => {
+      // Regression for PR #249: CREATE INDEX on memories(repository) ran *before*
+      // migration v3 added the column, crashing startup against any pre-existing DB.
+      db.close();
+
+      // Build a legacy schema by hand — pre-v3, no `repository` column.
+      const Database = (await import('better-sqlite3')).default;
+      const legacyPath = join(tempDir, 'legacy.db');
+      const raw = new Database(legacyPath);
+      raw.exec(`
+        CREATE TABLE memories (
+          id TEXT PRIMARY KEY,
+          agent_id TEXT NOT NULL,
+          user_id TEXT,
+          chat_id TEXT,
+          workspace_dir TEXT,
+          type TEXT NOT NULL,
+          content TEXT NOT NULL,
+          tags TEXT DEFAULT '[]',
+          metadata TEXT DEFAULT '{}',
+          confidence REAL NOT NULL DEFAULT 1.0,
+          confidence_level TEXT NOT NULL DEFAULT 'L0',
+          evidence_count INTEGER NOT NULL DEFAULT 1,
+          valid_at TEXT NOT NULL,
+          invalid_at TEXT,
+          superseded_by TEXT,
+          ttl TEXT,
+          source_chat_id TEXT,
+          source_message_id TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          last_accessed_at TEXT
+        );
+      `);
+      raw.pragma('user_version = 0');
+      raw.close();
+
+      // Should NOT throw "SQLITE_ERROR: no such column: repository".
+      const migrated = await MemoryDatabase.create(legacyPath);
+      const cols = migrated.db.prepare(`PRAGMA table_info(memories)`).all() as Array<{ name: string }>;
+      expect(cols.some(c => c.name === 'repository')).toBe(true);
+      migrated.close();
     });
 
     it('should not re-run migrations on subsequent opens', async () => {

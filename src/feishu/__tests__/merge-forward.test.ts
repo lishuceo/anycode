@@ -240,8 +240,21 @@ describe('formatMergeForwardSubMessage', () => {
     expect(formatMergeForwardSubMessage('{}', 'media')).toBe('[视频]');
   });
 
-  it('should return placeholder for interactive (card) message type', () => {
+  it('should fall back to "[卡片消息]" only when interactive card is empty', () => {
     expect(formatMergeForwardSubMessage('{}', 'interactive')).toBe('[卡片消息]');
+  });
+
+  it('REGRESSION: interactive card text is preserved (fixes amnesia on bot card replies)', () => {
+    const card = {
+      header: { title: { tag: 'plain_text', content: 'Session Fork 设计' } },
+      elements: [
+        { tag: 'div', text: { tag: 'lark_md', content: '核心难点在于同时继承对话历史和工作区状态' } },
+      ],
+    };
+    const result = formatMergeForwardSubMessage(JSON.stringify(card), 'interactive');
+    expect(result).not.toBe('[卡片消息]');
+    expect(result).toContain('Session Fork');
+    expect(result).toContain('核心难点');
   });
 
   it('should return placeholder for share_chat message type', () => {

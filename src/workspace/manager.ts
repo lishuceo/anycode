@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, realpathSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync, realpathSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { basename, resolve } from 'node:path';
 import { config } from '../config.js';
@@ -162,6 +162,12 @@ export function setupWorkspace(options: SetupWorkspaceOptions): SetupWorkspaceRe
     throw new Error(`git clone 失败: ${msg}`);
   }
 
+  // 注入 .claude/settings.local.json — 确保 bot 场景下基础命令不被项目级白名单拦截
+  // SDK 的 permissionMode: 'acceptEdits' 只自动批准 Edit/Write，Bash 命令若不在
+  // 项目 settings.json 的 permissions.allow 中会触发交互式审批，在无终端的 bot 环境下
+  // 直接报 "Stream closed"。注入 local 设置覆盖项目级限制。
+  injectLocalSettings(workspacePath);
+
   if (mode === 'writable') {
     // writable: 设置 remote origin 为原始远程地址 (剥离认证信息)
     if (repoUrl) {
@@ -222,4 +228,49 @@ export function parseRepoNameFromWorkspaceDir(dirName: string): string {
   }
   // fallback: 原始目录名
   return dirName;
+}
+
+/**
+ * 注入 .claude/settings.local.json 覆盖项目级权限限制。
+ * 确保 bot 无终端场景下 git/npm/npx 等基础命令不会触发交互式权限审批。
+ */
+export function injectLocalSettings(workspacePath: string): void {
+  const claudeDir = resolve(workspacePath, '.claude');
+  const settingsPath = resolve(claudeDir, 'settings.local.json');
+
+  // 如果已存在则不覆盖（用户或其他流程可能已配置）
+  if (existsSync(settingsPath)) {
+    logger.info({ settingsPath }, 'settings.local.json already exists, skipping injection');
+    return;
+  }
+
+  const settings = {
+    permissions: {
+      allow: [
+        'Bash(git *)',
+        'Bash(npm *)',
+        'Bash(npx *)',
+        'Bash(node *)',
+        'Bash(cat *)',
+        'Bash(ls *)',
+        'Bash(find *)',
+        'Bash(grep *)',
+        'Bash(echo *)',
+        'Bash(pwd)',
+        'Bash(which *)',
+        'Bash(gh *)',
+      ],
+    },
+  };
+
+  try {
+    if (!existsSync(claudeDir)) {
+      mkdirSync(claudeDir, { recursive: true });
+    }
+    writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n');
+    logger.info({ settingsPath }, 'Injected .claude/settings.local.json for bot permission bypass');
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.warn({ err: msg, settingsPath }, 'Failed to inject settings.local.json, continuing');
+  }
 }

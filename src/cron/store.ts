@@ -36,6 +36,8 @@ interface CronJobRow {
   at_time: string | null;
   enabled: number;
   delete_after_run: number;
+  skip_holidays: number;
+  skip_weekends: number;
   next_run_at_ms: number | null;
   last_run_at_ms: number | null;
   last_status: string | null;
@@ -87,6 +89,8 @@ function rowToJob(row: CronJobRow): CronJob {
     },
     enabled: !!row.enabled,
     deleteAfterRun: !!row.delete_after_run,
+    skipHolidays: !!row.skip_holidays,
+    skipWeekends: !!row.skip_weekends,
     timeoutSeconds: row.timeout_seconds,
     model: row.model ?? undefined,
     maxBudgetUsd: row.max_budget_usd,
@@ -239,6 +243,18 @@ export class CronStore {
       // Column already exists — ignore
     }
 
+    // Migration: add skip_holidays / skip_weekends columns
+    try {
+      this.db.exec(`ALTER TABLE cron_jobs ADD COLUMN skip_holidays INTEGER NOT NULL DEFAULT 0`);
+    } catch {
+      // Column already exists — ignore
+    }
+    try {
+      this.db.exec(`ALTER TABLE cron_jobs ADD COLUMN skip_weekends INTEGER NOT NULL DEFAULT 0`);
+    } catch {
+      // Column already exists — ignore
+    }
+
     this.db.exec(`
       CREATE INDEX IF NOT EXISTS idx_cron_jobs_next_run
         ON cron_jobs(next_run_at_ms) WHERE enabled = 1
@@ -273,14 +289,14 @@ export class CronStore {
       INSERT INTO cron_jobs (
         id, name, chat_id, user_id, prompt, working_dir, repo_url,
         schedule_kind, schedule_expr, schedule_tz, every_ms, at_time,
-        enabled, delete_after_run, next_run_at_ms,
+        enabled, delete_after_run, skip_holidays, skip_weekends, next_run_at_ms,
         timeout_seconds, model, max_budget_usd, agent_id, account_id,
         thread_id, thread_root_message_id, context_snapshot,
         created_at, updated_at
       ) VALUES (
         @id, @name, @chat_id, @user_id, @prompt, @working_dir, @repo_url,
         @schedule_kind, @schedule_expr, @schedule_tz, @every_ms, @at_time,
-        @enabled, @delete_after_run, @next_run_at_ms,
+        @enabled, @delete_after_run, @skip_holidays, @skip_weekends, @next_run_at_ms,
         @timeout_seconds, @model, @max_budget_usd, @agent_id, @account_id,
         @thread_id, @thread_root_message_id, @context_snapshot,
         @created_at, @updated_at
@@ -323,6 +339,8 @@ export class CronStore {
         every_ms = @every_ms,
         at_time = @at_time,
         enabled = @enabled,
+        skip_holidays = @skip_holidays,
+        skip_weekends = @skip_weekends,
         timeout_seconds = @timeout_seconds,
         model = @model,
         max_budget_usd = @max_budget_usd,
@@ -394,6 +412,8 @@ export class CronStore {
       at_time: input.schedule.atTime ?? null,
       enabled: enabled ? 1 : 0,
       delete_after_run: deleteAfterRun ? 1 : 0,
+      skip_holidays: input.skipHolidays ? 1 : 0,
+      skip_weekends: input.skipWeekends ? 1 : 0,
       next_run_at_ms: nextRunAtMs ?? null,
       timeout_seconds: input.timeoutSeconds ?? 300,
       model: input.model ?? null,
@@ -444,6 +464,8 @@ export class CronStore {
       every_ms: schedule.everyMs ?? null,
       at_time: schedule.atTime ?? null,
       enabled: enabled ? 1 : 0,
+      skip_holidays: (patch.skipHolidays ?? existing.skipHolidays) ? 1 : 0,
+      skip_weekends: (patch.skipWeekends ?? existing.skipWeekends) ? 1 : 0,
       timeout_seconds: patch.timeoutSeconds ?? existing.timeoutSeconds,
       model: patch.model !== undefined ? (patch.model ?? null) : (existing.model ?? null),
       max_budget_usd: patch.maxBudgetUsd ?? existing.maxBudgetUsd,
