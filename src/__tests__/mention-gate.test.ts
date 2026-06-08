@@ -182,35 +182,36 @@ describe('resolveMentionGate', () => {
       expect(await resolveMentionGate({ ...baseInput, threadId: 'omt_123' })).toBeUndefined();
     });
 
-    it('allows media from thread session creator', async () => {
+    it('allows media from thread session creator (solo thread)', async () => {
+      // 单人话题图/文/字一视同仁直接放行 —— 不再有 thread_session_media 特殊待遇
       mockGetThreadSession.mockReturnValue({ userId: 'ou_user_1', createdAt: new Date().toISOString() });
       expect(await resolveMentionGate({
         ...baseInput, threadId: 'omt_123', images: [{ key: 'img_key' }],
-      })).toBe('thread_session_media');
+      })).toBe('thread_session_owner');
     });
 
     it('allows message from thread session creator when only two participants', async () => {
       mockGetThreadSession.mockReturnValue({ userId: 'ou_user_1', createdAt: new Date().toISOString() });
-      // fetchRecentMessages returns [] → humanSenders.size=0 → dual-person bypass
+      // fetchRecentMessages returns [] → 无第三人 → 放行
       expect(await resolveMentionGate({ ...baseInput, threadId: 'omt_123' })).toBe('thread_session_owner');
     });
 
-    it('uses Qwen when third person present in thread', async () => {
+    it('blocks thread bypass when third person present in thread (no Qwen fallback)', async () => {
+      // 多人话题保守：不管文字怎么写都不放行，必须 @bot
       mockGetThreadSession.mockReturnValue({ userId: 'ou_user_1', createdAt: new Date().toISOString() });
       const { feishuClient: fc } = await import('../feishu/client.js');
       vi.mocked(fc.fetchRecentMessages).mockResolvedValue([
         { messageId: 'm1', senderId: 'ou_user_1', senderType: 'user', content: 'hello', msgType: 'text' },
         { messageId: 'm2', senderId: 'ou_user_2', senderType: 'user', content: 'hi', msgType: 'text' },
       ] as any);
-      mockCheckThreadRelevance.mockResolvedValue(false);
       expect(await resolveMentionGate({ ...baseInput, threadId: 'omt_123' })).toBeUndefined();
       vi.mocked(fc.fetchRecentMessages).mockResolvedValue([]);
     });
 
-    it('allows owner in thread even if not session creator', async () => {
+    it('allows owner in thread even if not session creator (solo)', async () => {
+      // owner 在单人话题里和 session 创建者一样直接放行；不再过 Qwen
       mockGetThreadSession.mockReturnValue({ userId: 'ou_other_user', createdAt: new Date().toISOString() });
       mockIsOwner.mockReturnValue(true);
-      mockCheckThreadRelevance.mockResolvedValue(true);
       expect(await resolveMentionGate({ ...baseInput, threadId: 'omt_123' })).toBe('thread_session_owner');
     });
 
@@ -270,36 +271,18 @@ describe('resolveMentionGate', () => {
       })).toBeUndefined();
     });
 
-    it('allows thread_bypass_exclusive when only creator and bot', async () => {
+    it('allows thread_bypass when only creator and bot (solo thread)', async () => {
       mockGetThreadSession.mockImplementation((_: string, agentId?: string) => {
         if (agentId === 'dev') return { userId: 'ou_user_1', createdAt: '2026-01-01T00:00:00Z' };
         return undefined;
       });
-      // fetchRecentMessages returns [] → only creator + bot → exclusive bypass
-      expect(await resolveMentionGate({
-        ...baseInput, threadId: 'omt_existing_topic',
-      })).toBe('thread_bypass_exclusive');
-    });
-
-    it('allows thread_bypass when third person present and Qwen says yes', async () => {
-      mockGetThreadSession.mockImplementation((_: string, agentId?: string) => {
-        if (agentId === 'dev') return { userId: 'ou_user_1', createdAt: '2026-01-01T00:00:00Z' };
-        return undefined;
-      });
-      const { feishuClient: fc } = await import('../feishu/client.js');
-      vi.mocked(fc.fetchRecentMessages).mockResolvedValue([
-        { messageId: 'm1', senderId: 'ou_user_1', senderType: 'user', content: 'hi', msgType: 'text' },
-        { messageId: 'm2', senderId: 'ou_user_other', senderType: 'user', content: 'yo', msgType: 'text' },
-      ] as any);
-      mockCheckThreadRelevance.mockResolvedValue(true);
-
+      // fetchRecentMessages returns [] → only creator + bot → solo bypass
       expect(await resolveMentionGate({
         ...baseInput, threadId: 'omt_existing_topic',
       })).toBe('thread_bypass');
-      vi.mocked(fc.fetchRecentMessages).mockResolvedValue([]);
     });
 
-    it('blocks thread_bypass when third person present and Qwen says no', async () => {
+    it('blocks thread bypass when third person present (multi-user conservative, no Qwen fallback)', async () => {
       mockGetThreadSession.mockImplementation((_: string, agentId?: string) => {
         if (agentId === 'dev') return { userId: 'ou_user_1', createdAt: '2026-01-01T00:00:00Z' };
         return undefined;
@@ -309,7 +292,6 @@ describe('resolveMentionGate', () => {
         { messageId: 'm1', senderId: 'ou_user_1', senderType: 'user', content: 'hi', msgType: 'text' },
         { messageId: 'm2', senderId: 'ou_user_other', senderType: 'user', content: 'yo', msgType: 'text' },
       ] as any);
-      mockCheckThreadRelevance.mockResolvedValue(false);
 
       expect(await resolveMentionGate({
         ...baseInput, threadId: 'omt_existing_topic',
@@ -322,7 +304,6 @@ describe('resolveMentionGate', () => {
         if (agentId === 'dev') return { userId: 'ou_different_user', createdAt: '2026-01-01T00:00:00Z' };
         return undefined;
       });
-      mockCheckThreadRelevance.mockResolvedValue(true);
 
       expect(await resolveMentionGate({
         ...baseInput, threadId: 'omt_existing_topic',
@@ -410,7 +391,6 @@ describe('resolveMentionGate', () => {
         { messageId: 'm1', senderId: 'ou_user_1', senderType: 'user', content: 'hi', msgType: 'text' },
         { messageId: 'm2', senderId: 'ou_relic_product_xz', senderType: 'user', content: 'ok', msgType: 'text' },
       ] as any);
-      mockCheckThreadRelevance.mockResolvedValue(false);
 
       const humanMention = { id: { open_id: 'ou_relic_product_xz' } };
       const result = await resolveMentionGate({

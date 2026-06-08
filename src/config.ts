@@ -68,8 +68,8 @@ export const config = {
     apiBaseUrl: process.env.ANTHROPIC_BASE_URL || '',
     /** 单步空闲超时 (秒)：某步骤长时间无 SDK 消息活动时 abort。不限制总执行时长 */
     timeoutSeconds: parseInt(process.env.CLAUDE_TIMEOUT || '300', 10),
-    /** 模型名称，默认 claude-opus-4-7 (Opus 4.7) */
-    model: process.env.CLAUDE_MODEL || 'claude-opus-4-7',
+    /** 模型名称，默认 claude-opus-4-8 (Opus 4.8) */
+    model: process.env.CLAUDE_MODEL || 'claude-opus-4-8',
     /** thinking 模式: 'adaptive' (自适应思考) | 'disabled' */
     thinking: (process.env.CLAUDE_THINKING || 'adaptive') as 'adaptive' | 'disabled',
     /** effort 等级: 'low' | 'medium' | 'high' | 'max' */
@@ -172,6 +172,19 @@ export const config = {
     vectorWeight: parseFloat(process.env.MEMORY_VECTOR_WEIGHT || '0.7'),
     /** 注入记忆的最大 token 数 */
     maxInjectTokens: parseInt(process.env.MEMORY_MAX_INJECT_TOKENS || '4000', 10),
+    /**
+     * plan-9: 按 repository 隔离记忆检索的总开关。
+     * - true: 项目事实/决策/关系按当前仓库过滤；偏好按用户；状态按 chat
+     * - false: 保留旧行为（仅按 agentId/userId/workspaceDir 过滤），用于灰度回滚
+     */
+    scopeFilteringEnabled: process.env.MEMORY_SCOPE_FILTERING !== 'false',
+    /**
+     * plan-9: 是否屏蔽 repository=null 的旧项目事实记忆。
+     * - true: 严格隔离，迁移后未回填 repository 的 fact/decision/relation 不再被检索（避免污染）
+     * - false: 兼容期，允许 repository=null 的项目事实参与检索
+     * 默认 false（兼容模式）；P4 灰度后切到 true。
+     */
+    strictRepositoryFiltering: process.env.MEMORY_STRICT_REPO_FILTERING === 'true',
   },
 
   // 定时任务配置
@@ -186,6 +199,12 @@ export const config = {
     defaultTimeoutSeconds: parseInt(process.env.CRON_DEFAULT_TIMEOUT || '300', 10),
     /** 默认单次执行预算 USD */
     defaultBudgetUsd: parseFloat(process.env.CRON_DEFAULT_BUDGET || '5'),
+  },
+
+  // Session Fork 配置 (Plan 8)
+  fork: {
+    /** 启用 /fork 命令（默认开启,设 FORK_ENABLED=false 可关闭） */
+    enabled: process.env.FORK_ENABLED !== 'false',
   },
 
   // 服务配置

@@ -287,6 +287,53 @@ describe('CronStore', () => {
 
   // ── Thread binding ──
 
+  it('persists skipHolidays and skipWeekends flags', () => {
+    const job = store.add({
+      name: 'skip-job',
+      chatId: 'chat1',
+      userId: 'user1',
+      prompt: 'test',
+      schedule: { kind: 'cron', expr: '0 9 * * *' },
+      skipHolidays: true,
+      skipWeekends: true,
+    });
+
+    expect(job.skipHolidays).toBe(true);
+    expect(job.skipWeekends).toBe(true);
+
+    const retrieved = store.get(job.id);
+    expect(retrieved!.skipHolidays).toBe(true);
+    expect(retrieved!.skipWeekends).toBe(true);
+  });
+
+  it('defaults skipHolidays and skipWeekends to false', () => {
+    const job = store.add({
+      name: 'default-job',
+      chatId: 'chat1',
+      userId: 'user1',
+      prompt: 'test',
+      schedule: { kind: 'every', everyMs: 60_000 },
+    });
+
+    expect(job.skipHolidays).toBe(false);
+    expect(job.skipWeekends).toBe(false);
+  });
+
+  it('updates skipHolidays/skipWeekends via patch', () => {
+    const job = store.add({
+      name: 'patchable',
+      chatId: 'chat1',
+      userId: 'user1',
+      prompt: 'test',
+      schedule: { kind: 'every', everyMs: 60_000 },
+    });
+    expect(job.skipHolidays).toBe(false);
+
+    const updated = store.update(job.id, { skipHolidays: true, skipWeekends: true });
+    expect(updated!.skipHolidays).toBe(true);
+    expect(updated!.skipWeekends).toBe(true);
+  });
+
   it('should store thread binding fields', () => {
     const job = store.add({
       name: 'thread-job',

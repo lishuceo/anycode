@@ -72,6 +72,7 @@ Feishu User → Feishu Platform → Bridge Server → Claude Agent SDK → Claud
 - **`settingSources: ['project']`** loads `.claude/settings.local.json` from cwd, including `permissions.allow` whitelist. This whitelist is checked *before* `canUseTool`, so unlisted tools (including MCP) get blocked. Currently `canUseTool` with proper `updatedInput` overrides this.
 - **Skills require `allowedTools: ['Skill']`** — SDK 默认不启用 Skill 工具。仅有 `settingSources: ['project']` 不够，还需在 `allowedTools` 中显式包含 `'Skill'`，否则 `.claude/skills/` 中的 SKILL.md 不会被加载。
 - **Feishu rich text breaks URLs** — `github.com:user/repo` gets auto-linked by Feishu as `[github.com:](http://github.com/)user/repo`. The `workspace/manager.ts` `normalizeRepoUrl()` handles SSH shorthand normalization.
+- **`options.env` 完全替换子进程环境(SDK 0.3.x)** — 一旦传入 `env`,子进程**不再继承**父进程环境,必须自行展开:`{ ...process.env, ANTHROPIC_BASE_URL: ... }`。否则会丢失 `ANTHROPIC_API_KEY` / `PATH` / `HOME`,导致 Claude Code 返回 `Not logged in · Please run /login`。仅在配了代理 `ANTHROPIC_BASE_URL` 时才需要传 `env`(见 `claude/executor.ts`)。注意 0.2.x 是**合并**语义(`{...process.env, ...你的}`),升级到 0.3.x 时这是隐蔽的破坏性变更。
 
 ## Configuration
 
@@ -104,6 +105,7 @@ Loaded via dotenv (see `.env.example`):
 ## Deployment
 
 - 部署方式取决于运行环境（PM2、systemd、Docker 等），服务启动时自动检测进程管理器类型（见 `src/utils/runtime.ts`）。
+- **升级/拉取后必须跑 `npm install`** — `@anthropic-ai/claude-agent-sdk` 0.3.x 起,Claude Code CLI 二进制改为通过 `optionalDependencies` 按平台分发(`@anthropic-ai/claude-agent-sdk-<platform>`,约 240MB)。只 `git pull` + 重新 `npm run build` + 拷 `dist/` **不会**拉到该二进制,服务会起不来。`npm install` 会按 OS/CPU/libc 自动选包(glibc/musl、x64/arm64 均有)。同理,`@anthropic-ai/sdk` 与 `@modelcontextprotocol/sdk` 在 0.3.x 是 peerDependencies,已提为本仓库的直接依赖。
 - **自重启须在对话最后一步执行** — Claude 是服务的子进程，使用 `sleep 5 && <restart command> &` 脱离当前进程，避免 kill 自己的父进程导致对话中断。
 
 ## Tech Stack

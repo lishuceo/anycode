@@ -54,6 +54,7 @@ function makeResult(overrides: {
       userId: 'user1',
       chatId: 'chat1',
       workspaceDir: null,
+      repository: null,
       type: overrides.type ?? 'fact',
       content: overrides.content ?? 'test content',
       tags: [],
