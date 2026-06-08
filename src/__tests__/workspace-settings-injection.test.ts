@@ -3,11 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node
 import { resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomBytes } from 'node:crypto';
-
-/**
- * Test the .claude/settings.local.json injection behavior in workspace setup.
- * Since injectLocalSettings is not exported, we replicate its logic here to verify the contract.
- */
+import { injectLocalSettings } from '../workspace/manager.js';
 
 function createTempWorkspace(): string {
   const dir = resolve(tmpdir(), `ws-test-${randomBytes(4).toString('hex')}`);
@@ -15,7 +11,7 @@ function createTempWorkspace(): string {
   return dir;
 }
 
-describe('workspace settings.local.json injection', () => {
+describe('injectLocalSettings', () => {
   let workspacePath: string;
 
   beforeEach(() => {
@@ -26,80 +22,52 @@ describe('workspace settings.local.json injection', () => {
     rmSync(workspacePath, { recursive: true, force: true });
   });
 
-  it('should create .claude/settings.local.json with permission whitelist', async () => {
-    // Simulate what injectLocalSettings does
-    const claudeDir = resolve(workspacePath, '.claude');
-    const settingsPath = resolve(claudeDir, 'settings.local.json');
+  it('should create .claude/settings.local.json with permission whitelist', () => {
+    injectLocalSettings(workspacePath);
 
-    // Import the manager module to call setupWorkspace indirectly won't work without git,
-    // so we verify the contract: after injection, the file should contain expected permissions
-    mkdirSync(claudeDir, { recursive: true });
-
-    const settings = {
-      permissions: {
-        allow: [
-          'Bash(git *)',
-          'Bash(npm *)',
-          'Bash(npx *)',
-          'Bash(node *)',
-          'Bash(cat *)',
-          'Bash(ls *)',
-          'Bash(find *)',
-          'Bash(grep *)',
-          'Bash(echo *)',
-          'Bash(pwd)',
-          'Bash(which *)',
-          'Bash(gh *)',
-        ],
-      },
-    };
-    writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n');
-
+    const settingsPath = resolve(workspacePath, '.claude', 'settings.local.json');
     expect(existsSync(settingsPath)).toBe(true);
+
     const content = JSON.parse(readFileSync(settingsPath, 'utf-8'));
     expect(content.permissions.allow).toContain('Bash(git *)');
     expect(content.permissions.allow).toContain('Bash(npm *)');
+    expect(content.permissions.allow).toContain('Bash(npx *)');
     expect(content.permissions.allow).toContain('Bash(gh *)');
+  });
+
+  it('should create .claude directory if it does not exist', () => {
+    const claudeDir = resolve(workspacePath, '.claude');
+    expect(existsSync(claudeDir)).toBe(false);
+
+    injectLocalSettings(workspacePath);
+
+    expect(existsSync(claudeDir)).toBe(true);
+    expect(existsSync(resolve(claudeDir, 'settings.local.json'))).toBe(true);
   });
 
   it('should not overwrite existing settings.local.json', () => {
     const claudeDir = resolve(workspacePath, '.claude');
     const settingsPath = resolve(claudeDir, 'settings.local.json');
 
-    // Pre-create a custom settings file
     mkdirSync(claudeDir, { recursive: true });
     const customSettings = { permissions: { allow: ['Bash(custom *)'] } };
     writeFileSync(settingsPath, JSON.stringify(customSettings));
 
-    // Verify existing file is preserved (injectLocalSettings skips if exists)
-    expect(existsSync(settingsPath)).toBe(true);
+    injectLocalSettings(workspacePath);
+
     const content = JSON.parse(readFileSync(settingsPath, 'utf-8'));
     expect(content.permissions.allow).toEqual(['Bash(custom *)']);
   });
 
-  it('should include git commands critical for bot workflow', () => {
-    const requiredPatterns = ['Bash(git *)', 'Bash(npm *)', 'Bash(npx *)'];
-    const settings = {
-      permissions: {
-        allow: [
-          'Bash(git *)',
-          'Bash(npm *)',
-          'Bash(npx *)',
-          'Bash(node *)',
-          'Bash(cat *)',
-          'Bash(ls *)',
-          'Bash(find *)',
-          'Bash(grep *)',
-          'Bash(echo *)',
-          'Bash(pwd)',
-          'Bash(which *)',
-          'Bash(gh *)',
-        ],
-      },
-    };
+  it('should include all critical bot workflow commands', () => {
+    injectLocalSettings(workspacePath);
 
-    for (const pattern of requiredPatterns) {
-      expect(settings.permissions.allow).toContain(pattern);
+    const settingsPath = resolve(workspacePath, '.claude', 'settings.local.json');
+    const content = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+
+    const required = ['Bash(git *)', 'Bash(npm *)', 'Bash(npx *)', 'Bash(node *)', 'Bash(gh *)'];
+    for (const pattern of required) {
+      expect(content.permissions.allow).toContain(pattern);
     }
   });
 });

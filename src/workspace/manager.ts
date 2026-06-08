@@ -234,7 +234,7 @@ export function parseRepoNameFromWorkspaceDir(dirName: string): string {
  * 注入 .claude/settings.local.json 覆盖项目级权限限制。
  * 确保 bot 无终端场景下 git/npm/npx 等基础命令不会触发交互式权限审批。
  */
-function injectLocalSettings(workspacePath: string): void {
+export function injectLocalSettings(workspacePath: string): void {
   const claudeDir = resolve(workspacePath, '.claude');
   const settingsPath = resolve(claudeDir, 'settings.local.json');
 
