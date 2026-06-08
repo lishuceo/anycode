@@ -946,7 +946,8 @@ export class ClaudeExecutor {
           : { type: 'preset', preset: 'claude_code', append: promptAppend },
 
         // 加载项目设置 (CLAUDE.md 等)；路由 agent 传 [] 避免加载
-        settingSources: settingSourcesOverride ?? ['user', 'project'],
+        // 'local' 加载 .claude/settings.local.json（优先级最高，覆盖 project）
+        settingSources: settingSourcesOverride ?? ['user', 'project', 'local'],
 
         // MCP 服务器：工作区管理工具 + 飞书工具 (空对象等同于无 MCP 服务器)
         mcpServers: Object.keys(mcpServers).length > 0 ? mcpServers : undefined,
