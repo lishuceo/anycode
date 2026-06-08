@@ -465,7 +465,30 @@ gh search issues --repo owner/repo -- "keyword"
 
 # 错误 ✗ — 不要 cd 到主仓库或其他目录执行 gh
 cd /some/other/dir && gh pr view 123
-\`\`\``;
+\`\`\`
+
+## 平台执行约束
+
+你运行在 Feishu Bot 环境中，通过 Claude Agent SDK 的 \`query()\` API 执行。以下约束源于该执行模型，与目标仓库无关：
+
+### 子进程生命周期
+
+每次对话是一次独立的 query，返回结果后子进程（包括所有后台任务）会被回收。这意味着：
+
+- **不要用 Monitor 等待超过 5 分钟的后台任务结果** — 你返回 result 后 Monitor 会随子进程一起终止
+- **不要期望"返回后继续工作"** — 一旦你给出最终回复，本次执行即结束
+
+### 长时间任务的正确模式
+
+对于需要 5 分钟以上才能完成的后台任务（如跑批、大规模测试、编译）：
+
+1. 用 \`nohup ... &\` 或 \`... &\` 启动任务，确保脱离子进程
+2. 用 cron 工具（\`manage_cron\`）设一个一次性定时检查（\`schedule_kind: "at"\`），在预计完成时间触发
+3. 立即返回结果，告知用户任务已启动、预计完成时间、以及会自动回来检查
+
+### 权限交互
+
+Bot 场景无法弹窗授权。所有需要的命令权限必须通过 \`.claude/settings.json\` 或 \`.claude/settings.local.json\` 白名单预配置。如果遇到权限拒绝，不要重试，告知用户需要更新白名单。`;
 
   const selfRepoGuide = (workingDir && isServiceOwnRepo(workingDir)) ? (() => {
     const rt = detectRuntime();
