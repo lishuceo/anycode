@@ -135,7 +135,8 @@ export function webSearchTool() {
         if (!resp.ok) {
           const body = await resp.text().catch(() => '');
           const detail = describeHttpError(resp.status, body);
-          logger.warn({ status: resp.status, query: args.query }, 'web_search Tavily API error');
+          // 完整 body 仅写服务端日志（便于排障），返回给聊天的 detail 已被 describeHttpError 截断
+          logger.warn({ status: resp.status, query: args.query, body: body.slice(0, 500) }, 'web_search Tavily API error');
           return {
             content: [{ type: 'text' as const, text: detail }],
             isError: true,

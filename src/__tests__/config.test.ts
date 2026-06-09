@@ -59,4 +59,62 @@ describe('config', () => {
       expect(config.claude.defaultWorkDir).toBe(dirname(process.cwd()));
     });
   });
+
+  describe('parsePositiveInt', () => {
+    it('parses valid positive integers', async () => {
+      const { parsePositiveInt } = await loadConfig();
+      expect(parsePositiveInt('15000', 999)).toBe(15000);
+      expect(parsePositiveInt('1', 999)).toBe(1);
+    });
+
+    it('falls back when undefined or empty', async () => {
+      const { parsePositiveInt } = await loadConfig();
+      expect(parsePositiveInt(undefined, 15000)).toBe(15000);
+      expect(parsePositiveInt('', 15000)).toBe(15000);
+    });
+
+    it('falls back on non-numeric values (guards setTimeout(fn, NaN) firing instantly)', async () => {
+      const { parsePositiveInt } = await loadConfig();
+      expect(parsePositiveInt('abc', 15000)).toBe(15000);
+      expect(parsePositiveInt('none', 15000)).toBe(15000);
+    });
+
+    it('falls back on zero and negative values', async () => {
+      const { parsePositiveInt } = await loadConfig();
+      expect(parsePositiveInt('0', 15000)).toBe(15000);
+      expect(parsePositiveInt('-5', 15000)).toBe(15000);
+    });
+  });
+
+  describe('websearch config', () => {
+    it('auto-enables when TAVILY_API_KEY is present', async () => {
+      vi.stubEnv('TAVILY_API_KEY', 'tvly-abc');
+      delete process.env.WEBSEARCH_ENABLED;
+      const { config } = await loadConfig();
+      expect(config.websearch.enabled).toBe(true);
+      expect(config.websearch.apiKey).toBe('tvly-abc');
+    });
+
+    it('stays disabled when no key and no explicit enable', async () => {
+      vi.stubEnv('TAVILY_API_KEY', '');
+      delete process.env.WEBSEARCH_ENABLED;
+      const { config } = await loadConfig();
+      expect(config.websearch.enabled).toBe(false);
+    });
+
+    it('WEBSEARCH_ENABLED=false overrides key presence', async () => {
+      vi.stubEnv('TAVILY_API_KEY', 'tvly-abc');
+      vi.stubEnv('WEBSEARCH_ENABLED', 'false');
+      const { config } = await loadConfig();
+      expect(config.websearch.enabled).toBe(false);
+    });
+
+    it('falls back to safe timeout/maxResults on non-numeric env', async () => {
+      vi.stubEnv('WEBSEARCH_TIMEOUT_MS', 'abc');
+      vi.stubEnv('WEBSEARCH_MAX_RESULTS', 'xyz');
+      const { config } = await loadConfig();
+      expect(config.websearch.timeoutMs).toBe(15000);
+      expect(config.websearch.maxResults).toBe(5);
+    });
+  });
 });
