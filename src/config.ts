@@ -4,6 +4,15 @@ dotenv.config();
 import { dirname } from 'node:path';
 import type { GroupConfig } from './agent/types.js';
 
+/**
+ * parseInt 的正整数守卫：非数字或 <=0 的环境变量值回退到默认值。
+ * 防止形如 setTimeout(fn, NaN) 被强转为 0 立即触发的隐患。
+ */
+export function parsePositiveInt(raw: string | undefined, fallback: number): number {
+  const n = parseInt(raw ?? '', 10);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+
 function parseGroupConfigs(raw?: string): Record<string, GroupConfig> {
   if (!raw?.trim()) return {};
   try {
@@ -185,6 +194,27 @@ export const config = {
      * 默认 false（兼容模式）；P4 灰度后切到 true。
      */
     strictRepositoryFiltering: process.env.MEMORY_STRICT_REPO_FILTERING === 'true',
+  },
+
+  // Web 搜索配置 (Tavily) — 替代网关代理下失效的内置 WebSearch
+  websearch: {
+    /**
+     * 是否启用 web_search 工具。
+     * 前提：必须配置 TAVILY_API_KEY，否则一律不启用（即使 WEBSEARCH_ENABLED=true）。
+     * 配了 key 后默认启用，WEBSEARCH_ENABLED 仅作为已配 key 情况下的显式开/关覆盖。
+     */
+    enabled: Boolean(process.env.TAVILY_API_KEY) &&
+      (process.env.WEBSEARCH_ENABLED ? process.env.WEBSEARCH_ENABLED === 'true' : true),
+    /** Tavily API Key (tvly-xxx) */
+    apiKey: process.env.TAVILY_API_KEY || '',
+    /** Tavily API base URL */
+    baseUrl: process.env.TAVILY_BASE_URL || 'https://api.tavily.com',
+    /** 默认返回结果数 (1-20) */
+    maxResults: parsePositiveInt(process.env.WEBSEARCH_MAX_RESULTS, 5),
+    /** 默认搜索深度: basic (1 credit) | advanced (2 credits) */
+    searchDepth: (process.env.WEBSEARCH_DEPTH || 'basic') as 'basic' | 'advanced',
+    /** 单次请求超时毫秒数 */
+    timeoutMs: parsePositiveInt(process.env.WEBSEARCH_TIMEOUT_MS, 15000),
   },
 
   // 定时任务配置
