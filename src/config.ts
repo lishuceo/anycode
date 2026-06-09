@@ -185,10 +185,13 @@ export const config = {
 
   // Web 搜索配置 (Tavily) — 替代网关代理下失效的内置 WebSearch
   websearch: {
-    /** 是否启用 web_search 工具。未显式设置 WEBSEARCH_ENABLED 时，配了 TAVILY_API_KEY 即自动启用 */
-    enabled: process.env.WEBSEARCH_ENABLED
-      ? process.env.WEBSEARCH_ENABLED === 'true'
-      : Boolean(process.env.TAVILY_API_KEY),
+    /**
+     * 是否启用 web_search 工具。
+     * 前提：必须配置 TAVILY_API_KEY，否则一律不启用（即使 WEBSEARCH_ENABLED=true）。
+     * 配了 key 后默认启用，WEBSEARCH_ENABLED 仅作为已配 key 情况下的显式开/关覆盖。
+     */
+    enabled: Boolean(process.env.TAVILY_API_KEY) &&
+      (process.env.WEBSEARCH_ENABLED ? process.env.WEBSEARCH_ENABLED === 'true' : true),
     /** Tavily API Key (tvly-xxx) */
     apiKey: process.env.TAVILY_API_KEY || '',
     /** Tavily API base URL */

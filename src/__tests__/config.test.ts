@@ -109,6 +109,13 @@ describe('config', () => {
       expect(config.websearch.enabled).toBe(false);
     });
 
+    it('stays disabled without a key even when WEBSEARCH_ENABLED=true', async () => {
+      vi.stubEnv('TAVILY_API_KEY', '');
+      vi.stubEnv('WEBSEARCH_ENABLED', 'true');
+      const { config } = await loadConfig();
+      expect(config.websearch.enabled).toBe(false);
+    });
+
     it('falls back to safe timeout/maxResults on non-numeric env', async () => {
       vi.stubEnv('WEBSEARCH_TIMEOUT_MS', 'abc');
       vi.stubEnv('WEBSEARCH_MAX_RESULTS', 'xyz');
