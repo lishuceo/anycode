@@ -174,6 +174,24 @@ export const config = {
     maxInjectTokens: parseInt(process.env.MEMORY_MAX_INJECT_TOKENS || '4000', 10),
   },
 
+  // Web 搜索配置 (Tavily) — 替代网关代理下失效的内置 WebSearch
+  websearch: {
+    /** 是否启用 web_search 工具。未显式设置 WEBSEARCH_ENABLED 时，配了 TAVILY_API_KEY 即自动启用 */
+    enabled: process.env.WEBSEARCH_ENABLED
+      ? process.env.WEBSEARCH_ENABLED === 'true'
+      : Boolean(process.env.TAVILY_API_KEY),
+    /** Tavily API Key (tvly-xxx) */
+    apiKey: process.env.TAVILY_API_KEY || '',
+    /** Tavily API base URL */
+    baseUrl: process.env.TAVILY_BASE_URL || 'https://api.tavily.com',
+    /** 默认返回结果数 (1-20) */
+    maxResults: parseInt(process.env.WEBSEARCH_MAX_RESULTS || '5', 10),
+    /** 默认搜索深度: basic (1 credit) | advanced (2 credits) */
+    searchDepth: (process.env.WEBSEARCH_DEPTH || 'basic') as 'basic' | 'advanced',
+    /** 单次请求超时毫秒数 */
+    timeoutMs: parseInt(process.env.WEBSEARCH_TIMEOUT_MS || '15000', 10),
+  },
+
   // 定时任务配置
   cron: {
     /** 定时任务调度器开关 */
