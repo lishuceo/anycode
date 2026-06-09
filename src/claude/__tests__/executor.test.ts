@@ -17,6 +17,7 @@ vi.mock('../../config.js', () => ({
     workspace: { baseDir: '/tmp/workspaces' },
     feishu: { tools: { enabled: false, doc: true, wiki: true, drive: true, bitable: true } },
     cron: { enabled: false },
+    websearch: { enabled: false, apiKey: '', baseUrl: 'https://api.tavily.com', maxResults: 5, searchDepth: 'basic', timeoutMs: 15000 },
   },
 }));
 
