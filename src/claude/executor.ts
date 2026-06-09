@@ -12,6 +12,7 @@ import { createMemorySearchMcpServer } from '../memory/tools/memory-search.js';
 import { getMemoryStore, getHybridSearch, isMemoryEnabled } from '../memory/init.js';
 import { createCronMcpServer } from '../cron/tool.js';
 import { getCronScheduler } from '../cron/init.js';
+import { createWebSearchMcpServer } from '../websearch/tool.js';
 import { feishuClientContext } from '../feishu/client.js';
 import { isAutoWorkspacePath, isServiceOwnRepo, isInsideSourceRepo } from '../workspace/isolation.js';
 import { detectRuntime } from '../utils/runtime.js';
@@ -694,6 +695,11 @@ export class ClaudeExecutor {
       }
     }
 
+    // Web search MCP tool (Tavily) — 替代网关代理下失效的内置 WebSearch
+    if (config.websearch.enabled && config.websearch.apiKey) {
+      mcpServers['web-search'] = createWebSearchMcpServer();
+    }
+
     // 合并调用方传入的额外 MCP servers（如 discussion-tools）
     if (input.additionalMcpServers) {
       Object.assign(mcpServers, input.additionalMcpServers);
@@ -896,6 +902,11 @@ export class ClaudeExecutor {
             // cron-scheduler: 定时任务管理，操作的是任务数据库而非代码仓库，readonly 下允许
             if (toolName.startsWith('mcp__cron-scheduler__')) {
               logger.info({ toolName, readOnly }, 'canUseTool allowed — cron tool in read-only mode');
+              return { behavior: 'allow' as const, updatedInput: inputObj };
+            }
+            // web-search: 联网搜索，只读操作（不触碰代码仓库），readonly 下允许
+            if (toolName.startsWith('mcp__web-search__')) {
+              logger.info({ toolName, readOnly }, 'canUseTool allowed — web search tool in read-only mode');
               return { behavior: 'allow' as const, updatedInput: inputObj };
             }
             // 所有其他 MCP 工具（含 workspace-manager、未来新增）：deny
