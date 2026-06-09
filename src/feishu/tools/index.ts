@@ -10,6 +10,7 @@ import { feishuContactTool } from './contact.js';
 import { feishuCalendarTool } from './calendar.js';
 import { feishuMainChatTool } from './main-chat.js';
 import { feishuMessageFileTool } from './message.js';
+import { feishuMessageImageTool } from './image.js';
 import { getValidUserToken } from '../oauth.js';
 
 /**
@@ -39,6 +40,8 @@ export function createFeishuToolsMcpServer(chatId?: string, userId?: string) {
 
   // 消息文件按需下载工具：配合 lazy loading，agent 可按需获取历史消息中的文件
   tools.push(feishuMessageFileTool());
+  // 消息图片按需下载工具：父群历史图片 / 工作区切换后落盘图片皆通过此工具按需读取
+  tools.push(feishuMessageImageTool());
 
   return createSdkMcpServer({
     name: 'feishu-tools',

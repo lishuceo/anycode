@@ -70,6 +70,7 @@ export class MemoryStore {
       user_id: input.userId ?? null,
       chat_id: input.chatId ?? null,
       workspace_dir: input.workspaceDir ?? null,
+      repository: input.repository ?? null,
       type: input.type,
       content: input.content,
       tags: JSON.stringify(input.tags ?? []),

@@ -29,6 +29,7 @@ import type { ClaudeResult, ExecuteOptions, ProgressCallback, TurnInfo, ToolCall
 // Anthropic API 定价（per million tokens）
 // https://docs.anthropic.com/en/docs/about-claude/pricing
 const MODEL_PRICING: Record<string, { input: number; output: number; cacheWrite: number; cacheRead: number }> = {
+  'claude-opus-4-8':          { input: 5,   output: 25,  cacheWrite: 6.25,  cacheRead: 0.50 },
   'claude-opus-4-7':          { input: 5,   output: 25,  cacheWrite: 6.25,  cacheRead: 0.50 },
   'claude-opus-4-6':          { input: 5,   output: 25,  cacheWrite: 6.25,  cacheRead: 0.50 },
   'claude-opus-4-5-20250620': { input: 5,   output: 25,  cacheWrite: 6.25,  cacheRead: 0.50 },
@@ -322,7 +323,7 @@ export function listKnownOrgs(cacheDir: string): string[] {
 }
 
 /** 构建工作区管理系统提示词（注入实际目录路径 + 可用项目列表） */
-function buildWorkspaceSystemPrompt(workingDir?: string, options?: { isRestart?: boolean }): string {
+export function buildWorkspaceSystemPrompt(workingDir?: string, options?: { isRestart?: boolean }): string {
   const projectsDir = config.claude.defaultWorkDir;
   const cacheDir = config.repoCache.dir;
   const workspacesDir = config.workspace.baseDir;
@@ -465,7 +466,30 @@ gh search issues --repo owner/repo -- "keyword"
 
 # 错误 ✗ — 不要 cd 到主仓库或其他目录执行 gh
 cd /some/other/dir && gh pr view 123
-\`\`\``;
+\`\`\`
+
+## 平台执行约束
+
+你运行在 Feishu Bot 环境中，通过 Claude Agent SDK 的 \`query()\` API 执行。以下约束源于该执行模型，与目标仓库无关：
+
+### 子进程生命周期
+
+每次对话是一次独立的 query，返回结果后子进程（包括所有后台任务）会被回收。这意味着：
+
+- **不要用 Monitor 等待超过 5 分钟的后台任务结果** — 你返回 result 后 Monitor 会随子进程一起终止
+- **不要期望"返回后继续工作"** — 一旦你给出最终回复，本次执行即结束
+
+### 长时间任务的正确模式
+
+对于需要 5 分钟以上才能完成的后台任务（如跑批、大规模测试、编译）：
+
+1. 用 \`nohup ... &\` 或 \`... &\` 启动任务，确保脱离子进程
+${config.cron.enabled ? `2. 用 cron 工具（\`manage_cron\`）设一个一次性定时检查（\`schedule_kind: "at"\`），在预计完成时间触发
+3. 立即返回结果，告知用户任务已启动、预计完成时间、以及会自动回来检查` : `2. 立即返回结果，告知用户任务已启动、预计完成时间，建议用户稍后手动追问检查结果`}
+
+### 权限交互
+
+Bot 场景无法弹窗授权。所有需要的命令权限必须通过 \`.claude/settings.json\` 或 \`.claude/settings.local.json\` 白名单预配置。如果遇到权限拒绝，不要重试，告知用户需要更新白名单。`;
 
   const selfRepoGuide = (workingDir && isServiceOwnRepo(workingDir)) ? (() => {
     const rt = detectRuntime();
@@ -526,6 +550,9 @@ async function* buildMultimodalPrompt(
   }
 
   for (const img of images) {
+    if (img.label) {
+      contentBlocks.push({ type: 'text', text: `[图片说明: ${img.label}]` });
+    }
     contentBlocks.push({
       type: 'image',
       source: {
@@ -550,6 +577,9 @@ async function* buildMultimodalPrompt(
     session_id: '',
   } as import('@anthropic-ai/claude-agent-sdk').SDKUserMessage;
 }
+
+/** 仅测试用：导出 buildMultimodalPrompt */
+export const _testBuildMultimodalPrompt = buildMultimodalPrompt;
 
 export class ClaudeExecutor {
   /** 运行中的 query 实例 (用于 abort) */
@@ -782,9 +812,13 @@ export class ClaudeExecutor {
         abortController,
         stderr: (data: string) => logger.warn({ stderr: data.trim() }, 'Claude Code stderr'),
 
-        // SDK 0.2.111+: env 覆盖 process.env 而非替换，只需传差异项
-        // CLAUDECODE 嵌套检测变量由 SDK 自动清除，无需手动处理
-        ...(config.claude.apiBaseUrl ? { env: { ANTHROPIC_BASE_URL: config.claude.apiBaseUrl } } : {}),
+        // SDK 0.3.x: env 传入后会**完全替换**子进程环境（不与 process.env 合并）。
+        // 必须自行展开 process.env，否则子进程会丢失 ANTHROPIC_API_KEY / PATH / HOME 等，
+        // 导致 "Not logged in · Please run /login"。仅在配了代理 BaseUrl 时才覆盖该项。
+        // CLAUDECODE 嵌套检测变量由 SDK 自动清除，无需手动处理。
+        ...(config.claude.apiBaseUrl
+          ? { env: { ...process.env, ANTHROPIC_BASE_URL: config.claude.apiBaseUrl } }
+          : {}),
 
         // 权限：acceptEdits 自动接受文件编辑，canUseTool 自动批准其余工具调用
         // 注意：不使用 bypassPermissions，因为 root 用户下会被拒绝
@@ -946,7 +980,8 @@ export class ClaudeExecutor {
           : { type: 'preset', preset: 'claude_code', append: promptAppend },
 
         // 加载项目设置 (CLAUDE.md 等)；路由 agent 传 [] 避免加载
-        settingSources: settingSourcesOverride ?? ['user', 'project'],
+        // 'local' 加载 .claude/settings.local.json（优先级最高，覆盖 project）
+        settingSources: settingSourcesOverride ?? ['user', 'project', 'local'],
 
         // MCP 服务器：工作区管理工具 + 飞书工具 (空对象等同于无 MCP 服务器)
         mcpServers: Object.keys(mcpServers).length > 0 ? mcpServers : undefined,
@@ -984,7 +1019,8 @@ export class ClaudeExecutor {
 
     try {
       // 遍历 SDK 流式消息
-      for await (const message of q) {
+      // label 用于在收到 result 后跳出循环（result 是 SDK 协议的终止消息）
+      messageLoop: for await (const message of q) {
         // 每收到消息重置 idle 计时器
         resetIdleTimer(`msg:${message.type}${'subtype' in message ? ':' + (message as Record<string, unknown>).subtype : ''}`);
 
@@ -1123,7 +1159,7 @@ export class ClaudeExecutor {
 
           case 'result':
             resultMessage = message;
-            break;
+            break messageLoop;
 
           default:
             // tool_progress, stream_event 等其他消息类型 — 记录以便诊断 idle timeout 间隙
@@ -1132,6 +1168,10 @@ export class ClaudeExecutor {
             break;
         }
       }
+
+      // 提前 break（收到 result）时子进程可能仍在运行（如有 background task），
+      // 主动 close 确保不泄漏；正常迭代结束时 close 是幂等的 no-op
+      q.close();
     } catch (err) {
       clearTimeout(idleTimer);
       if (hardTimer) clearTimeout(hardTimer);

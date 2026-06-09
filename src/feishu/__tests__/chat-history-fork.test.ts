@@ -70,10 +70,10 @@ vi.mock('../../session/queue.js', () => ({
   taskQueue: { enqueue: vi.fn(), dequeue: vi.fn(), complete: vi.fn(), pendingCount: vi.fn(() => 0), cancelPending: vi.fn(() => 0), isBusy: vi.fn(() => false) },
 }));
 vi.mock('../message-builder.js', () => ({
-  buildProgressCard: vi.fn(), buildResultCard: vi.fn(), buildStatusCard: vi.fn(),
+  buildProgressCard: vi.fn(), buildCombinedProgressCard: vi.fn(), buildStatusCard: vi.fn(),
 }));
 vi.mock('../../utils/security.js', () => ({
-  isUserAllowed: vi.fn(() => true), containsDangerousCommand: vi.fn(() => false),
+  isUserAllowed: vi.fn(() => true), containsDangerousCommand: vi.fn(() => false), isOwner: vi.fn(() => false),
 }));
 vi.mock('../../pipeline/store.js', () => ({
   pipelineStore: { get: vi.fn(), findPendingByChat: vi.fn(), tryStart: vi.fn() },

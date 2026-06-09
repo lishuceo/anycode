@@ -42,6 +42,11 @@ export function createCronMcpServer(params: {
           '- 一次性: schedule_kind="at", at="2026-03-18T10:00:00" (指定时间)',
           '',
           '默认时区为 Asia/Shanghai。',
+          '',
+          '节假日/周末跳过 (按 schedule 时区判断):',
+          '- skip_holidays=true: 跳过中国法定节假日（含放假日；调休补班日仍执行）',
+          '- skip_weekends=true: 跳过周末（调休补班的周末仍执行）',
+          '- 两者可同时开启；跳过时不发消息、不计错误，只推进到下次时间',
         ].join('\n'),
         {
           action: z.enum(['list', 'add', 'update', 'remove', 'trigger']).describe('操作类型'),
@@ -54,6 +59,8 @@ export function createCronMcpServer(params: {
           at: z.string().optional().describe('一次性执行的 ISO 时间（kind=at 时使用）'),
           timezone: z.string().optional().describe('时区（默认 Asia/Shanghai）'),
           enabled: z.boolean().optional().describe('是否启用（默认 true）'),
+          skip_holidays: z.boolean().optional().describe('跳过中国法定节假日（默认 false）。调休补班日仍执行'),
+          skip_weekends: z.boolean().optional().describe('跳过周末（默认 false）。调休补班的周末仍执行'),
           bind_thread: z.boolean().optional().describe('是否绑定到当前话题（默认 true，执行结果发到当前话题）'),
           context_snapshot: z.string().optional().describe('上下文快照（创建时记录关键信息，如 repo、PR 号等）'),
         },
@@ -76,7 +83,11 @@ export function createCronMcpServer(params: {
                   const nextRun = job.state.nextRunAtMs
                     ? `下次: ${new Date(job.state.nextRunAtMs).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}`
                     : '';
-                  return `${status} **${job.name}** (${job.id})\n   ${schedule} | ${lastRun} | ${nextRun}\n   指令: ${job.prompt.slice(0, 80)}${job.prompt.length > 80 ? '...' : ''}`;
+                  const skipFlags: string[] = [];
+                  if (job.skipHolidays) skipFlags.push('🇨🇳跳节假日');
+                  if (job.skipWeekends) skipFlags.push('📅跳周末');
+                  const skipLine = skipFlags.length > 0 ? `\n   ${skipFlags.join(' ')}` : '';
+                  return `${status} **${job.name}** (${job.id})\n   ${schedule} | ${lastRun} | ${nextRun}${skipLine}\n   指令: ${job.prompt.slice(0, 80)}${job.prompt.length > 80 ? '...' : ''}`;
                 });
                 return text(`当前群聊有 ${jobs.length} 个定时任务:\n\n${lines.join('\n\n')}`);
               }
@@ -99,6 +110,8 @@ export function createCronMcpServer(params: {
                   prompt: args.prompt,
                   schedule,
                   enabled: args.enabled,
+                  skipHolidays: args.skip_holidays,
+                  skipWeekends: args.skip_weekends,
                   threadId: bindThread ? threadId : undefined,
                   threadRootMessageId: bindThread ? threadRootMessageId : undefined,
                   contextSnapshot: args.context_snapshot,
@@ -108,6 +121,10 @@ export function createCronMcpServer(params: {
                   ? new Date(job.state.nextRunAtMs).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })
                   : '未计算';
 
+                const skipFlags: string[] = [];
+                if (job.skipHolidays) skipFlags.push('🇨🇳 节假日');
+                if (job.skipWeekends) skipFlags.push('📅 周末');
+
                 return text([
                   `定时任务已创建`,
                   `ID: ${job.id}`,
@@ -115,7 +132,8 @@ export function createCronMcpServer(params: {
                   `调度: ${formatSchedule(job.schedule)}`,
                   `下次执行: ${nextRun}`,
                   bindThread && threadId ? `绑定话题: 是` : `绑定话题: 否（结果发到群顶层）`,
-                ].join('\n'));
+                  skipFlags.length > 0 ? `跳过: ${skipFlags.join(' + ')}` : '',
+                ].filter(Boolean).join('\n'));
               }
 
               case 'update': {
@@ -130,6 +148,8 @@ export function createCronMcpServer(params: {
                 if (args.name) patch.name = args.name;
                 if (args.prompt) patch.prompt = args.prompt;
                 if (args.enabled !== undefined) patch.enabled = args.enabled;
+                if (args.skip_holidays !== undefined) patch.skipHolidays = args.skip_holidays;
+                if (args.skip_weekends !== undefined) patch.skipWeekends = args.skip_weekends;
                 if (args.context_snapshot) patch.contextSnapshot = args.context_snapshot;
 
                 const schedule = buildSchedule(args);

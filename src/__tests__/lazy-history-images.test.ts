@@ -1,5 +1,9 @@
 /**
- * Tests for lazy loading of parent chat images in history context.
+ * Tests for downloadHistoryImages — split outputs:
+ *   - Parent-chat images → lazyHints (metadata only)
+ *   - Topic-root images → handled separately by fetchTopicRootImages (excluded here)
+ *   - Pure history images → persisted to cache and returned as historyImagePaths (text-hint only,
+ *     not embedded in multimodal to avoid context pollution)
  *
  * 与 lazy-history-files.test.ts 对齐：当 buildChatHistoryContext / buildDirectTaskHistory
  * 从父群补充消息时，父群中的图片附件不应被自动下载并嵌入 prompt。
@@ -13,12 +17,21 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const mockDownloadMessageImage = vi.fn();
+const mockSaveMessageFileToCache = vi.fn();
 
 vi.mock('../feishu/client.js', () => ({
   feishuClient: {
     downloadMessageImage: (...args: unknown[]) => mockDownloadMessageImage(...args),
   },
 }));
+
+vi.mock('../feishu/file-cache.js', async (importOriginal) => {
+  const original = await importOriginal();
+  return {
+    ...original,
+    saveMessageFileToCache: (...args: unknown[]) => mockSaveMessageFileToCache(...args),
+  };
+});
 
 vi.mock('../utils/logger.js', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
@@ -44,13 +57,16 @@ function makeImageBuf(payload = 'fake'): Buffer {
   return Buffer.concat([JPEG_PREFIX, Buffer.from(payload)]);
 }
 
-describe('downloadHistoryImages with parentMsgCount (lazy loading)', () => {
+describe('downloadHistoryImages — text-hint output for pure history', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockDownloadMessageImage.mockResolvedValue(makeImageBuf());
+    mockSaveMessageFileToCache.mockImplementation(async (msgId, imageKey) =>
+      `/tmp/cache/${msgId}-${imageKey}.jpg`,
+    );
   });
 
-  it('downloads all images when parentMsgCount is 0 (default)', async () => {
+  it('persists all images to cache (text-hint) when parentMsgCount is 0 (default)', async () => {
     const messages = [
       makeMsg('m1', [{ imageKey: 'ik1' }]),
       makeMsg('m2', [{ imageKey: 'ik2' }]),
@@ -59,7 +75,11 @@ describe('downloadHistoryImages with parentMsgCount (lazy loading)', () => {
     const result = await downloadHistoryImages(messages);
 
     expect(mockDownloadMessageImage).toHaveBeenCalledTimes(2);
-    expect(result.images).toHaveLength(2);
+    expect(result.historyImagePaths).toHaveLength(2);
+    expect(result.historyImagePaths).toEqual(expect.arrayContaining([
+      '/tmp/cache/m1-ik1.jpg',
+      '/tmp/cache/m2-ik2.jpg',
+    ]));
     expect(result.lazyHints).toHaveLength(0);
   });
 
@@ -77,7 +97,9 @@ describe('downloadHistoryImages with parentMsgCount (lazy loading)', () => {
     expect(mockDownloadMessageImage).toHaveBeenCalledTimes(1);
     expect(mockDownloadMessageImage).toHaveBeenCalledWith('thread_msg_target_resume', 'ik_target_resume');
 
-    expect(result.images).toHaveLength(1);
+    // 话题图片走 historyImagePaths(文本路径,不进多模态)
+    expect(result.historyImagePaths).toHaveLength(1);
+    expect(result.historyImagePaths[0]).toContain('thread_msg_target_resume');
 
     // 父群图片变成元数据
     expect(result.lazyHints).toHaveLength(1);
@@ -95,9 +117,8 @@ describe('downloadHistoryImages with parentMsgCount (lazy loading)', () => {
 
     const result = await downloadHistoryImages(messages, 2);
 
-    // 全部父群图片都不下载
     expect(mockDownloadMessageImage).not.toHaveBeenCalled();
-    expect(result.images).toHaveLength(0);
+    expect(result.historyImagePaths).toHaveLength(0);
     expect(result.lazyHints).toHaveLength(2);
   });
 
@@ -109,7 +130,7 @@ describe('downloadHistoryImages with parentMsgCount (lazy loading)', () => {
     const result = await downloadHistoryImages(messages, 0);
 
     expect(mockDownloadMessageImage).toHaveBeenCalledTimes(1);
-    expect(result.images).toHaveLength(1);
+    expect(result.historyImagePaths).toHaveLength(1);
     expect(result.lazyHints).toHaveLength(0);
   });
 
@@ -119,7 +140,7 @@ describe('downloadHistoryImages with parentMsgCount (lazy loading)', () => {
     const result = await downloadHistoryImages(messages, 1);
 
     expect(mockDownloadMessageImage).not.toHaveBeenCalled();
-    expect(result.images).toHaveLength(0);
+    expect(result.historyImagePaths).toHaveLength(0);
     expect(result.lazyHints).toHaveLength(0);
   });
 
@@ -148,8 +169,8 @@ describe('downloadHistoryImages with parentMsgCount (lazy loading)', () => {
     // 父群图片仍输出元数据
     expect(result.lazyHints).toHaveLength(1);
     expect(result.lazyHints[0]).toContain('p1');
-    // 话题图片下载失败，images 为空
-    expect(result.images).toHaveLength(0);
+    // 话题图片下载失败，historyImagePaths 为空
+    expect(result.historyImagePaths).toHaveLength(0);
   });
 
   it('multiple imageRefs in one message are tracked separately by source', async () => {
@@ -165,8 +186,38 @@ describe('downloadHistoryImages with parentMsgCount (lazy loading)', () => {
     expect(result.lazyHints[0]).toContain('ik_p1');
     expect(result.lazyHints[1]).toContain('ik_p2');
 
-    // 话题图片正常下载
+    // 话题图片正常下载 + 落盘 → historyImagePaths
     expect(mockDownloadMessageImage).toHaveBeenCalledTimes(1);
     expect(mockDownloadMessageImage).toHaveBeenCalledWith('thread_msg', 'ik_t1');
+    expect(result.historyImagePaths).toHaveLength(1);
+  });
+
+  it('excludes topic-root images (those are fetched separately by fetchTopicRootImages)', async () => {
+    const messages = [
+      // 话题首条 — 应该被 fetchTopicRootImages 单独处理,此处不重复下载
+      makeMsg('topic_root_msg', [{ imageKey: 'ik_root' }]),
+      // 话题中间的其他图片 — 走 historyImagePaths
+      makeMsg('thread_msg_mid', [{ imageKey: 'ik_mid' }]),
+    ];
+
+    const result = await downloadHistoryImages(messages, 0, 'topic_root_msg');
+
+    // 话题首条图片不再下载/落盘 (由 fetchTopicRootImages 接管)
+    expect(mockDownloadMessageImage).toHaveBeenCalledTimes(1);
+    expect(mockDownloadMessageImage).toHaveBeenCalledWith('thread_msg_mid', 'ik_mid');
+    expect(result.historyImagePaths).toHaveLength(1);
+    expect(result.historyImagePaths[0]).toContain('thread_msg_mid');
+  });
+
+  it('falls back gracefully when saveMessageFileToCache throws', async () => {
+    mockSaveMessageFileToCache.mockRejectedValue(new Error('disk full'));
+
+    const messages = [makeMsg('m1', [{ imageKey: 'ik1' }])];
+
+    const result = await downloadHistoryImages(messages);
+
+    // 下载仍然进行,但落盘失败 → 不计入 historyImagePaths
+    expect(mockDownloadMessageImage).toHaveBeenCalledTimes(1);
+    expect(result.historyImagePaths).toHaveLength(0);
   });
 });

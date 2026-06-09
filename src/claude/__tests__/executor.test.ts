@@ -70,7 +70,7 @@ vi.mock('../../cron/init.js', () => ({
   getCronScheduler: vi.fn(() => null),
 }));
 
-import { ClaudeExecutor } from '../executor.js';
+import { ClaudeExecutor, buildWorkspaceSystemPrompt } from '../executor.js';
 
 // ============================================================
 // Helpers
@@ -547,6 +547,56 @@ describe('ClaudeExecutor', () => {
       // Non-readOnly mode: Bash is allowed without pattern check
       const result = await canUseTool('Bash', { command: 'rm -rf /tmp' });
       expect(result.behavior).toBe('allow');
+    });
+  });
+
+  describe('environment forwarding (proxy BaseUrl)', () => {
+    // 回归 (bug)：SDK 0.3.x 的 `env` 选项会**完全替换**子进程环境（不与 process.env 合并）。
+    // 若只传 { ANTHROPIC_BASE_URL }，子进程会丢失 ANTHROPIC_API_KEY，
+    // 导致 Claude Code 返回 "Not logged in · Please run /login"。必须展开 process.env。
+    it('spreads process.env so the subprocess keeps ANTHROPIC_API_KEY when apiBaseUrl is set', async () => {
+      const { config } = await import('../../config.js');
+      const prevBase = config.claude.apiBaseUrl;
+      const prevKey = process.env.ANTHROPIC_API_KEY;
+      config.claude.apiBaseUrl = 'https://proxy.example.com';
+      process.env.ANTHROPIC_API_KEY = 'sk-regression-test';
+      try {
+        await executor.execute(makeInput());
+        const opts = mockQuery.mock.calls[0][0].options;
+        expect(opts.env).toBeDefined();
+        // 关键回归点：API key 必须随 process.env 一起带给子进程
+        expect(opts.env.ANTHROPIC_API_KEY).toBe('sk-regression-test');
+        // 代理 BaseUrl 仍被正确覆盖
+        expect(opts.env.ANTHROPIC_BASE_URL).toBe('https://proxy.example.com');
+      } finally {
+        config.claude.apiBaseUrl = prevBase;
+        if (prevKey === undefined) delete process.env.ANTHROPIC_API_KEY;
+        else process.env.ANTHROPIC_API_KEY = prevKey;
+      }
+    });
+
+    it('omits env entirely when no apiBaseUrl (subprocess inherits process.env)', async () => {
+      // 默认 mock 的 apiBaseUrl === ''：不传 env，让子进程自然继承父进程环境
+      await executor.execute(makeInput());
+      const opts = mockQuery.mock.calls[0][0].options;
+      expect(opts.env).toBeUndefined();
+    });
+  });
+
+  describe('buildWorkspaceSystemPrompt — platform constraints', () => {
+    it('includes platform execution constraints section', () => {
+      const prompt = buildWorkspaceSystemPrompt('/tmp/work');
+      expect(prompt).toContain('平台执行约束');
+      expect(prompt).toContain('子进程生命周期');
+      expect(prompt).toContain('不要用 Monitor 等待超过 5 分钟的后台任务结果');
+      expect(prompt).toContain('权限交互');
+    });
+
+    it('omits cron guidance when cron is disabled', () => {
+      // config mock has cron.enabled = false
+      const prompt = buildWorkspaceSystemPrompt('/tmp/work');
+      expect(prompt).not.toContain('manage_cron');
+      expect(prompt).toContain('建议用户稍后手动追问检查结果');
     });
   });
 });
