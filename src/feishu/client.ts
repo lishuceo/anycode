@@ -1,4 +1,5 @@
 import * as lark from '@larksuiteoapi/node-sdk';
+import type { ReadStream } from 'node:fs';
 
 import { logger } from '../utils/logger.js';
 import { formatMergeForwardSubMessage } from './message-parser.js';
@@ -494,6 +495,83 @@ export class FeishuClient {
    * 下载消息中的图片资源
    * 使用 im.messageResource.get API（支持下载用户发送的图片）
    */
+  /**
+   * 上传图片到飞书，返回 image_key（用于发送图片消息）
+   *
+   * @param image 图片文件流（如 fs.createReadStream(path)）或 Buffer。
+   *   注意：im.image.create 直接返回已解包的 { image_key }，
+   *   而非其它 message 接口的 { code, msg, data } 结构。
+   */
+  async uploadImage(image: Buffer | ReadStream): Promise<string | undefined> {
+    try {
+      const resp = await this.client.im.image.create({
+        data: { image_type: 'message', image },
+      });
+
+      if (!resp?.image_key) {
+        logger.error({ resp }, 'Failed to upload image (no image_key returned)');
+        return undefined;
+      }
+
+      return resp.image_key;
+    } catch (err) {
+      logger.error({ err }, 'Error uploading image');
+      return undefined;
+    }
+  }
+
+  /**
+   * 发送图片消息到指定群/会话
+   */
+  async sendImage(chatId: string, imageKey: string): Promise<string | undefined> {
+    try {
+      const resp = await this.client.im.message.create({
+        params: { receive_id_type: 'chat_id' },
+        data: {
+          receive_id: chatId,
+          msg_type: 'image',
+          content: JSON.stringify({ image_key: imageKey }),
+        },
+      });
+
+      if (resp.code !== 0) {
+        logger.error({ code: resp.code, msg: resp.msg }, 'Failed to send image message');
+        return undefined;
+      }
+
+      return resp.data?.message_id;
+    } catch (err) {
+      logger.error({ err }, 'Error sending image message');
+      return undefined;
+    }
+  }
+
+  /**
+   * 在话题中回复图片（通过回复话题内的消息）
+   */
+  async replyImageInThread(threadMessageId: string, imageKey: string): Promise<string | undefined> {
+    try {
+      const resp = await this.client.im.message.reply({
+        path: { message_id: threadMessageId },
+        data: {
+          msg_type: 'image',
+          content: JSON.stringify({ image_key: imageKey }),
+          reply_in_thread: true,
+        },
+      });
+
+      if (resp.code !== 0) {
+        logger.error({ code: resp.code, msg: resp.msg }, 'Failed to reply image in thread');
+        return undefined;
+      }
+
+      return resp.data?.message_id;
+    } catch (err) {
+      logger.error({ err }, 'Error replying image in thread');
+      return undefined;
+    }
+  }
+
   async downloadMessageImage(messageId: string, imageKey: string): Promise<Buffer> {
     try {
       const resp = await this.client.im.messageResource.get({
