@@ -2,7 +2,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // vi.hoisted runs before vi.mock factories — safe to reference in factory
-const { mockConfig, mockDocTool, mockWikiTool, mockDriveTool, mockBitableTool, mockChatTool, mockContactTool, mockTaskTool, mockCalendarTool, mockMainChatTool, mockMessageFileTool, mockMessageImageTool, mockCreateSdkMcpServer } = vi.hoisted(() => {
+const { mockConfig, mockDocTool, mockWikiTool, mockDriveTool, mockBitableTool, mockChatTool, mockContactTool, mockTaskTool, mockCalendarTool, mockMainChatTool, mockSendImageTool, mockMessageFileTool, mockMessageImageTool, mockCreateSdkMcpServer } = vi.hoisted(() => {
   const mockConfig = {
     feishu: {
       tools: {
@@ -29,6 +29,7 @@ const { mockConfig, mockDocTool, mockWikiTool, mockDriveTool, mockBitableTool, m
     mockTaskTool: vi.fn(() => ({ name: 'feishu_task' })),
     mockCalendarTool: vi.fn(() => ({ name: 'feishu_calendar' })),
     mockMainChatTool: vi.fn(() => ({ name: 'feishu_send_to_chat' })),
+    mockSendImageTool: vi.fn(() => ({ name: 'feishu_send_image' })),
     mockMessageFileTool: vi.fn(() => ({ name: 'feishu_download_message_file' })),
     mockMessageImageTool: vi.fn(() => ({ name: 'feishu_download_message_image' })),
     mockCreateSdkMcpServer: vi.fn((opts: unknown) => ({ ...(opts as object), type: 'mcp-server' })),
@@ -46,6 +47,7 @@ vi.mock('../contact.js', () => ({ feishuContactTool: () => mockContactTool() }))
 vi.mock('../task.js', () => ({ feishuTaskTool: () => mockTaskTool() }));
 vi.mock('../calendar.js', () => ({ feishuCalendarTool: () => mockCalendarTool() }));
 vi.mock('../main-chat.js', () => ({ feishuMainChatTool: () => mockMainChatTool() }));
+vi.mock('../send-image.js', () => ({ feishuSendImageTool: () => mockSendImageTool() }));
 vi.mock('../message.js', () => ({ feishuMessageFileTool: () => mockMessageFileTool() }));
 vi.mock('../image.js', () => ({ feishuMessageImageTool: () => mockMessageImageTool() }));
 vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
@@ -122,13 +124,19 @@ describe('createFeishuToolsMcpServer', () => {
     expect(mockMainChatTool).not.toHaveBeenCalled();
   });
 
-  it('should include main-chat tool when chatId is provided', () => {
+  it('should include main-chat and send-image tools when chatId is provided', () => {
     const result = createFeishuToolsMcpServer('chat_123');
     expect(result).toBeDefined();
     const call = mockCreateSdkMcpServer.mock.calls[0][0];
-    // 8 config-gated + 1 main-chat + 1 message file + 1 message image = 11
-    expect(call.tools).toHaveLength(11);
+    // 8 config-gated + 1 main-chat + 1 send-image + 1 message file + 1 message image = 12
+    expect(call.tools).toHaveLength(12);
     expect(mockMainChatTool).toHaveBeenCalledTimes(1);
+    expect(mockSendImageTool).toHaveBeenCalledTimes(1);
+  });
+
+  it('should not include send-image tool when chatId is undefined', () => {
+    createFeishuToolsMcpServer(undefined);
+    expect(mockSendImageTool).not.toHaveBeenCalled();
   });
 
   it('should not include task tool when task switch is false', () => {
