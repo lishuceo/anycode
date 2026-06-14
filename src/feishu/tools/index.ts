@@ -9,6 +9,7 @@ import { feishuTaskTool } from './task.js';
 import { feishuContactTool } from './contact.js';
 import { feishuCalendarTool } from './calendar.js';
 import { feishuMainChatTool } from './main-chat.js';
+import { feishuSendImageTool } from './send-image.js';
 import { feishuMessageFileTool } from './message.js';
 import { feishuMessageImageTool } from './image.js';
 import { getValidUserToken } from '../oauth.js';
@@ -18,10 +19,11 @@ import { getValidUserToken } from '../oauth.js';
  *
  * 根据配置子开关组装工具列表，始终包含消息文件按需下载工具。
  *
- * @param chatId  当前会话的群 chat_id，用于创建文档后自动授权群成员
- * @param userId  当前用户的 open_id，用于获取 user_access_token
+ * @param chatId            当前会话的群 chat_id，用于创建文档后自动授权群成员
+ * @param userId            当前用户的 open_id，用于获取 user_access_token
+ * @param threadReplyMsgId  话题根消息 ID，传入时 feishu_send_image 会把图片回复到话题内
  */
-export function createFeishuToolsMcpServer(chatId?: string, userId?: string) {
+export function createFeishuToolsMcpServer(chatId?: string, userId?: string, threadReplyMsgId?: string) {
   const tools = [];
   if (config.feishu.tools.doc) tools.push(feishuDocTool(chatId));
   if (config.feishu.tools.wiki) tools.push(feishuWikiTool());
@@ -37,6 +39,9 @@ export function createFeishuToolsMcpServer(chatId?: string, userId?: string) {
 
   // 主聊天发送工具：agent 在话题内时可自主决定将重要结果发到群主聊天
   if (chatId) tools.push(feishuMainChatTool(chatId));
+
+  // 图片发送工具：agent 把工作区里的本地图片发回当前会话/话题
+  if (chatId) tools.push(feishuSendImageTool(chatId, threadReplyMsgId));
 
   // 消息文件按需下载工具：配合 lazy loading，agent 可按需获取历史消息中的文件
   tools.push(feishuMessageFileTool());
