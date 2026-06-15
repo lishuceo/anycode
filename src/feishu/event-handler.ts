@@ -588,11 +588,20 @@ async function resolveMentionGate(input: MentionGateInput): Promise<string | und
     // 补充 chatBotRegistry 中跨 app bot open_id
     const registryBotIds = chatBotRegistry.getBots(chatId).map(b => b.openId);
     const knownBotIds = new Set([...allBotOpenIds, ...registryBotIds]);
-    const anyBotMentioned = mentions.some(m => knownBotIds.has(m.id.open_id ?? ''));
 
-    // 话题内 thread bypass：话题创建者 bot 无需 @mention
-    // 走共享 evaluateThreadBypass —— session 创建者 + 单人话题直接放行；多人话题保守要求 @
-    if (threadId && !anyBotMentioned && isThreadCreatorAgent(threadId, agentId)) {
+    // 话题内 thread bypass：话题创建者 bot 无需 @mention 也可继续对话。
+    // 但只要用户 @ 了"除本 bot 以外的任何对象"，就说明在叫别人 —— 不 bypass。
+    //
+    // 为什么以"是否 @ 了非自己"为准，而不是"是否 @ 了已知 bot"：
+    // 飞书 open_id 按 app 隔离，同一个 bot 在不同 app 下 open_id 不同。
+    // getAllBotOpenIds() 存的是各 bot 用自己 app 拉到的「自视 open_id」，
+    // 当用户 @ 了另一个 bot 时，本 bot 的 app 收到的那条 mention 是「对方在本 app 视角下的 open_id」，
+    // 不在 knownBotIds 里 → anyBotMentioned 漏判 → 话题创建者 bot 误以为没人被 @ 而抢答。
+    // 每个 bot 唯一能确信的就是自己的 open_id，故改用「@ 了非自己」作为不 bypass 的判据。
+    const mentionsOtherParty = mentions.some(
+      (m) => !!m.id.open_id && m.id.open_id !== botOpenId,
+    );
+    if (threadId && !mentionsOtherParty && isThreadCreatorAgent(threadId, agentId)) {
       const result = await evaluateThreadBypass(threadBypassDeps, {
         threadId, chatId, agentId, senderUserId: userId, messageId,
       });
@@ -621,6 +630,15 @@ async function resolveMentionGate(input: MentionGateInput): Promise<string | und
 
   // 群聊未 @mention：仅话题内 session 创建者可放行（共享判定逻辑，与多 bot 一致）
   if (!threadId) return undefined;
+
+  // 若消息 @ 了"除本 bot 以外的任何对象"（哪怕是另一个独立服务的 bot），说明在叫别人，不 bypass。
+  // 走到这里说明本 bot 未被 @（@自己已在上方 mentionedBot 分支返回），故任一带 open_id 的 mention 都是「@别人」。
+  const selfOpenId = feishuClient.botOpenId ?? '';
+  const mentionsOtherParty = mentions.some(
+    (m) => !!m.id.open_id && m.id.open_id !== selfOpenId,
+  );
+  if (mentionsOtherParty) return undefined;
+
   const result = await evaluateThreadBypass(threadBypassDeps, {
     threadId, chatId, senderUserId: userId, messageId,
   });

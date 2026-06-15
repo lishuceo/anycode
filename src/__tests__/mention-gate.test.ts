@@ -218,6 +218,16 @@ describe('resolveMentionGate', () => {
     it('allows non-group chat types without @mention', async () => {
       expect(await resolveMentionGate({ ...baseInput, chatType: 'supergroup' })).toBe('non_group');
     });
+
+    it('blocks thread bypass when another (separate-service) bot is @mentioned', async () => {
+      // 单 bot 模式：DevBot 是话题创建者，但用户 @ 了群里另一个独立服务的 bot。
+      // 旧逻辑单 bot 路径无 mention 闸 → bypass 放行抢答；修复后 @非自己 → 不 bypass。
+      mockGetThreadSession.mockReturnValue({ userId: 'ou_user_1', createdAt: new Date().toISOString() });
+      const otherBotMention = { id: { open_id: 'ou_separate_service_bot' } };
+      expect(await resolveMentionGate({
+        ...baseInput, threadId: 'omt_123', mentions: [otherBotMention],
+      })).toBeUndefined();
+    });
   });
 
   // ── 多 bot 模式 ──
@@ -319,6 +329,24 @@ describe('resolveMentionGate', () => {
       // When a bot is mentioned, thread bypass is skipped; getRespondReason checks mention
       expect(await resolveMentionGate({
         ...baseInput, mentions: [otherBotMention], threadId: 'omt_existing_topic',
+      })).toBeUndefined();
+    });
+
+    it('blocks thread_bypass when @mentioned party is unrecognized as bot (cross-app open_id)', async () => {
+      // 真实 bug 复现：本 bot(dev) 是话题创建者，用户在话题里 @ 了另一个 bot。
+      // 飞书 open_id 按 app 隔离，被 @ 的 bot 在本 app 视角下的 open_id 不在 knownBotIds 里，
+      // 旧逻辑 anyBotMentioned=false → 命中 thread_bypass 抢答。
+      // 修复后：只要 @ 了"非自己"，就不 bypass。
+      mockGetThreadSession.mockImplementation((_: string, agentId?: string) => {
+        if (agentId === 'dev') return { userId: 'ou_user_1', createdAt: '2026-01-01T00:00:00Z' };
+        return undefined;
+      });
+      const foreignBotMention = { id: { open_id: 'ou_other_bot_foreign_scope' } };
+      expect(await resolveMentionGate({
+        ...baseInput,
+        mentions: [foreignBotMention],
+        threadId: 'omt_existing_topic',
+        text: '@张全栈 接下来做啥',
       })).toBeUndefined();
     });
   });
