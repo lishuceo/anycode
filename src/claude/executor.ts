@@ -16,7 +16,7 @@ import { createWebSearchMcpServer } from '../websearch/tool.js';
 import { feishuClientContext } from '../feishu/client.js';
 import { isAutoWorkspacePath, isServiceOwnRepo, isInsideSourceRepo } from '../workspace/isolation.js';
 import { detectRuntime } from '../utils/runtime.js';
-import type { ClaudeResult, ExecuteOptions, ProgressCallback, TurnInfo, ToolCallInfo, ImageAttachment, DocumentAttachment, MultimodalContentBlock, ConversationTurn, ToolCallTrace } from './types.js';
+import type { ClaudeResult, CompactResult, ExecuteOptions, ProgressCallback, TurnInfo, ToolCallInfo, ImageAttachment, DocumentAttachment, MultimodalContentBlock, ConversationTurn, ToolCallTrace } from './types.js';
 
 // ============================================================
 // Claude Agent SDK 执行器
@@ -580,6 +580,33 @@ async function* buildMultimodalPrompt(
 
 /** 仅测试用：导出 buildMultimodalPrompt */
 export const _testBuildMultimodalPrompt = buildMultimodalPrompt;
+
+/**
+ * 根据 /compact 流式消息中捕获的信号判定压缩结果。
+ *
+ * - compact_result === 'success' → 真正完成压缩
+ * - compact_result === 'failed' + "Not enough messages to compact" → noop（上下文过短，非错误）
+ * - 其余 failed / 无任何信号 → 视为失败
+ *
+ * 拆成纯函数便于单元测试（compact() 本身依赖 SDK query()）。
+ */
+export function classifyCompactOutcome(signals: {
+  compactResult?: 'success' | 'failed';
+  compactError?: string;
+}): { success: boolean; noop: boolean; error?: string } {
+  if (signals.compactResult === 'success') {
+    return { success: true, noop: false };
+  }
+  const isNotEnough = /not enough messages/i.test(signals.compactError ?? '');
+  if (signals.compactResult === 'failed' && isNotEnough) {
+    return { success: false, noop: true };
+  }
+  return {
+    success: false,
+    noop: false,
+    error: signals.compactError || '压缩未生效（未收到 compact 完成信号）',
+  };
+}
 
 export class ClaudeExecutor {
   /** 运行中的 query 实例 (用于 abort) */
@@ -1299,6 +1326,123 @@ export class ClaudeExecutor {
       durationMs,
       needsRestart: workspaceChanged,
       newWorkingDir,
+    };
+  }
+
+  /**
+   * 对指定会话执行 /compact 上下文压缩。
+   *
+   * 关键：prompt 必须是**裸** "/compact"（不拼接任何 memory/历史/发送者/时间前缀），
+   * 否则 Claude Code CLI 不会把它识别为 local slash command —— 命令必须位于消息开头。
+   * 这正是飞书侧直接发 /compact 无效的根因：normal task 链路会层层加前缀。
+   *
+   * 已实测（SDK 0.3.156）：bare "/compact" + resume 触发真实压缩，
+   * session_id 保持不变，compact_boundary 给出 pre/post tokens。
+   * 消息序列：status(compacting) → status(compact_result[+error]) → init → assistant → result。
+   */
+  async compact(input: {
+    sessionKey: string;
+    workingDir: string;
+    resumeSessionId: string;
+    model?: string;
+    timeoutSeconds?: number;
+  }): Promise<CompactResult> {
+    const { sessionKey, workingDir, resumeSessionId, model } = input;
+    const startTime = Date.now();
+    const abortController = new AbortController();
+    const idleTimeoutMs = (input.timeoutSeconds ?? config.claude.timeoutSeconds) * 1000;
+    let timedOut = false;
+
+    // 滑动窗口 idle 超时：每收到一条消息就重置。压缩本身是一次 API 调用，
+    // status(compacting) 与 status(success) 之间可能间隔数十秒（实测 40K tokens 约 35s），
+    // 默认 idle 超时（300s）足够。
+    let idleTimer: ReturnType<typeof setTimeout> = undefined!;
+    const resetIdleTimer = () => {
+      clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => {
+        timedOut = true;
+        abortController.abort();
+        logger.warn({ sessionKey, idleTimeoutMs }, 'Compact query idle timeout — aborting');
+      }, idleTimeoutMs);
+    };
+    resetIdleTimer();
+
+    logger.info({ sessionKey, workingDir, resumeSessionId }, 'Executing /compact');
+
+    const q = query({
+      prompt: '/compact',
+      options: {
+        cwd: workingDir,
+        abortController,
+        stderr: (data: string) => logger.warn({ stderr: data.trim() }, 'Claude Code stderr (compact)'),
+        // 同 execute()：SDK 0.3.x 传入 env 会完全替换子进程环境，需展开 process.env
+        ...(config.claude.apiBaseUrl
+          ? { env: { ...process.env, ANTHROPIC_BASE_URL: config.claude.apiBaseUrl } }
+          : {}),
+        permissionMode: 'acceptEdits' as const,
+        model: model ?? config.claude.model,
+        resume: resumeSessionId,
+      },
+    });
+
+    this.runningQueries.set(sessionKey, q);
+
+    let sessionId: string | undefined;
+    let preTokens: number | undefined;
+    let postTokens: number | undefined;
+    let compactResult: 'success' | 'failed' | undefined;
+    let compactError: string | undefined;
+
+    try {
+      for await (const message of q) {
+        resetIdleTimer();
+        if (message.type === 'system') {
+          const m = message as Record<string, unknown>;
+          if (m.subtype === 'init') {
+            sessionId = (m.session_id as string) ?? sessionId;
+          } else if (m.subtype === 'compact_boundary') {
+            const meta = m.compact_metadata as { pre_tokens?: number; post_tokens?: number } | undefined;
+            preTokens = meta?.pre_tokens;
+            postTokens = meta?.post_tokens;
+          } else if (m.subtype === 'status') {
+            if (m.compact_result) compactResult = m.compact_result as 'success' | 'failed';
+            if (m.compact_error) compactError = m.compact_error as string;
+          }
+        } else if (message.type === 'result') {
+          sessionId = ((message as Record<string, unknown>).session_id as string) ?? sessionId;
+          break;
+        }
+      }
+      q.close();
+    } catch (err) {
+      clearTimeout(idleTimer);
+      this.runningQueries.delete(sessionKey);
+      const durationMs = Date.now() - startTime;
+      const errorMsg = timedOut
+        ? `压缩超时（${idleTimeoutMs / 1000}s 无响应）`
+        : (err instanceof Error ? err.message : String(err));
+      logger.error({ sessionKey, err: errorMsg, timedOut }, 'Compact query error');
+      return { success: false, error: errorMsg, sessionId, durationMs };
+    }
+
+    clearTimeout(idleTimer);
+    this.runningQueries.delete(sessionKey);
+    const durationMs = Date.now() - startTime;
+
+    const outcome = classifyCompactOutcome({ compactResult, compactError });
+    logger.info(
+      { sessionKey, ...outcome, preTokens, postTokens, durationMs },
+      'Compact query result',
+    );
+
+    return {
+      success: outcome.success,
+      noop: outcome.noop,
+      preTokens,
+      postTokens,
+      sessionId,
+      error: outcome.error,
+      durationMs,
     };
   }
 
