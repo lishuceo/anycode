@@ -70,7 +70,7 @@ vi.mock('../../cron/init.js', () => ({
   getCronScheduler: vi.fn(() => null),
 }));
 
-import { ClaudeExecutor, buildWorkspaceSystemPrompt } from '../executor.js';
+import { ClaudeExecutor, buildWorkspaceSystemPrompt, classifyCompactOutcome } from '../executor.js';
 
 // ============================================================
 // Helpers
@@ -597,6 +597,112 @@ describe('ClaudeExecutor', () => {
       const prompt = buildWorkspaceSystemPrompt('/tmp/work');
       expect(prompt).not.toContain('manage_cron');
       expect(prompt).toContain('建议用户稍后手动追问检查结果');
+    });
+  });
+
+  describe('compact()', () => {
+    it('sends a BARE "/compact" prompt with resume (no prefixes)', async () => {
+      setupMessages([
+        { type: 'system', subtype: 'status', status: 'compacting' },
+        { type: 'system', subtype: 'compact_boundary', compact_metadata: { trigger: 'manual', pre_tokens: 40445, post_tokens: 1351 } },
+        { type: 'system', subtype: 'status', status: null, compact_result: 'success' },
+        { type: 'system', subtype: 'init', session_id: 'sess-c' },
+        { type: 'result', subtype: 'success', session_id: 'sess-c' },
+      ]);
+
+      await executor.compact({ sessionKey: 'k', workingDir: '/tmp/w', resumeSessionId: 'sess-c' });
+
+      const arg = mockQuery.mock.calls[0]![0] as { prompt: string; options: Record<string, unknown> };
+      // 关键：prompt 必须是裸 /compact，否则 CLI 不识别为 local slash command
+      expect(arg.prompt).toBe('/compact');
+      expect(arg.options.resume).toBe('sess-c');
+    });
+
+    it('returns success with pre/post tokens on a real compaction', async () => {
+      setupMessages([
+        { type: 'system', subtype: 'status', status: 'compacting' },
+        { type: 'system', subtype: 'compact_boundary', compact_metadata: { trigger: 'manual', pre_tokens: 40445, post_tokens: 1351 } },
+        { type: 'system', subtype: 'status', status: null, compact_result: 'success' },
+        { type: 'system', subtype: 'init', session_id: 'sess-c' },
+        { type: 'result', subtype: 'success', session_id: 'sess-c' },
+      ]);
+
+      const r = await executor.compact({ sessionKey: 'k', workingDir: '/tmp/w', resumeSessionId: 'sess-c' });
+
+      expect(r.success).toBe(true);
+      expect(r.noop).toBe(false);
+      expect(r.preTokens).toBe(40445);
+      expect(r.postTokens).toBe(1351);
+      expect(r.sessionId).toBe('sess-c');
+      expect(r.error).toBeUndefined();
+    });
+
+    it('flags noop when context is too short to compact', async () => {
+      setupMessages([
+        { type: 'system', subtype: 'status', status: 'compacting' },
+        { type: 'system', subtype: 'status', status: null, compact_result: 'failed', compact_error: 'Not enough messages to compact.' },
+        { type: 'system', subtype: 'init', session_id: 'sess-c' },
+        { type: 'result', subtype: 'success', session_id: 'sess-c' },
+      ]);
+
+      const r = await executor.compact({ sessionKey: 'k', workingDir: '/tmp/w', resumeSessionId: 'sess-c' });
+
+      expect(r.success).toBe(false);
+      expect(r.noop).toBe(true);
+      expect(r.error).toBeUndefined();
+    });
+
+    it('returns failure with error on a real compaction error', async () => {
+      setupMessages([
+        { type: 'system', subtype: 'status', status: 'compacting' },
+        { type: 'system', subtype: 'status', status: null, compact_result: 'failed', compact_error: 'API overloaded' },
+        { type: 'result', subtype: 'success', session_id: 'sess-c' },
+      ]);
+
+      const r = await executor.compact({ sessionKey: 'k', workingDir: '/tmp/w', resumeSessionId: 'sess-c' });
+
+      expect(r.success).toBe(false);
+      expect(r.noop).toBe(false);
+      expect(r.error).toBe('API overloaded');
+    });
+
+    it('treats a missing compact signal as failure (not silent success)', async () => {
+      // 没有任何 compact_boundary / compact_result —— 说明 /compact 未被识别为命令
+      setupMessages([
+        { type: 'system', subtype: 'init', session_id: 'sess-c' },
+        { type: 'result', subtype: 'success', session_id: 'sess-c', result: '/compact' },
+      ]);
+
+      const r = await executor.compact({ sessionKey: 'k', workingDir: '/tmp/w', resumeSessionId: 'sess-c' });
+
+      expect(r.success).toBe(false);
+      expect(r.noop).toBe(false);
+      expect(r.error).toBeTruthy();
+    });
+  });
+
+  describe('classifyCompactOutcome()', () => {
+    it('success when compact_result is success', () => {
+      expect(classifyCompactOutcome({ compactResult: 'success' })).toEqual({ success: true, noop: false });
+    });
+
+    it('noop when failed with "not enough messages"', () => {
+      expect(classifyCompactOutcome({ compactResult: 'failed', compactError: 'Not enough messages to compact.' }))
+        .toEqual({ success: false, noop: true });
+    });
+
+    it('failure with error for other failed reasons', () => {
+      const r = classifyCompactOutcome({ compactResult: 'failed', compactError: 'boom' });
+      expect(r.success).toBe(false);
+      expect(r.noop).toBe(false);
+      expect(r.error).toBe('boom');
+    });
+
+    it('failure when no signal at all', () => {
+      const r = classifyCompactOutcome({});
+      expect(r.success).toBe(false);
+      expect(r.noop).toBe(false);
+      expect(r.error).toBeTruthy();
     });
   });
 });
