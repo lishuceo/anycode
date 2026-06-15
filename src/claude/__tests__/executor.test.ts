@@ -12,7 +12,7 @@ vi.mock('node:fs', () => ({
 
 vi.mock('../../config.js', () => ({
   config: {
-    claude: { defaultWorkDir: '/tmp/work', timeoutSeconds: 300, model: 'claude-opus-4-6', thinking: 'adaptive', effort: 'max', maxTurns: 500, maxBudgetUsd: 50, apiBaseUrl: '' },
+    claude: { defaultWorkDir: '/tmp/work', timeoutSeconds: 300, toolTimeoutSeconds: 900, model: 'claude-opus-4-6', thinking: 'adaptive', effort: 'max', maxTurns: 500, maxBudgetUsd: 50, apiBaseUrl: '' },
     repoCache: { dir: '/repos/cache' },
     workspace: { baseDir: '/tmp/workspaces' },
     feishu: { tools: { enabled: false, doc: true, wiki: true, drive: true, bitable: true } },
@@ -70,7 +70,7 @@ vi.mock('../../cron/init.js', () => ({
   getCronScheduler: vi.fn(() => null),
 }));
 
-import { ClaudeExecutor, buildWorkspaceSystemPrompt, classifyCompactOutcome } from '../executor.js';
+import { ClaudeExecutor, buildWorkspaceSystemPrompt, classifyCompactOutcome, shouldExtendIdleTimer } from '../executor.js';
 
 // ============================================================
 // Helpers
@@ -704,5 +704,104 @@ describe('ClaudeExecutor', () => {
       expect(r.noop).toBe(false);
       expect(r.error).toBeTruthy();
     });
+  });
+
+  // ============================================================
+  // idle 超时 + 工具执行中延展（回归：idle timeout 误杀长工具）
+  // ============================================================
+  describe('idle timeout & in-flight tool extension', () => {
+    /**
+     * Mock 一个迭代器：先吐 `pre` 里的消息，之后在下一次拉取时挂起，
+     * 直到 query 的 abortController 触发才 reject（模拟「长工具执行期间无 SDK 消息，
+     * 最终被 abort 终止」的真实 SDK 行为）。
+     */
+    function setupHangingAfter(pre: Array<Record<string, unknown>>) {
+      let idx = 0;
+      mockQueryInstance[Symbol.asyncIterator].mockReturnValue({
+        next: () => {
+          if (idx < pre.length) {
+            return Promise.resolve({ value: pre[idx++], done: false });
+          }
+          return new Promise((_resolve, reject) => {
+            const ac = mockQuery.mock.calls[0]?.[0]?.options?.abortController as AbortController | undefined;
+            if (ac?.signal?.aborted) { reject(new Error('Operation aborted')); return; }
+            ac?.signal?.addEventListener('abort', () => reject(new Error('Operation aborted')));
+          });
+        },
+      });
+    }
+
+    const INIT_MSG = { type: 'system', subtype: 'init', session_id: 'sess-1', model: 'claude', tools: [] };
+    const ASSISTANT_TOOL_USE = {
+      type: 'assistant',
+      message: { content: [{ type: 'tool_use', name: 'Bash', id: 'tool-1', input: { command: 'sleep 9999' } }] },
+    };
+
+    it('extends idle timer while a tool is in-flight, aborting only after the tool hard cap', async () => {
+      vi.useFakeTimers();
+      try {
+        // idle 窗口 1s，工具硬顶 3s
+        setupHangingAfter([INIT_MSG, ASSISTANT_TOOL_USE]);
+        const p = executor.execute(makeInput({ timeoutSeconds: 1, toolTimeoutSeconds: 3 }));
+
+        // 越过第一个 idle 窗口(1s)：工具仍在执行 → 应延展，不应 abort
+        await vi.advanceTimersByTimeAsync(1500);
+        const ac = mockQuery.mock.calls[0][0].options.abortController as AbortController;
+        expect(ac.signal.aborted).toBe(false);
+
+        // 越过工具硬顶(3s)：判定挂死并 abort
+        await vi.advanceTimersByTimeAsync(2000);
+        const result = await p;
+
+        expect(result.success).toBe(false);
+        expect(ac.signal.aborted).toBe(true);
+        expect(result.error).toMatch(/tool execution timeout/i);
+        expect(result.error).toMatch(/longer than 3s/);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('aborts at the idle window when no tool is in-flight (model idle)', async () => {
+      vi.useFakeTimers();
+      try {
+        // 只有 init，之后挂起且没有任何工具在执行 → 纯模型空闲
+        setupHangingAfter([INIT_MSG]);
+        const p = executor.execute(makeInput({ timeoutSeconds: 1, toolTimeoutSeconds: 30 }));
+
+        await vi.advanceTimersByTimeAsync(1200);
+        const result = await p;
+
+        const ac = mockQuery.mock.calls[0][0].options.abortController as AbortController;
+        expect(ac.signal.aborted).toBe(true);
+        expect(result.success).toBe(false);
+        expect(result.error).toMatch(/idle timeout/i);
+        expect(result.error).not.toMatch(/tool execution timeout/i);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+});
+
+// ============================================================
+// shouldExtendIdleTimer — 纯函数判定逻辑
+// ============================================================
+describe('shouldExtendIdleTimer', () => {
+  it('extends when a tool is in-flight and under the hard cap', () => {
+    expect(shouldExtendIdleTimer({ inFlightToolCount: 1, toolWaitElapsedMs: 1000, toolTimeoutMs: 900_000 })).toBe(true);
+  });
+
+  it('does not extend when no tool is in-flight (model idle)', () => {
+    expect(shouldExtendIdleTimer({ inFlightToolCount: 0, toolWaitElapsedMs: 1000, toolTimeoutMs: 900_000 })).toBe(false);
+  });
+
+  it('does not extend once the tool exceeds the hard cap (stuck tool)', () => {
+    expect(shouldExtendIdleTimer({ inFlightToolCount: 1, toolWaitElapsedMs: 900_000, toolTimeoutMs: 900_000 })).toBe(false);
+    expect(shouldExtendIdleTimer({ inFlightToolCount: 2, toolWaitElapsedMs: 900_001, toolTimeoutMs: 900_000 })).toBe(false);
+  });
+
+  it('extends for multiple concurrent in-flight tools under the cap', () => {
+    expect(shouldExtendIdleTimer({ inFlightToolCount: 3, toolWaitElapsedMs: 0, toolTimeoutMs: 1000 })).toBe(true);
   });
 });
