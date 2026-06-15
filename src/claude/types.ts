@@ -64,6 +64,29 @@ export interface ClaudeResult {
   conversationTrace?: ConversationTurn[];
 }
 
+/**
+ * /compact 上下文压缩结果。
+ *
+ * 由 ClaudeExecutor.compact() 返回：以裸 "/compact" 透传给 SDK 触发 local slash
+ * command，捕获 compact_boundary（pre/post tokens）与 status（compact_result）。
+ */
+export interface CompactResult {
+  /** 是否真正完成压缩（compact_result === 'success'） */
+  success: boolean;
+  /** 上下文消息过少、无需压缩（"Not enough messages to compact"，非真实错误） */
+  noop?: boolean;
+  /** 压缩前 token 数（来自 compact_boundary.pre_tokens） */
+  preTokens?: number;
+  /** 压缩后 token 数（来自 compact_boundary.post_tokens） */
+  postTokens?: number;
+  /** 压缩后用于下次 resume 的会话 ID（实测与传入的相同，仍回存以保持一致） */
+  sessionId?: string;
+  /** 失败原因（compact_error 或异常/超时信息） */
+  error?: string;
+  /** 执行耗时 (ms) */
+  durationMs: number;
+}
+
 /** executor.execute() 的可选参数 */
 export interface ExecuteOptions {
   /** 覆盖默认 maxTurns (默认 50) */

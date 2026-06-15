@@ -6,7 +6,7 @@ import { forkSession } from '../session/fork.js';
 import { taskQueue } from '../session/queue.js';
 import { claudeExecutor } from '../claude/executor.js';
 import { DEFAULT_IMAGE_PROMPT, DEFAULT_DOCUMENT_PROMPT } from '../claude/types.js';
-import type { TurnInfo, ToolCallInfo, ImageAttachment, DocumentAttachment, ConversationTurn } from '../claude/types.js';
+import type { TurnInfo, ToolCallInfo, ImageAttachment, DocumentAttachment, ConversationTurn, CompactResult } from '../claude/types.js';
 import { buildStatusCard, buildCancelledCard, buildPipelineCard, buildPipelineConfirmCard, buildCombinedProgressCard, buildAskUserQuestionCard, buildAskUserAnsweredCard } from './message-builder.js';
 import type { AskUserQuestionItem } from './message-builder.js';
 import { TOTAL_PHASES } from '../pipeline/types.js';
@@ -91,6 +91,28 @@ export function formatConversationTrace(trace?: ConversationTurn[]): string {
   }
   const joined = parts.join('\n');
   return joined.length > MAX_TOTAL ? joined.slice(-MAX_TOTAL) : joined;
+}
+
+/** 把 token 数格式化为紧凑形式：40445 → "40.4k"，1351 → "1.4k"，800 → "800" */
+export function formatTokenCount(n: number): string {
+  if (n < 1000) return String(n);
+  return `${(n / 1000).toFixed(1)}k`;
+}
+
+/** 构造 /compact 结果的飞书回复文本 */
+export function formatCompactReply(result: CompactResult): string {
+  if (result.success) {
+    const { preTokens: pre, postTokens: post } = result;
+    if (pre && post && pre > 0) {
+      const pct = Math.round((1 - post / pre) * 100);
+      return `✅ 上下文已压缩：约 ${formatTokenCount(pre)} → ${formatTokenCount(post)} tokens（↓${pct}%）`;
+    }
+    return '✅ 上下文已压缩。';
+  }
+  if (result.noop) {
+    return 'ℹ️ 当前上下文较短，无需压缩。';
+  }
+  return `❌ 压缩失败：${result.error || '未知错误'}`;
 }
 
 /**
@@ -1076,8 +1098,10 @@ async function handleSlashCommand(
 
   // /auth 已在 @mention 过滤之前处理（无需 @ 即可触发），此处不再重复
 
-  // /reset - 重置会话（清除所有 agent 的 session + thread conversation）
-  if (trimmed === '/reset') {
+  // /reset、/clear - 重置会话（清除所有 agent 的 session + thread conversation）
+  // /clear 是 Claude Code 的清空命令，这里作为 /reset 的别名（本地清掉 conversationId
+  // 即等效于清空：下次 query 不带 resume，开启全新 session）
+  if (trimmed === '/reset' || trimmed === '/clear') {
     claudeExecutor.killSessionsForChat(chatId, userId);
     // 重置所有 agent 的主 session
     for (const aid of ['dev', 'pm'] as const) {
@@ -1109,6 +1133,70 @@ async function handleSlashCommand(
     } else {
       await feishuClient.replyText(messageId, reply);
     }
+    return true;
+  }
+
+  // /compact - 压缩当前会话上下文
+  // 直接在飞书发 /compact 无效：normal task 链路会层层加前缀（发送者标签/历史/记忆/时间），
+  // 把 /compact 挤出消息开头，CLI 便不再识别为 local slash command。这里拦截后以**裸**
+  // /compact + resume 透传给 SDK，触发真实压缩。
+  if (trimmed === '/compact') {
+    const replyFn = async (msg: string) => {
+      if (threadReplyMsgId) await feishuClient.replyTextInThread(threadReplyMsgId, msg);
+      else await feishuClient.replyText(messageId, msg);
+    };
+
+    const session = sessionManager.getOrCreate(chatId, userId, agentId);
+
+    // resume 目标：话题内用 thread session，否则用主 session
+    let conversationId: string | undefined;
+    let convCwd: string | undefined;
+    let workingDir: string;
+    if (effectiveThreadId) {
+      const ts = sessionManager.getThreadSession(effectiveThreadId, agentId);
+      conversationId = ts?.conversationId;
+      convCwd = ts?.conversationCwd;
+      workingDir = ts?.workingDir ?? session.workingDir;
+    } else {
+      conversationId = session.conversationId;
+      convCwd = session.conversationCwd;
+      workingDir = session.workingDir;
+    }
+
+    if (!conversationId) {
+      await replyFn('ℹ️ 当前会话还没有可压缩的上下文（尚未开始对话或已 /reset）。');
+      return true;
+    }
+    if (session.status === 'busy') {
+      await replyFn('⚠️ 当前有任务正在执行，请等待完成或先 /stop，再 /compact。');
+      return true;
+    }
+
+    // resume 要求 cwd 与建会话时一致；conversationCwd 缺失则回退到 workingDir
+    const { existsSync } = await import('node:fs');
+    const cwd = convCwd && existsSync(convCwd) ? convCwd : workingDir;
+    const sessionKey = effectiveThreadId ? `${chatId}:${userId}:${effectiveThreadId}` : `${chatId}:${userId}`;
+    const model = agentRegistry.get(agentId)?.model;
+
+    await replyFn('🗜️ 正在压缩对话上下文，请稍候（约需 30–60 秒）…');
+
+    sessionManager.setStatus(chatId, userId, 'busy', agentId);
+    let result: CompactResult;
+    try {
+      result = await claudeExecutor.compact({ sessionKey, workingDir: cwd, resumeSessionId: conversationId, model });
+    } finally {
+      sessionManager.setStatus(chatId, userId, 'idle', agentId);
+    }
+
+    // 压缩成功后回存 session ID（实测与原 ID 相同，但保持与 normal 流程一致）
+    if (result.success && result.sessionId) {
+      if (effectiveThreadId) {
+        sessionManager.setThreadConversationId(effectiveThreadId, result.sessionId, cwd, agentId);
+      }
+      sessionManager.setConversationId(chatId, userId, result.sessionId, cwd, agentId);
+    }
+
+    await replyFn(formatCompactReply(result));
     return true;
   }
 
@@ -1401,7 +1489,8 @@ async function handleSlashCommand(
       '',
       '**── 基础命令 ──**',
       '`/status` — 查看当前会话状态（工作目录、队列）',
-      '`/reset` — 重置会话，清除对话历史',
+      '`/compact` — 压缩当前会话上下文，降低后续 token 成本',
+      '`/reset`（`/clear`）— 重置会话，清除对话历史',
       '`/stop` — 中断当前正在执行的任务',
       '`/config` — 查看当前 Agent 配置和人设 🔒',
       '`/help` — 显示此帮助',
