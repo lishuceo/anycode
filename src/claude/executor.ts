@@ -91,6 +91,9 @@ const WRITE_TOOLS = new Set([
   'Edit', 'Write', 'NotebookEdit', 'Bash', 'Skill',
 ]);
 
+/** 首字停摆重试前的退避时长(ms),给瞬时过载的网关一点恢复时间 */
+const FIRST_TOKEN_STALL_BACKOFF_MS = 1500;
+
 /** 源仓库保护拦截提示 */
 const SOURCE_REPO_DENY_MSG = '源仓库保护：目标位于 DEFAULT_WORK_DIR 下的源仓库，禁止直接修改。请使用 setup_workspace 工具创建隔离工作区后再修改。';
 
@@ -243,6 +246,8 @@ export interface ExecuteInput extends ExecuteOptions {
   inplaceEdit?: boolean;
   /** AskUserQuestion 回调：拦截 AskUserQuestion 工具调用，由上层实现交互式卡片 */
   onAskUser?: (questions: Array<{ question: string; header?: string; options: Array<{ label: string; description?: string }>; multiSelect?: boolean }>) => Promise<Record<string, string>>;
+  /** 内部：已进行的首字停摆重试次数（递归重试时累加，调用方不应设置） */
+  _firstTokenStallRetries?: number;
 }
 
 /** 扫描 defaultWorkDir 下的 git 项目名列表（best-effort） */
@@ -604,9 +609,15 @@ export class ClaudeExecutor {
     const abortController = new AbortController();
     const idleTimeoutMs = (input.timeoutSeconds ?? config.claude.timeoutSeconds) * 1000;
     let timedOut = false;
+    // 区分超时类型：idle（空闲超时，可能因首字停摆触发，可重试）vs hard（硬性总超时，不重试）
+    let timeoutKind: 'idle' | 'hard' | undefined;
     // 跟踪是否有过工具活动（canUseTool 被调用过）
     // 有工具活动说明 agent 在积极工作，API 处理大上下文思考下一步可能需要更长时间
     let hasToolActivity = false;
+    // 跟踪是否已收到首个 assistant token / 流式片段 / 工具活动。
+    // 仅在 system:init 之后、首个 token 之前停摆时（firstTokenSeen 仍为 false），
+    // 空闲超时才被判定为"首字停摆"并触发自动重试。
+    let firstTokenSeen = false;
 
     // 滑动窗口 idle 超时：每收到一条 SDK 消息就重置计时器
     // 只在某一步长时间无活动时才 abort，不限制总执行时长
@@ -619,8 +630,9 @@ export class ClaudeExecutor {
       const effectiveTimeout = hasToolActivity ? idleTimeoutMs * 2 : idleTimeoutMs;
       idleTimer = setTimeout(() => {
         timedOut = true;
+        timeoutKind = 'idle';
         abortController.abort();
-        logger.warn({ sessionKey, idleTimeoutMs: effectiveTimeout, hasToolActivity, lastResetSource, elapsedMs: Date.now() - startTime },
+        logger.warn({ sessionKey, idleTimeoutMs: effectiveTimeout, hasToolActivity, firstTokenSeen, lastResetSource, elapsedMs: Date.now() - startTime },
           'Claude query idle timeout — no SDK message received, aborting');
       }, effectiveTimeout);
     };
@@ -632,6 +644,7 @@ export class ClaudeExecutor {
       const hardTimeoutMs = input.hardTimeoutSeconds * 1000;
       hardTimer = setTimeout(() => {
         timedOut = true;
+        timeoutKind = 'hard';
         abortController.abort();
         logger.warn({ sessionKey, hardTimeoutMs, elapsedMs: Date.now() - startTime },
           'Claude query hard timeout — total execution time exceeded, aborting');
@@ -830,8 +843,10 @@ export class ClaudeExecutor {
         canUseTool: async (toolName: string, inputObj: Record<string, unknown>) => {
           // canUseTool 在每次工具执行前触发，说明 agent 仍在活跃工作
           // 1. 标记工具活动 → 后续 idle timer 使用 2 倍超时（API 处理大上下文后思考较慢）
-          // 2. 重置 idle timer → 防止长时间 MCP 工具执行导致误超时
+          // 2. 标记首个 token 已到达 → 排除首字停摆重试
+          // 3. 重置 idle timer → 防止长时间 MCP 工具执行导致误超时
           hasToolActivity = true;
+          firstTokenSeen = true;
           resetIdleTimer(`canUseTool:${toolName}`);
 
           // workspace 变更后 deny 所有后续工具调用，迫使 agent 只输出文本后自然结束
@@ -1045,6 +1060,8 @@ export class ClaudeExecutor {
             break;
 
           case 'assistant': {
+            // 收到 assistant 消息说明首个 token 已到达 — 排除首字停摆重试
+            firstTokenSeen = true;
             // 提取文本输出和工具调用
             const turnText: string[] = [];
             const turnTools: ToolCallInfo[] = [];
@@ -1162,6 +1179,8 @@ export class ClaudeExecutor {
             break messageLoop;
 
           default:
+            // stream_event（流式片段）说明 token 已开始流动 — 排除首字停摆重试
+            if (message.type === 'stream_event') firstTokenSeen = true;
             // tool_progress, stream_event 等其他消息类型 — 记录以便诊断 idle timeout 间隙
             logger.debug({ sessionKey, messageType: message.type, subtype: (message as Record<string, unknown>).subtype },
               'SDK message (non-primary)');
@@ -1198,6 +1217,22 @@ export class ClaudeExecutor {
           resumeSessionId: undefined,
           storedSystemPromptHash: undefined,
         });
+      }
+
+      // 首字停摆自动重试：收到 system:init 后,首个 assistant token 因网关/API 瞬时抖动
+      // 迟迟不到而触发空闲超时（firstTokenSeen 仍为 false）。此时无任何 token 产出，
+      // 重新发起 query 即可（保留 resume，会话状态未推进）。带退避，上限取 config。
+      const stallRetries = input._firstTokenStallRetries ?? 0;
+      const maxStallRetries = config.claude.firstTokenStallRetries;
+      if (timeoutKind === 'idle' && !firstTokenSeen && stallRetries < maxStallRetries) {
+        logger.warn(
+          { sessionKey, attempt: stallRetries + 1, maxRetries: maxStallRetries, elapsedMs: durationMs, backoffMs: FIRST_TOKEN_STALL_BACKOFF_MS },
+          'First-token stall detected (no assistant token after init) — retrying query',
+        );
+        // 关闭已 abort 的旧 query，防止子进程泄漏（abort 后 close 是幂等的）
+        try { q.close(); } catch { /* already aborted/closed */ }
+        await new Promise(resolve => setTimeout(resolve, FIRST_TOKEN_STALL_BACKOFF_MS));
+        return this.execute({ ...input, _firstTokenStallRetries: stallRetries + 1 });
       }
 
       logger.error({ sessionKey, err: errorMsg, timedOut }, 'Claude Agent SDK query error');
