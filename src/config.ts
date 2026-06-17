@@ -77,6 +77,11 @@ export const config = {
     apiBaseUrl: process.env.ANTHROPIC_BASE_URL || '',
     /** 单步空闲超时 (秒)：某步骤长时间无 SDK 消息活动时 abort。不限制总执行时长 */
     timeoutSeconds: parseInt(process.env.CLAUDE_TIMEOUT || '300', 10),
+    /**
+     * 首字停摆自动重试次数：收到 system:init 后,首个 assistant token 因网关/API 瞬时抖动
+     * 迟迟不到而触发空闲超时时,自动重新发起 query 的最大次数(默认 2)。设为 0 关闭。
+     */
+    firstTokenStallRetries: parseInt(process.env.CLAUDE_FIRST_TOKEN_STALL_RETRIES || '2', 10),
     /** 模型名称，默认 claude-opus-4-8 (Opus 4.8) */
     model: process.env.CLAUDE_MODEL || 'claude-opus-4-8',
     /** thinking 模式: 'adaptive' (自适应思考) | 'disabled' */

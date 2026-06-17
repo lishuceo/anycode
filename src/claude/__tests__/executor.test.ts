@@ -12,7 +12,7 @@ vi.mock('node:fs', () => ({
 
 vi.mock('../../config.js', () => ({
   config: {
-    claude: { defaultWorkDir: '/tmp/work', timeoutSeconds: 300, model: 'claude-opus-4-6', thinking: 'adaptive', effort: 'max', maxTurns: 500, maxBudgetUsd: 50, apiBaseUrl: '' },
+    claude: { defaultWorkDir: '/tmp/work', timeoutSeconds: 300, model: 'claude-opus-4-6', thinking: 'adaptive', effort: 'max', maxTurns: 500, maxBudgetUsd: 50, apiBaseUrl: '', firstTokenStallRetries: 2 },
     repoCache: { dir: '/repos/cache' },
     workspace: { baseDir: '/tmp/workspaces' },
     feishu: { tools: { enabled: false, doc: true, wiki: true, drive: true, bitable: true } },
@@ -580,6 +580,140 @@ describe('ClaudeExecutor', () => {
       await executor.execute(makeInput());
       const opts = mockQuery.mock.calls[0][0].options;
       expect(opts.env).toBeUndefined();
+    });
+  });
+
+  describe('first-token stall auto-retry', () => {
+    // 回归：收到 system:init 后,首个 assistant token 因网关/API 瞬时抖动迟迟不到,
+    // 触发空闲超时。此前直接判失败让用户白等 5 分钟；现应自动重试。
+
+    /**
+     * Mock query 工厂：前 `stallCount` 次调用在 init 之后停摆（挂起直到 abort 触发后 reject），
+     * 之后的调用返回 init + 成功 result。abortController 从每次 query 的 options 读取。
+     */
+    function setupFirstTokenStall(stallCount: number, successResult = 'recovered') {
+      let callIndex = 0;
+      mockQuery.mockImplementation((arg: { options?: { abortController?: AbortController } }) => {
+        callIndex++;
+        const thisCall = callIndex;
+        const ac = arg?.options?.abortController;
+        return {
+          close: vi.fn(),
+          [Symbol.asyncIterator]() {
+            let step = 0;
+            return {
+              next() {
+                if (thisCall <= stallCount) {
+                  if (step === 0) {
+                    step++;
+                    return Promise.resolve({ value: { type: 'system', subtype: 'init', session_id: `s${thisCall}`, model: 'claude', tools: [] }, done: false });
+                  }
+                  // 停摆：挂起，直到 abort 触发后 reject（模拟 SDK abort 抛出）
+                  return new Promise((_, reject) => {
+                    if (ac?.signal?.aborted) { reject(new Error('Operation aborted')); return; }
+                    ac?.signal?.addEventListener('abort', () => reject(new Error('Operation aborted')), { once: true });
+                  });
+                }
+                if (step === 0) { step++; return Promise.resolve({ value: { type: 'system', subtype: 'init', session_id: `s${thisCall}`, model: 'claude', tools: [] }, done: false }); }
+                if (step === 1) { step++; return Promise.resolve({ value: { type: 'result', subtype: 'success', session_id: `s${thisCall}`, result: successResult, duration_ms: 10 }, done: false }); }
+                return Promise.resolve({ value: undefined, done: true });
+              },
+            };
+          },
+        };
+      });
+    }
+
+    it('retries the query when it stalls after init and succeeds on retry', async () => {
+      vi.useFakeTimers();
+      try {
+        setupFirstTokenStall(1); // stall once, then succeed
+        const promise = executor.execute(makeInput({ timeoutSeconds: 1 }));
+        // 驱动：首次 idle 超时(1s) → abort → 退避 → 重试 → 成功
+        await vi.runAllTimersAsync();
+        const result = await promise;
+
+        expect(result.success).toBe(true);
+        expect(result.output).toBe('recovered');
+        // 初次 + 1 次重试 = 2 次 query
+        expect(mockQuery).toHaveBeenCalledTimes(2);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('gives up after firstTokenStallRetries and returns the idle timeout error', async () => {
+      vi.useFakeTimers();
+      try {
+        setupFirstTokenStall(99); // 始终停摆
+        const promise = executor.execute(makeInput({ timeoutSeconds: 1 }));
+        await vi.runAllTimersAsync();
+        const result = await promise;
+
+        expect(result.success).toBe(false);
+        expect(result.error).toMatch(/idle timeout/i);
+        // 初次 + 2 次重试（config.firstTokenStallRetries=2）= 3 次 query
+        expect(mockQuery).toHaveBeenCalledTimes(3);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('does NOT retry when idle timeout fires after the first token has arrived', async () => {
+      vi.useFakeTimers();
+      try {
+        mockQuery.mockImplementation((arg: { options?: { abortController?: AbortController } }) => {
+          const ac = arg?.options?.abortController;
+          return {
+            close: vi.fn(),
+            [Symbol.asyncIterator]() {
+              let step = 0;
+              return {
+                next() {
+                  if (step === 0) { step++; return Promise.resolve({ value: { type: 'system', subtype: 'init', session_id: 's1', model: 'claude', tools: [] }, done: false }); }
+                  // 首个 assistant token 已到达 → firstTokenSeen=true
+                  if (step === 1) { step++; return Promise.resolve({ value: { type: 'assistant', message: { content: [{ type: 'text', text: 'working...' }] } }, done: false }); }
+                  // 之后停摆（mid-execution idle，非首字停摆）
+                  return new Promise((_, reject) => {
+                    if (ac?.signal?.aborted) { reject(new Error('Operation aborted')); return; }
+                    ac?.signal?.addEventListener('abort', () => reject(new Error('Operation aborted')), { once: true });
+                  });
+                },
+              };
+            },
+          };
+        });
+
+        const promise = executor.execute(makeInput({ timeoutSeconds: 1 }));
+        await vi.runAllTimersAsync();
+        const result = await promise;
+
+        expect(result.success).toBe(false);
+        expect(result.error).toMatch(/idle timeout/i);
+        // 首个 token 已到达，属普通空闲超时，不重试
+        expect(mockQuery).toHaveBeenCalledTimes(1);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('does not retry when stall retries are disabled (firstTokenStallRetries=0)', async () => {
+      const { config } = await import('../../config.js');
+      const prev = config.claude.firstTokenStallRetries;
+      config.claude.firstTokenStallRetries = 0;
+      vi.useFakeTimers();
+      try {
+        setupFirstTokenStall(99);
+        const promise = executor.execute(makeInput({ timeoutSeconds: 1 }));
+        await vi.runAllTimersAsync();
+        const result = await promise;
+
+        expect(result.success).toBe(false);
+        expect(mockQuery).toHaveBeenCalledTimes(1); // 关闭重试 → 仅一次
+      } finally {
+        vi.useRealTimers();
+        config.claude.firstTokenStallRetries = prev;
+      }
     });
   });
 
