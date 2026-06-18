@@ -77,6 +77,12 @@ export const config = {
     apiBaseUrl: process.env.ANTHROPIC_BASE_URL || '',
     /** 单步空闲超时 (秒)：某步骤长时间无 SDK 消息活动时 abort。不限制总执行时长 */
     timeoutSeconds: parseInt(process.env.CLAUDE_TIMEOUT || '300', 10),
+    /**
+     * 工具执行硬顶 (秒)：单个工具(或一组并发工具)持续执行超过此时长才视为挂死并 abort。
+     * 默认 900，明显高于 SDK 单条 Bash 上限(600s)，确保正常长工具(编译/批处理/克隆大仓)能跑完，
+     * 同时兜底真正挂死的工具(如等待 stdin 的命令)。区别于 timeoutSeconds：工具执行期间不算"空闲"。
+     */
+    toolTimeoutSeconds: parseInt(process.env.CLAUDE_TOOL_TIMEOUT || '900', 10),
     /** 模型名称，默认 claude-opus-4-8 (Opus 4.8) */
     model: process.env.CLAUDE_MODEL || 'claude-opus-4-8',
     /** thinking 模式: 'adaptive' (自适应思考) | 'disabled' */

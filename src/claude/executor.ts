@@ -205,6 +205,8 @@ export interface ExecuteInput extends ExecuteOptions {
   systemPromptOverride?: string;
   /** 覆盖单步空闲超时秒数 (默认使用 CLAUDE_TIMEOUT 配置)。每收到一条 SDK 消息就重置，不限制总时长 */
   timeoutSeconds?: number;
+  /** 覆盖工具执行硬顶秒数 (默认使用 CLAUDE_TOOL_TIMEOUT 配置)。工具持续执行超过此时长才视为挂死 */
+  toolTimeoutSeconds?: number;
   /** 硬性总超时秒数（从开始计时，不因活动重置）。适用于 routing 等必须快速完成的短任务 */
   hardTimeoutSeconds?: number;
   /** 图片附件（多模态输入） */
@@ -608,6 +610,25 @@ export function classifyCompactOutcome(signals: {
   };
 }
 
+/**
+ * 判定 idle 计时器触发时应「延展」还是「abort」。
+ *
+ * idle 计时器的本意是捕捉「模型/API 停止产出、且没有工具在跑」的真·卡死。
+ * 但单条工具调用(如最长可达 600s 的前台 Bash、克隆大仓、编译)执行期间不会有任何
+ * SDK 消息到达，会被误判为空闲而 abort（线上表现："idle timeout ... (total elapsed 701s)"）。
+ *
+ * 因此：只要仍有工具在执行(inFlightToolCount>0)且未超过工具硬顶(toolTimeoutMs)，
+ * 就延展计时而非 abort —— 此时 agent 并未卡死，只是工具耗时长。
+ * 超过硬顶仍未返回，才判定为工具挂死并 abort。
+ */
+export function shouldExtendIdleTimer(opts: {
+  inFlightToolCount: number;
+  toolWaitElapsedMs: number;
+  toolTimeoutMs: number;
+}): boolean {
+  return opts.inFlightToolCount > 0 && opts.toolWaitElapsedMs < opts.toolTimeoutMs;
+}
+
 export class ClaudeExecutor {
   /** 运行中的 query 实例 (用于 abort) */
   private runningQueries = new Map<string, Query>();
@@ -630,25 +651,51 @@ export class ClaudeExecutor {
     const startTime = Date.now();
     const abortController = new AbortController();
     const idleTimeoutMs = (input.timeoutSeconds ?? config.claude.timeoutSeconds) * 1000;
+    // 工具执行硬顶：单个工具(或一组并发工具)持续执行超过此时长才视为挂死。
+    // 默认高于 SDK 单条 Bash 上限(600s)，确保正常长工具能跑完。见 shouldExtendIdleTimer。
+    const toolTimeoutMs = (input.toolTimeoutSeconds ?? config.claude.toolTimeoutSeconds) * 1000;
     let timedOut = false;
+    // 区分两种超时：true=工具执行超硬顶(挂死)，false=模型空闲。用于错误信息与日志。
+    let toolStuck = false;
     // 跟踪是否有过工具活动（canUseTool 被调用过）
     // 有工具活动说明 agent 在积极工作，API 处理大上下文思考下一步可能需要更长时间
     let hasToolActivity = false;
+    // 当前 in-flight 工具周期的开始时间（null 表示当前没有工具在执行）。
+    // 在消息循环里随 pendingToolCalls 的增减维护，用于计算工具已执行时长。
+    let toolWaitStartedAt: number | null = null;
 
     // 滑动窗口 idle 超时：每收到一条 SDK 消息就重置计时器
     // 只在某一步长时间无活动时才 abort，不限制总执行时长
     // 当 agent 有过工具活动时，使用 2 倍超时（API 处理大上下文后思考下一步可能较慢）
     let idleTimer: ReturnType<typeof setTimeout> = undefined!;
     let lastResetSource = 'init';
-    const resetIdleTimer = (source?: string) => {
+    // pendingToolCalls 在下方声明（消息循环作用域），这里用闭包延迟读取其 size 作为 in-flight 信号
+    const inFlightToolCount = () => pendingToolCalls.size;
+    const baseIdleTimeout = () => (hasToolActivity ? idleTimeoutMs * 2 : idleTimeoutMs);
+    const resetIdleTimer = (source?: string, overrideMs?: number) => {
       clearTimeout(idleTimer);
       if (source) lastResetSource = source;
-      const effectiveTimeout = hasToolActivity ? idleTimeoutMs * 2 : idleTimeoutMs;
+      const effectiveTimeout = overrideMs ?? baseIdleTimeout();
       idleTimer = setTimeout(() => {
+        // 计时器触发：若仍有工具在执行且未超工具硬顶，说明 agent 没卡死(只是工具耗时长)，
+        // 延展计时而非 abort；超过硬顶仍未返回才判定挂死。
+        const inFlight = inFlightToolCount();
+        const toolElapsed = toolWaitStartedAt !== null ? Date.now() - toolWaitStartedAt : 0;
+        if (shouldExtendIdleTimer({ inFlightToolCount: inFlight, toolWaitElapsedMs: toolElapsed, toolTimeoutMs })) {
+          // 取「常规窗口」与「距硬顶剩余时间」的较小值，使硬顶能较精确地生效
+          const nextMs = Math.max(1000, Math.min(baseIdleTimeout(), toolTimeoutMs - toolElapsed));
+          logger.debug({ sessionKey, inFlight, toolElapsedMs: toolElapsed, toolTimeoutMs, nextMs },
+            'Idle timer fired but tools in-flight — extending instead of aborting');
+          resetIdleTimer('tool-in-flight', nextMs);
+          return;
+        }
         timedOut = true;
+        toolStuck = inFlight > 0; // 工具仍在执行但已超硬顶 → 挂死
         abortController.abort();
-        logger.warn({ sessionKey, idleTimeoutMs: effectiveTimeout, hasToolActivity, lastResetSource, elapsedMs: Date.now() - startTime },
-          'Claude query idle timeout — no SDK message received, aborting');
+        logger.warn({ sessionKey, effectiveTimeout, hasToolActivity, lastResetSource, toolStuck, inFlight, elapsedMs: Date.now() - startTime },
+          toolStuck
+            ? 'Claude query tool execution timeout — tool exceeded hard cap, aborting'
+            : 'Claude query idle timeout — no SDK message received, aborting');
       }, effectiveTimeout);
     };
     resetIdleTimer();
@@ -1104,6 +1151,12 @@ export class ClaudeExecutor {
               }
             }
 
+            // 工具开始执行 → 记录 in-flight 周期起点（仅在从「无工具」转为「有工具」时设置）。
+            // idle 计时器据此判断工具是否仍在跑，从而延展而非误杀（见 shouldExtendIdleTimer）。
+            if (pendingToolCalls.size > 0 && toolWaitStartedAt === null) {
+              toolWaitStartedAt = Date.now();
+            }
+
             // 累积对话轨迹（用于 restart 上下文传递）
             if (conversationTraceBytes < MAX_TRACE_BYTES && (turnText.length > 0 || traceToolCalls.length > 0)) {
               const turnTextStr = turnText.join('');
@@ -1181,6 +1234,10 @@ export class ClaudeExecutor {
                 }
               }
             }
+            // 全部 in-flight 工具均已返回 → 结束当前 in-flight 周期，恢复常规 idle 语义
+            if (pendingToolCalls.size === 0) {
+              toolWaitStartedAt = null;
+            }
             break;
           }
 
@@ -1208,7 +1265,9 @@ export class ClaudeExecutor {
       const errorMsg = timedOut
         ? (input.hardTimeoutSeconds && durationMs >= input.hardTimeoutSeconds * 1000
           ? `Query hard timeout after ${input.hardTimeoutSeconds}s total execution time`
-          : `Query idle timeout after ${(hasToolActivity ? idleTimeoutMs * 2 : idleTimeoutMs) / 1000}s with no activity (total elapsed: ${Math.round(durationMs / 1000)}s)`)
+          : toolStuck
+            ? `Query tool execution timeout — a tool ran longer than ${toolTimeoutMs / 1000}s without returning (total elapsed: ${Math.round(durationMs / 1000)}s)`
+            : `Query idle timeout after ${baseIdleTimeout() / 1000}s with no activity (total elapsed: ${Math.round(durationMs / 1000)}s)`)
         : (err instanceof Error ? err.message : String(err));
 
       // 30MB message size 超限 + resume 模式 → 累积的会话历史太大

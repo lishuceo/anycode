@@ -43,6 +43,12 @@ describe('config', () => {
       const { config } = await loadConfig();
       expect(config.claude.timeoutSeconds).toBe(600);
     });
+
+    it('should parse CLAUDE_TOOL_TIMEOUT as integer', async () => {
+      vi.stubEnv('CLAUDE_TOOL_TIMEOUT', '1200');
+      const { config } = await loadConfig();
+      expect(config.claude.toolTimeoutSeconds).toBe(1200);
+    });
   });
 
   describe('defaults', () => {
