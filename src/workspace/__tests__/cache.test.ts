@@ -1,8 +1,13 @@
 // @ts-nocheck — test file, vitest uses esbuild transform
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
+// execFile 被 promisify 包裹，mock 必须调用末位回调，否则 await 永远挂起。
+// 默认实现：成功（cb(null, ...)）；失败用例在测试内 mockImplementation 覆盖。
 vi.mock('node:child_process', () => ({
-  execFileSync: vi.fn(),
+  execFile: vi.fn((...args: unknown[]) => {
+    const cb = args[args.length - 1];
+    if (typeof cb === 'function') (cb as (e: unknown, r: unknown) => void)(null, { stdout: '', stderr: '' });
+  }),
 }));
 
 vi.mock('node:fs', () => ({
@@ -41,11 +46,27 @@ vi.mock('../../utils/logger.js', () => ({
   },
 }));
 
-import { execFileSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import { existsSync, renameSync, rmSync, readdirSync, statSync } from 'node:fs';
 import { repoUrlToCachePath, sanitizeRepoUrl, ensureBareCache, cleanupTmpDirs, cleanupExpiredCaches } from '../cache.js';
 
-const mockExecFileSync = vi.mocked(execFileSync);
+const mockExecFile = vi.mocked(execFile);
+/** 让 mock 的 execFile 以回调失败（promisify 后即 reject） */
+function makeExecFileFail(message: string) {
+  mockExecFile.mockImplementation((...args: unknown[]) => {
+    const cb = args[args.length - 1];
+    if (typeof cb === 'function') (cb as (e: unknown) => void)(new Error(message));
+    return undefined as never;
+  });
+}
+/** 恢复 mock 的 execFile 默认成功行为 */
+function makeExecFileSucceed() {
+  mockExecFile.mockImplementation((...args: unknown[]) => {
+    const cb = args[args.length - 1];
+    if (typeof cb === 'function') (cb as (e: unknown, r: unknown) => void)(null, { stdout: '', stderr: '' });
+    return undefined as never;
+  });
+}
 const mockExistsSync = vi.mocked(existsSync);
 const mockRenameSync = vi.mocked(renameSync);
 const mockRmSync = vi.mocked(rmSync);
@@ -55,6 +76,9 @@ const mockStatSync = vi.mocked(statSync);
 beforeEach(() => {
   vi.clearAllMocks();
   mockExistsSync.mockReturnValue(false);
+  // clearAllMocks 只清调用历史、不恢复实现：显式重置 execFile 为默认成功，
+  // 避免上一个用例的 makeExecFileFail 泄漏到下一个用例。
+  makeExecFileSucceed();
 });
 
 // ============================================================
@@ -152,20 +176,20 @@ describe('sanitizeRepoUrl', () => {
 // ============================================================
 
 describe('ensureBareCache', () => {
-  it('should create bare clone when cache does not exist', () => {
+  it('should create bare clone when cache does not exist', async () => {
     mockExistsSync.mockImplementation((p) => {
       // parent dir exists, cache path does not
       if (String(p).endsWith('foo')) return true;
       return false;
     });
 
-    const result = ensureBareCache('https://github.com/foo/bar.git');
+    const result = await ensureBareCache('https://github.com/foo/bar.git');
 
     expect(result.cachePath).toContain('/repos/cache/github.com/foo/bar.git');
 
     // Should call git clone --bare (后续 fetch 的新鲜度由显式 refspec 保证)
-    expect(mockExecFileSync).toHaveBeenCalledTimes(1);
-    const args = mockExecFileSync.mock.calls[0][1];
+    expect(mockExecFile).toHaveBeenCalledTimes(1);
+    const args = mockExecFile.mock.calls[0][1];
     expect(args).toContain('clone');
     expect(args).toContain('--bare');
     // 不用 --mirror：避免把 GitHub 通告的 refs/pull/* 全部拉进缓存
@@ -179,51 +203,51 @@ describe('ensureBareCache', () => {
     expect(mockRenameSync).toHaveBeenCalledTimes(1);
   });
 
-  it('should fetch with explicit heads refspec when cache exists and is stale', () => {
+  it('should fetch with explicit heads refspec when cache exists and is stale', async () => {
     mockExistsSync.mockReturnValue(true);
 
-    ensureBareCache('https://github.com/foo/bar.git');
+    await ensureBareCache('https://github.com/foo/bar.git');
 
-    expect(mockExecFileSync).toHaveBeenCalledTimes(1);
-    const args = mockExecFileSync.mock.calls[0][1];
+    expect(mockExecFile).toHaveBeenCalledTimes(1);
+    const args = mockExecFile.mock.calls[0][1];
     expect(args).toContain('fetch');
     expect(args).toContain('--prune');
     expect(args).toContain('origin');
     expect(args).toContain('+refs/heads/*:refs/heads/*');
   });
 
-  it('should NOT use bare `fetch --all` (regression: frozen heads on refspec-less --bare caches)', () => {
+  it('should NOT use bare `fetch --all` (regression: frozen heads on refspec-less --bare caches)', async () => {
     // 根因回归守卫：早期 git clone --bare 创建的缓存无 remote.origin.fetch refspec，
     // fetch --all 只刷新 FETCH_HEAD 而不移动 refs/heads/*，缓存分支永久冻结。
     // 必须用显式 refspec，且不得退回 --all。
     mockExistsSync.mockReturnValue(true);
 
-    ensureBareCache('https://github.com/foo/frozen-heads-regression.git');
+    await ensureBareCache('https://github.com/foo/frozen-heads-regression.git');
 
-    const args = mockExecFileSync.mock.calls[0][1] as string[];
+    const args = mockExecFile.mock.calls[0][1] as string[];
     expect(args).toContain('+refs/heads/*:refs/heads/*');
     expect(args).not.toContain('--all');
   });
 
-  it('should skip fetch when recently fetched', () => {
+  it('should skip fetch when recently fetched', async () => {
     // Cache exists for both calls
     mockExistsSync.mockReturnValue(true);
 
     // First call: fetches
-    ensureBareCache('https://github.com/foo/qux.git');
-    const fetchCalls = mockExecFileSync.mock.calls.filter(
+    await ensureBareCache('https://github.com/foo/qux.git');
+    const fetchCalls = mockExecFile.mock.calls.filter(
       c => (c[1] as string[]).includes('fetch'),
     );
     expect(fetchCalls).toHaveLength(1);
 
-    mockExecFileSync.mockClear();
+    mockExecFile.mockClear();
 
     // Second call with same URL: should skip fetch (within interval)
-    ensureBareCache('https://github.com/foo/qux.git');
-    expect(mockExecFileSync).not.toHaveBeenCalled();
+    await ensureBareCache('https://github.com/foo/qux.git');
+    expect(mockExecFile).not.toHaveBeenCalled();
   });
 
-  it('should cleanup tmp dir on clone failure', () => {
+  it('should cleanup tmp dir on clone failure', async () => {
     mockExistsSync.mockImplementation((p) => {
       if (String(p).endsWith('foo')) return true;
       // tmp dir exists for cleanup
@@ -231,15 +255,80 @@ describe('ensureBareCache', () => {
       return false;
     });
 
-    mockExecFileSync.mockImplementation(() => {
-      throw new Error('clone failed');
-    });
+    makeExecFileFail('clone failed');
 
-    expect(() => ensureBareCache('https://github.com/foo/bar.git'))
-      .toThrow('bare clone 失败');
+    await expect(ensureBareCache('https://github.com/foo/bar.git'))
+      .rejects.toThrow('bare clone 失败');
 
     // Should attempt to clean up tmp dir
     expect(mockRmSync).toHaveBeenCalled();
+  });
+
+  // ============================================================
+  // 回归守卫：网络 git 不得阻塞事件循环
+  // 根因：早期 cloneBareAtomic 用 execFileSync，clone 卡到 timeout 期间
+  // 整个单进程 bridge 冻结，所有会话毫无响应（飞书事件无法 ACK → 重投 → 被当陈旧丢弃）。
+  // ============================================================
+  it('should NOT block the event loop while a bare clone is in flight', async () => {
+    mockExistsSync.mockImplementation((p) => {
+      if (String(p).endsWith('foo')) return true; // parent dir exists
+      return false;                                // cache path does not
+    });
+
+    // 模拟一个"慢" clone：回调延后到下一个宏任务才触发（代表网络 IO 未完成）。
+    let release: () => void = () => {};
+    mockExecFile.mockImplementation((...args: unknown[]) => {
+      const cb = args[args.length - 1] as (e: unknown, r: unknown) => void;
+      release = () => cb(null, { stdout: '', stderr: '' });
+      return undefined as never;
+    });
+
+    const clonePromise = ensureBareCache('https://github.com/foo/slow.git');
+
+    // clone 尚未返回时，事件循环必须仍然活着：一个并发的微/宏任务能照常推进。
+    let concurrentRan = false;
+    await new Promise<void>((r) => setTimeout(() => { concurrentRan = true; r(); }, 0));
+    expect(concurrentRan).toBe(true);
+
+    // 放行 clone，整体顺利完成（证明 await 让出了事件循环而非同步阻塞）。
+    release();
+    await expect(clonePromise).resolves.toMatchObject({
+      cachePath: expect.stringContaining('/repos/cache/github.com/foo/slow.git'),
+    });
+  });
+
+  // 回归守卫：异步化引入的并发 cold-clone 竞态（PR #267 review 反馈）。
+  // 两个不同 chat 并发为同一未缓存仓库触发 ensureBareCache，必须共享同一次 clone，
+  // 否则落败方的 renameSync 会撞到已存在目录报 ENOTEMPTY。
+  it('should de-dupe concurrent cold clones for the same uncached repo', async () => {
+    mockExistsSync.mockImplementation((p) => {
+      if (String(p).endsWith('foo')) return true; // parent dir exists
+      return false;                                // cache path does not
+    });
+
+    // clone 挂起到手动放行，制造稳定的 in-flight 窗口。
+    let release: () => void = () => {};
+    let cloneCalls = 0;
+    mockExecFile.mockImplementation((...args: unknown[]) => {
+      cloneCalls++;
+      const cb = args[args.length - 1] as (e: unknown, r: unknown) => void;
+      release = () => cb(null, { stdout: '', stderr: '' });
+      return undefined as never;
+    });
+
+    // 两个并发调用（同一未缓存仓库），两者都已穿过 existsSync(false) 检查。
+    const p1 = ensureBareCache('https://github.com/foo/concurrent.git');
+    const p2 = ensureBareCache('https://github.com/foo/concurrent.git');
+
+    // 只发起一次 clone：第二个调用复用 in-flight Promise，没有第二次 clone。
+    expect(cloneCalls).toBe(1);
+
+    release();
+    const [a, b] = await Promise.all([p1, p2]);
+
+    expect(a.cachePath).toBe(b.cachePath);
+    // 只 rename 一次 → 不会出现 ENOTEMPTY 竞态
+    expect(mockRenameSync).toHaveBeenCalledTimes(1);
   });
 });
 

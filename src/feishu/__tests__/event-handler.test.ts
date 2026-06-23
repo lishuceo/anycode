@@ -734,21 +734,21 @@ describe('ensureIsolatedWorkspace', () => {
     mockExistsSync.mockReturnValue(true);
   });
 
-  it('should return as-is when path is already under workspace baseDir', () => {
-    const result = ensureIsolatedWorkspace('/tmp/workspaces/repo-abc123');
+  it('should return as-is when path is already under workspace baseDir', async () => {
+    const result = await ensureIsolatedWorkspace('/tmp/workspaces/repo-abc123');
     expect(result).toEqual({ workingDir: '/tmp/workspaces/repo-abc123' });
     expect(setupWorkspaceMock).not.toHaveBeenCalled();
   });
 
-  it('should clone to workspace when path is a git repo outside workspace baseDir', () => {
+  it('should clone to workspace when path is a git repo outside workspace baseDir', async () => {
     mockExistsSync.mockReturnValue(true); // .git exists
-    (setupWorkspaceMock as ReturnType<typeof vi.fn>).mockReturnValue({
+    (setupWorkspaceMock as ReturnType<typeof vi.fn>).mockResolvedValue({
       workspacePath: '/tmp/workspaces/my-repo-writable-abc123',
       branch: 'feat/claude-session-abc123',
       repoName: 'my-repo',
     });
 
-    const result = ensureIsolatedWorkspace('/tmp/work/my-repo', 'writable');
+    const result = await ensureIsolatedWorkspace('/tmp/work/my-repo', 'writable');
 
     expect(result).toEqual({ workingDir: '/tmp/workspaces/my-repo-writable-abc123' });
     expect(setupWorkspaceMock).toHaveBeenCalledWith({
@@ -757,15 +757,15 @@ describe('ensureIsolatedWorkspace', () => {
     });
   });
 
-  it('should pass readonly mode to setupWorkspace', () => {
+  it('should pass readonly mode to setupWorkspace', async () => {
     mockExistsSync.mockReturnValue(true);
-    (setupWorkspaceMock as ReturnType<typeof vi.fn>).mockReturnValue({
+    (setupWorkspaceMock as ReturnType<typeof vi.fn>).mockResolvedValue({
       workspacePath: '/tmp/workspaces/my-repo-readonly-abc123',
       branch: 'main',
       repoName: 'my-repo',
     });
 
-    const result = ensureIsolatedWorkspace('/tmp/work/my-repo', 'readonly');
+    const result = await ensureIsolatedWorkspace('/tmp/work/my-repo', 'readonly');
 
     expect(result).toEqual({ workingDir: '/tmp/workspaces/my-repo-readonly-abc123' });
     expect(setupWorkspaceMock).toHaveBeenCalledWith({
@@ -774,32 +774,32 @@ describe('ensureIsolatedWorkspace', () => {
     });
   });
 
-  it('should return as-is when path is not a git repo', () => {
+  it('should return as-is when path is not a git repo', async () => {
     mockExistsSync.mockReturnValue(false); // no .git
 
-    const result = ensureIsolatedWorkspace('/tmp/work');
+    const result = await ensureIsolatedWorkspace('/tmp/work');
 
     expect(result).toEqual({ workingDir: '/tmp/work' });
     expect(setupWorkspaceMock).not.toHaveBeenCalled();
   });
 
-  it('should throw in writable mode when setupWorkspace fails', () => {
+  it('should throw in writable mode when setupWorkspace fails', async () => {
     mockExistsSync.mockReturnValue(true); // .git exists
-    (setupWorkspaceMock as ReturnType<typeof vi.fn>).mockImplementation(() => {
-      throw new Error('clone failed');
-    });
+    (setupWorkspaceMock as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new Error('clone failed'),
+    );
 
-    expect(() => ensureIsolatedWorkspace('/tmp/work/my-repo', 'writable'))
-      .toThrow('无法创建隔离工作区');
+    await expect(ensureIsolatedWorkspace('/tmp/work/my-repo', 'writable'))
+      .rejects.toThrow('无法创建隔离工作区');
   });
 
-  it('should fallback to original path in readonly mode when setupWorkspace fails', () => {
+  it('should fallback to original path in readonly mode when setupWorkspace fails', async () => {
     mockExistsSync.mockReturnValue(true); // .git exists
-    (setupWorkspaceMock as ReturnType<typeof vi.fn>).mockImplementation(() => {
-      throw new Error('clone failed');
-    });
+    (setupWorkspaceMock as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new Error('clone failed'),
+    );
 
-    const result = ensureIsolatedWorkspace('/tmp/work/my-repo', 'readonly');
+    const result = await ensureIsolatedWorkspace('/tmp/work/my-repo', 'readonly');
 
     expect(result).toEqual({ workingDir: '/tmp/work/my-repo' });
   });

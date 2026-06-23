@@ -3,6 +3,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('node:child_process', () => ({
   execFileSync: vi.fn(),
+  // cache.ts / manager.ts 在模块加载时执行 promisify(execFile)，必须提供 execFile
+  execFile: vi.fn(),
 }));
 
 vi.mock('../../config.js', () => ({
