@@ -163,11 +163,14 @@ describe('ensureBareCache', () => {
 
     expect(result.cachePath).toContain('/repos/cache/github.com/foo/bar.git');
 
-    // Should call git clone --bare
+    // Should call git clone --bare (后续 fetch 的新鲜度由显式 refspec 保证)
     expect(mockExecFileSync).toHaveBeenCalledTimes(1);
     const args = mockExecFileSync.mock.calls[0][1];
     expect(args).toContain('clone');
     expect(args).toContain('--bare');
+    // 不用 --mirror：避免把 GitHub 通告的 refs/pull/* 全部拉进缓存
+    // （fetch 只更新 heads/tags，永不 prune 这些 pull ref，徒增体积）
+    expect(args).not.toContain('--mirror');
     expect(args).toContain('--config');
     expect(args).toContain('core.hooksPath=/dev/null');
     expect(args).toContain('--no-recurse-submodules');
@@ -176,16 +179,30 @@ describe('ensureBareCache', () => {
     expect(mockRenameSync).toHaveBeenCalledTimes(1);
   });
 
-  it('should fetch when cache exists and is stale', () => {
+  it('should fetch with explicit heads refspec when cache exists and is stale', () => {
     mockExistsSync.mockReturnValue(true);
 
     ensureBareCache('https://github.com/foo/bar.git');
 
-    // Should call git fetch --all
     expect(mockExecFileSync).toHaveBeenCalledTimes(1);
     const args = mockExecFileSync.mock.calls[0][1];
     expect(args).toContain('fetch');
-    expect(args).toContain('--all');
+    expect(args).toContain('--prune');
+    expect(args).toContain('origin');
+    expect(args).toContain('+refs/heads/*:refs/heads/*');
+  });
+
+  it('should NOT use bare `fetch --all` (regression: frozen heads on refspec-less --bare caches)', () => {
+    // 根因回归守卫：早期 git clone --bare 创建的缓存无 remote.origin.fetch refspec，
+    // fetch --all 只刷新 FETCH_HEAD 而不移动 refs/heads/*，缓存分支永久冻结。
+    // 必须用显式 refspec，且不得退回 --all。
+    mockExistsSync.mockReturnValue(true);
+
+    ensureBareCache('https://github.com/foo/frozen-heads-regression.git');
+
+    const args = mockExecFileSync.mock.calls[0][1] as string[];
+    expect(args).toContain('+refs/heads/*:refs/heads/*');
+    expect(args).not.toContain('--all');
   });
 
   it('should skip fetch when recently fetched', () => {
