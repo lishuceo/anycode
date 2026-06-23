@@ -145,12 +145,14 @@ function cloneBareAtomic(repoUrl: string, cachePath: string): void {
   logger.info({ repoUrl: sanitizeRepoUrl(repoUrl), cachePath }, 'Creating bare clone cache');
 
   try {
-    // 用 --mirror 而非 --bare：--mirror 隐含 --bare，并写入
-    // remote.origin.fetch = +refs/*:refs/* refspec，使后续 git fetch 能真正
-    // 更新 refs/heads/*。普通 --bare 不创建 fetch refspec，fetch 只会下载对象、
-    // 刷新 FETCH_HEAD 而永不前进分支，导致缓存分支冻结在创建那一刻。
+    // 保持 --bare（不用 --mirror）：新建缓存时 refs/heads/* 已是远程最新，
+    // 之后的陈旧更新统一由 fetchIfStale 的显式 refspec 负责（见下），
+    // 不依赖 --mirror 持久化的 +refs/*:refs/* config。
+    // 之所以不用 --mirror：GitHub 会通告 refs/pull/*（数量常远超 heads），
+    // --mirror 会把它们全部拉进缓存，而本模块的 fetch 只更新 heads/tags，
+    // 这些 pull ref 会永久滞留、永不被 prune，徒增镜像体积。
     execFileSync('git', [
-      'clone', '--mirror',
+      'clone', '--bare',
       ...GIT_REMOTE_CLONE_ARGS,
       repoUrl, tmpPath,
     ], {
@@ -186,10 +188,10 @@ function fetchIfStale(cachePath: string): boolean {
 
   try {
     // 必须用显式 refspec，不能用 git fetch --all：
-    // 历史上用 git clone --bare 创建的缓存没有 remote.origin.fetch refspec，
+    // git clone --bare 不创建 remote.origin.fetch refspec，
     // fetch --all 只会下载对象、刷新 FETCH_HEAD，却不会移动 refs/heads/*，
     // 缓存分支因此永久冻结。显式 +refs/heads/*:refs/heads/* 不依赖仓库配置，
-    // 既保证新 --mirror 缓存正确，也能原地修复存量旧 --bare 缓存。
+    // 既让新建 --bare 缓存能持续跟随远程前进，也能原地修复存量旧缓存。
     // --prune 清理远端已删除的分支/标签，保持缓存与远程一致。
     execFileSync('git', [
       '-C', cachePath,

@@ -163,13 +163,14 @@ describe('ensureBareCache', () => {
 
     expect(result.cachePath).toContain('/repos/cache/github.com/foo/bar.git');
 
-    // Should call git clone --mirror (implies --bare + persists fetch refspec)
+    // Should call git clone --bare (后续 fetch 的新鲜度由显式 refspec 保证)
     expect(mockExecFileSync).toHaveBeenCalledTimes(1);
     const args = mockExecFileSync.mock.calls[0][1];
     expect(args).toContain('clone');
-    expect(args).toContain('--mirror');
-    // 不应再用裸 --bare：它不会创建 remote.origin.fetch refspec，导致后续 fetch 冻结分支
-    expect(args).not.toContain('--bare');
+    expect(args).toContain('--bare');
+    // 不用 --mirror：避免把 GitHub 通告的 refs/pull/* 全部拉进缓存
+    // （fetch 只更新 heads/tags，永不 prune 这些 pull ref，徒增体积）
+    expect(args).not.toContain('--mirror');
     expect(args).toContain('--config');
     expect(args).toContain('core.hooksPath=/dev/null');
     expect(args).toContain('--no-recurse-submodules');
