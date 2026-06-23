@@ -138,10 +138,10 @@ export interface IsolatedWorkspaceResult {
   warning?: string;
 }
 
-export function ensureIsolatedWorkspace(
+export async function ensureIsolatedWorkspace(
   workingDir: string,
   mode: 'readonly' | 'writable' = 'writable',
-): IsolatedWorkspaceResult {
+): Promise<IsolatedWorkspaceResult> {
   // 已在工作区目录下 → 已隔离
   if (isAutoWorkspacePath(workingDir)) {
     return { workingDir };
@@ -151,7 +151,7 @@ export function ensureIsolatedWorkspace(
   try {
     if (existsSync(join(resolve(workingDir), '.git'))) {
       logger.info({ workingDir, mode }, 'Creating isolated workspace from existing repo');
-      const result = setupWorkspace({ localPath: workingDir, mode });
+      const result = await setupWorkspace({ localPath: workingDir, mode });
       logger.info(
         { originalDir: workingDir, workspacePath: result.workspacePath, branch: result.branch },
         'Isolated workspace created',

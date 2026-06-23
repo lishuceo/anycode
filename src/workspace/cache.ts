@@ -1,10 +1,20 @@
-import { execFileSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import { existsSync, mkdirSync, renameSync, rmSync, readdirSync, statSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { randomBytes } from 'node:crypto';
+import { promisify } from 'node:util';
 import { config } from '../config.js';
 import { logger } from '../utils/logger.js';
 import { GIT_REMOTE_CLONE_ARGS, GIT_REMOTE_FETCH_TOP_ARGS, GIT_REMOTE_FETCH_SUB_ARGS } from './git-security.js';
+
+// 网络 git 操作（clone/fetch）必须异步执行：早期用 execFileSync 会在等待网络的
+// 整个 timeout 窗口内阻塞 Node 事件循环（单进程 bridge），一次连不上远程的
+// clone 就能让整个服务在 timeout（默认 5 分钟）内对所有会话毫无响应。
+// 改用 promisify(execFile) 让 git 在子进程跑、await 让出事件循环。
+const execFileAsync = promisify(execFile);
+
+/** git 子进程输出上限：clone/fetch 在非 TTY 下输出很少，给足余量防 maxBuffer 溢出 */
+const GIT_MAX_BUFFER = 64 * 1024 * 1024;
 
 // ============================================================
 // 仓库缓存管理
@@ -116,17 +126,17 @@ export interface BareCacheResult {
  * 确保仓库的 bare clone 缓存存在且是最新的
  * 返回缓存路径及 fetch 状态
  */
-export function ensureBareCache(repoUrl: string): BareCacheResult {
+export async function ensureBareCache(repoUrl: string): Promise<BareCacheResult> {
   const relativePath = repoUrlToCachePath(repoUrl);
   const cachePath = resolve(config.repoCache.dir, relativePath);
 
   if (existsSync(cachePath)) {
     // 缓存已存在，检查是否需要 fetch
-    const fetchFailed = fetchIfStale(cachePath);
+    const fetchFailed = await fetchIfStale(cachePath);
     return { cachePath, fetchFailed: fetchFailed || undefined };
   } else {
     // 首次访问，创建 bare clone (原子操作)
-    cloneBareAtomic(repoUrl, cachePath);
+    await cloneBareAtomic(repoUrl, cachePath);
     return { cachePath };
   }
 }
@@ -134,7 +144,7 @@ export function ensureBareCache(repoUrl: string): BareCacheResult {
 /**
  * bare clone 到临时目录，成功后 rename (原子创建)
  */
-function cloneBareAtomic(repoUrl: string, cachePath: string): void {
+async function cloneBareAtomic(repoUrl: string, cachePath: string): Promise<void> {
   const tmpPath = `${cachePath}.tmp-${randomBytes(4).toString('hex')}`;
   const parentDir = resolve(cachePath, '..');
 
@@ -151,13 +161,15 @@ function cloneBareAtomic(repoUrl: string, cachePath: string): void {
     // 之所以不用 --mirror：GitHub 会通告 refs/pull/*（数量常远超 heads），
     // --mirror 会把它们全部拉进缓存，而本模块的 fetch 只更新 heads/tags，
     // 这些 pull ref 会永久滞留、永不被 prune，徒增镜像体积。
-    execFileSync('git', [
+    //
+    // 异步执行：远程 clone 是网络操作，timeout 内绝不能阻塞事件循环（见文件头注释）。
+    await execFileAsync('git', [
       'clone', '--bare',
       ...GIT_REMOTE_CLONE_ARGS,
       repoUrl, tmpPath,
     ], {
       timeout: 300_000, // 5 min for large repos
-      stdio: ['ignore', 'pipe', 'pipe'],
+      maxBuffer: GIT_MAX_BUFFER,
     });
 
     renameSync(tmpPath, cachePath);
@@ -174,7 +186,7 @@ function cloneBareAtomic(repoUrl: string, cachePath: string): void {
  * 如果上次 fetch 超过 fetchIntervalMin 分钟，用显式 refspec 更新 bare 缓存
  * @returns true 表示 fetch 失败（缓存可能过期），false 表示成功或跳过
  */
-function fetchIfStale(cachePath: string): boolean {
+async function fetchIfStale(cachePath: string): Promise<boolean> {
   const now = Date.now();
   const lastFetch = lastFetchTime.get(cachePath) ?? 0;
   const intervalMs = config.repoCache.fetchIntervalMin * 60 * 1000;
@@ -193,7 +205,8 @@ function fetchIfStale(cachePath: string): boolean {
     // 缓存分支因此永久冻结。显式 +refs/heads/*:refs/heads/* 不依赖仓库配置，
     // 既让新建 --bare 缓存能持续跟随远程前进，也能原地修复存量旧缓存。
     // --prune 清理远端已删除的分支/标签，保持缓存与远程一致。
-    execFileSync('git', [
+    // 异步执行：远程 fetch 是网络操作，不能阻塞事件循环（见文件头注释）。
+    await execFileAsync('git', [
       '-C', cachePath,
       ...GIT_REMOTE_FETCH_TOP_ARGS,
       'fetch', '--prune',
@@ -203,7 +216,7 @@ function fetchIfStale(cachePath: string): boolean {
       '+refs/tags/*:refs/tags/*',
     ], {
       timeout: 120_000,
-      stdio: ['ignore', 'pipe', 'pipe'],
+      maxBuffer: GIT_MAX_BUFFER,
     });
 
     lastFetchTime.set(cachePath, now);

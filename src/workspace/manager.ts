@@ -1,11 +1,16 @@
-import { execFileSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import { existsSync, mkdirSync, writeFileSync, realpathSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { basename, resolve } from 'node:path';
+import { promisify } from 'node:util';
 import { config } from '../config.js';
 import { logger } from '../utils/logger.js';
 import { ensureBareCache, sanitizeRepoUrl } from './cache.js';
 import { GIT_LOCAL_CLONE_ARGS } from './git-security.js';
+
+// git 子进程统一异步执行，避免在单进程 bridge 的事件循环上同步阻塞。
+const execFileAsync = promisify(execFile);
+const GIT_MAX_BUFFER = 64 * 1024 * 1024;
 
 // ============================================================
 // 工作区管理器
@@ -80,7 +85,7 @@ export function deriveRepoName(source: string): string {
  * 流程 (localPath 有值时):
  *   直接从本地路径 clone (不经过缓存层)
  */
-export function setupWorkspace(options: SetupWorkspaceOptions): SetupWorkspaceResult {
+export async function setupWorkspace(options: SetupWorkspaceOptions): Promise<SetupWorkspaceResult> {
   const { localPath, mode = 'writable', sourceBranch, featureBranch } = options;
   // 归一化 URL: github.com:user/repo → git@github.com:user/repo
   const repoUrl = options.repoUrl ? normalizeRepoUrl(options.repoUrl) : undefined;
@@ -118,7 +123,7 @@ export function setupWorkspace(options: SetupWorkspaceOptions): SetupWorkspaceRe
   let cloneSource: string;
   let fetchFailed = false;
   if (repoUrl) {
-    const cacheResult = ensureBareCache(repoUrl);
+    const cacheResult = await ensureBareCache(repoUrl);
     cloneSource = cacheResult.cachePath;
     fetchFailed = !!cacheResult.fetchFailed;
     logger.info({ repoUrl: sanitizeRepoUrl(repoUrl), cachePath: cloneSource, fetchFailed }, 'Using bare cache as clone source');
@@ -152,9 +157,9 @@ export function setupWorkspace(options: SetupWorkspaceOptions): SetupWorkspaceRe
   logger.info({ mode, source: cloneSource, workspacePath }, 'Cloning to workspace');
 
   try {
-    execFileSync('git', cloneArgs, {
+    await execFileAsync('git', cloneArgs, {
       timeout: 120_000,
-      stdio: ['ignore', 'pipe', 'pipe'],
+      maxBuffer: GIT_MAX_BUFFER,
       env: { ...process.env, GIT_LFS_SKIP_SMUDGE: '1' },
     });
   } catch (err) {
@@ -172,10 +177,10 @@ export function setupWorkspace(options: SetupWorkspaceOptions): SetupWorkspaceRe
     // writable: 设置 remote origin 为原始远程地址 (剥离认证信息)
     if (repoUrl) {
       try {
-        execFileSync('git', ['remote', 'set-url', 'origin', sanitizeRepoUrl(repoUrl)], {
+        await execFileAsync('git', ['remote', 'set-url', 'origin', sanitizeRepoUrl(repoUrl)], {
           cwd: workspacePath,
           timeout: 10_000,
-          stdio: ['ignore', 'pipe', 'pipe'],
+          maxBuffer: GIT_MAX_BUFFER,
         });
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -188,10 +193,10 @@ export function setupWorkspace(options: SetupWorkspaceOptions): SetupWorkspaceRe
     logger.info({ branch: branchName, cwd: workspacePath }, 'Creating feature branch');
 
     try {
-      execFileSync('git', ['checkout', '-b', branchName], {
+      await execFileAsync('git', ['checkout', '-b', branchName], {
         cwd: workspacePath,
         timeout: 10_000,
-        stdio: ['ignore', 'pipe', 'pipe'],
+        maxBuffer: GIT_MAX_BUFFER,
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);

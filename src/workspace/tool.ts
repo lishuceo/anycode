@@ -113,7 +113,7 @@ export function createWorkspaceMcpServer(onWorkspaceChanged?: SessionUpdater) {
         async (args) => {
           logger.info({ args: { repo_url: args.repo_url, local_path: args.local_path } }, 'setup_workspace tool invoked');
           try {
-            const result = setupWorkspace({
+            const result = await setupWorkspace({
               repoUrl: args.repo_url,
               localPath: args.local_path,
               mode: 'writable',

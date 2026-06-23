@@ -420,7 +420,7 @@ async function ensureMissingBareCaches(data: RegistryData): Promise<void> {
 
     try {
       logger.info({ url }, 'Creating bare cache for local repo');
-      ensureBareCache(url);
+      await ensureBareCache(url);
 
       // 更新 registry 条目的 cachePath
       const cachePath = repoUrlToCachePath(url);
