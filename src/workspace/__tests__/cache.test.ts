@@ -296,6 +296,40 @@ describe('ensureBareCache', () => {
       cachePath: expect.stringContaining('/repos/cache/github.com/foo/slow.git'),
     });
   });
+
+  // 回归守卫：异步化引入的并发 cold-clone 竞态（PR #267 review 反馈）。
+  // 两个不同 chat 并发为同一未缓存仓库触发 ensureBareCache，必须共享同一次 clone，
+  // 否则落败方的 renameSync 会撞到已存在目录报 ENOTEMPTY。
+  it('should de-dupe concurrent cold clones for the same uncached repo', async () => {
+    mockExistsSync.mockImplementation((p) => {
+      if (String(p).endsWith('foo')) return true; // parent dir exists
+      return false;                                // cache path does not
+    });
+
+    // clone 挂起到手动放行，制造稳定的 in-flight 窗口。
+    let release: () => void = () => {};
+    let cloneCalls = 0;
+    mockExecFile.mockImplementation((...args: unknown[]) => {
+      cloneCalls++;
+      const cb = args[args.length - 1] as (e: unknown, r: unknown) => void;
+      release = () => cb(null, { stdout: '', stderr: '' });
+      return undefined as never;
+    });
+
+    // 两个并发调用（同一未缓存仓库），两者都已穿过 existsSync(false) 检查。
+    const p1 = ensureBareCache('https://github.com/foo/concurrent.git');
+    const p2 = ensureBareCache('https://github.com/foo/concurrent.git');
+
+    // 只发起一次 clone：第二个调用复用 in-flight Promise，没有第二次 clone。
+    expect(cloneCalls).toBe(1);
+
+    release();
+    const [a, b] = await Promise.all([p1, p2]);
+
+    expect(a.cachePath).toBe(b.cachePath);
+    // 只 rename 一次 → 不会出现 ENOTEMPTY 竞态
+    expect(mockRenameSync).toHaveBeenCalledTimes(1);
+  });
 });
 
 // ============================================================

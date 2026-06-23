@@ -29,6 +29,14 @@ const GIT_MAX_BUFFER = 64 * 1024 * 1024;
 /** 最近 fetch 时间记录 (cachePath → timestamp) */
 const lastFetchTime = new Map<string, number>();
 
+/**
+ * 进行中的 cold clone (cachePath → clone Promise)，用于并发去重。
+ * 异步化后，existsSync 检查与 clone 不再原子：跨会话(不同 chat 不共享 FIFO 队列)
+ * 可能同时为同一未缓存仓库触发 ensureBareCache，两者都通过 existsSync(false) 后各自
+ * clone，落败方的 renameSync 会撞到已存在目录报 ENOTEMPTY。让并发调用共享同一次 clone。
+ */
+const inFlightClones = new Map<string, Promise<void>>();
+
 // ============================================================
 // URL 解析
 // ============================================================
@@ -135,8 +143,17 @@ export async function ensureBareCache(repoUrl: string): Promise<BareCacheResult>
     const fetchFailed = await fetchIfStale(cachePath);
     return { cachePath, fetchFailed: fetchFailed || undefined };
   } else {
-    // 首次访问，创建 bare clone (原子操作)
-    await cloneBareAtomic(repoUrl, cachePath);
+    // 首次访问，创建 bare clone (原子操作)。
+    // 并发去重：get → set 之间无 await，对单线程事件循环是原子的，因此并发调用要么
+    // 自己发起 clone 并登记 Promise，要么复用已登记的 in-flight clone，绝不会两次 clone。
+    let clonePromise = inFlightClones.get(cachePath);
+    if (!clonePromise) {
+      clonePromise = cloneBareAtomic(repoUrl, cachePath).finally(() => {
+        inFlightClones.delete(cachePath);
+      });
+      inFlightClones.set(cachePath, clonePromise);
+    }
+    await clonePromise;
     return { cachePath };
   }
 }
