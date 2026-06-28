@@ -87,8 +87,8 @@ export const config = {
     model: process.env.CLAUDE_MODEL || 'claude-opus-4-8',
     /** thinking 模式: 'adaptive' (自适应思考) | 'disabled' */
     thinking: (process.env.CLAUDE_THINKING || 'adaptive') as 'adaptive' | 'disabled',
-    /** effort 等级: 'low' | 'medium' | 'high' | 'max' */
-    effort: (process.env.CLAUDE_EFFORT || 'max') as 'low' | 'medium' | 'high' | 'max',
+    /** effort 等级: 'low' | 'medium' | 'high' | 'xhigh' | 'max'（xhigh: 比 high 更深，Opus 4.7+） */
+    effort: (process.env.CLAUDE_EFFORT || 'xhigh') as 'low' | 'medium' | 'high' | 'xhigh' | 'max',
     /** 单次 query 最大轮次 (Agent ↔ Tool 来回次数)，兜底防死循环 */
     maxTurns: parseInt(process.env.CLAUDE_MAX_TURNS || '500', 10),
     /** 单次 query 最大花费 (美元)，真正的费用熔断 */
