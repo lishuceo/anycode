@@ -19,7 +19,7 @@ export function isUserAllowed(userId: string): boolean {
  * 未配置 OWNER_USER_ID 时所有人都是 owner（向后兼容）
  */
 export function isOwner(userId: string): boolean {
-  const { ownerUserId } = config.security;
+  const ownerUserId = config.security?.ownerUserId;
   if (!ownerUserId) return true;
   return userId === ownerUserId;
 }

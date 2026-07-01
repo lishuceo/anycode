@@ -384,6 +384,23 @@ export function startConfigWatcher(): void {
   logger.info({ path: configFilePath }, 'Watching agent config file for hot reload');
 }
 
+/**
+ * 获取运行实例真实使用的配置路径（config-admin 自配置工具用此定位 LIVE 文件）。
+ *
+ * 返回启动时 loadAgentConfig 解析并缓存的单例路径：
+ * - configFile: agents.json 的绝对路径（fs.watchFile 监听的正是此文件）
+ * - configDir:  配置文件所在目录（personas 相对此解析）
+ * - knowledgeDir: 知识文件根目录（可能 undefined）
+ *
+ * 单例未初始化时（如无配置文件的兜底场景 / 测试），fallback 到
+ * loadAgentConfig 的默认约定：process.cwd()/config/agents.json。
+ */
+export function getConfigPaths(): { configFile: string; configDir: string; knowledgeDir?: string } {
+  const configFile = configFilePath ?? resolve(process.cwd(), 'config', 'agents.json');
+  const configDir = configFileDir ?? dirname(configFile);
+  return { configFile, configDir, knowledgeDir: knowledgeDirPath };
+}
+
 /** 获取指定 agent 的配置文件路径信息（用于注入 prompt） */
 export function getAgentConfigInfo(agentId: string): { configFile: string; knowledgeDir?: string; personaFile?: string; knowledgeFiles: string[] } | undefined {
   if (!configFilePath) return undefined;
