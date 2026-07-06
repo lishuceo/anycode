@@ -410,4 +410,20 @@ describe('maxBudgetUsd / maxTurns fallback', () => {
     const { agentRegistry } = await import('../registry.js');
     expect(agentRegistry.get('pm')!.maxBudgetUsd).toBe(100);
   });
+  it('should let file-level null maxBudgetUsd disable SDK budget', async () => {
+    await setupWithClaudeConfig(
+      { defaults: { maxBudgetUsd: null }, agents: [{ id: 'pm' }] },
+      { maxBudgetUsd: 50 },
+    );
+    const { agentRegistry } = await import('../registry.js');
+    expect(agentRegistry.get('pm')!.maxBudgetUsd).toBeUndefined();
+  });
+  it('should let agent-level null maxBudgetUsd override defaults and config', async () => {
+    await setupWithClaudeConfig(
+      { defaults: { maxBudgetUsd: 20 }, agents: [{ id: 'pm', maxBudgetUsd: null }] },
+      { maxBudgetUsd: 50 },
+    );
+    const { agentRegistry } = await import('../registry.js');
+    expect(agentRegistry.get('pm')!.maxBudgetUsd).toBeUndefined();
+  });
 });
