@@ -282,7 +282,29 @@ export function buildStatusCard(
   workingDir: string,
   sessionStatus: string,
   pendingTasks: number,
+  forcedModel?: string,
 ): Record<string, unknown> {
+  const fields: Array<Record<string, unknown>> = [
+    {
+      is_short: true,
+      text: { tag: 'lark_md', content: `**工作目录:**\n${workingDir}` },
+    },
+    {
+      is_short: true,
+      text: { tag: 'lark_md', content: `**状态:**\n${sessionStatus}` },
+    },
+    {
+      is_short: true,
+      text: { tag: 'lark_md', content: `**排队任务:**\n${pendingTasks}` },
+    },
+  ];
+  // /fable 强制模型（未设置则不展示，避免干扰）
+  if (forcedModel) {
+    fields.push({
+      is_short: true,
+      text: { tag: 'lark_md', content: `**强制模型:**\n${forcedModel}` },
+    });
+  }
   return {
     config: { wide_screen_mode: true },
     header: {
@@ -292,20 +314,7 @@ export function buildStatusCard(
     elements: [
       {
         tag: 'div',
-        fields: [
-          {
-            is_short: true,
-            text: { tag: 'lark_md', content: `**工作目录:**\n${workingDir}` },
-          },
-          {
-            is_short: true,
-            text: { tag: 'lark_md', content: `**状态:**\n${sessionStatus}` },
-          },
-          {
-            is_short: true,
-            text: { tag: 'lark_md', content: `**排队任务:**\n${pendingTasks}` },
-          },
-        ],
+        fields,
       },
     ],
   };
