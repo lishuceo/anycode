@@ -1,4 +1,4 @@
-import { randomBytes, randomUUID } from 'node:crypto';
+import { randomBytes } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { unlinkSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -6,7 +6,8 @@ import { config } from '../config.js';
 import { logger } from '../utils/logger.js';
 import { feishuClient } from '../feishu/client.js';
 import { sessionManager } from './manager.js';
-import { copyJsonlAtomic, resolveSessionJsonlPath, jsonlFingerprint } from './jsonl-fork.js';
+import { resolveSessionJsonlPath, jsonlFingerprint, moveJsonlAtomic } from './jsonl-fork.js';
+import { forkClaudeSession } from './claude-session-fork.js';
 
 /** Fork 失败的原因码（供命令层做差异化提示） */
 export type ForkFailureReason =
@@ -14,6 +15,7 @@ export type ForkFailureReason =
   | 'parent_not_found'
   | 'no_conversation'
   | 'parent_jsonl_missing'
+  | 'session_fork_failed'
   | 'feishu_thread_create_failed'
   | 'worktree_create_failed'
   | 'stash_apply_failed'
@@ -99,16 +101,16 @@ export async function forkSession(opts: ForkOptions): Promise<ForkResult | ForkE
   }
 
   const shortId = generateShortId();
-  const newConversationId = randomUUID();
+  const rootTitle = buildRootTitle(opts.description, shortId);
   // 场景 A 的子 conversationCwd 必须用新 worktree 路径(否则 SDK resume 时 cwd 不匹配)
   const newWorkdir = isScenarioA ? `${parent.workingDir}-fork-${shortId}` : parent.workingDir;
   const newConversationCwd = isScenarioA ? newWorkdir : parent.conversationCwd;
-  const newJsonl = resolveSessionJsonlPath(newConversationCwd, newConversationId);
-
   // 回滚追踪标志
   let worktreeCreated = false;
   let newBranchName: string | undefined;
-  let newJsonlCreated = false;
+  let newConversationId = '';
+  let sdkForkJsonl: string | undefined;
+  let newJsonl: string | undefined;
   let rootMessageId: string | undefined;
 
   try {
@@ -174,14 +176,29 @@ export async function forkSession(opts: ForkOptions): Promise<ForkResult | ForkE
       }
     }
 
-    // ── 通用流程: JSONL → Feishu → DB ──
-    copyJsonlAtomic(parentJsonl, newJsonl);
-    newJsonlCreated = true;
+    // ── 通用流程: 官方 transcript fork → Feishu → DB ──
+    try {
+      newConversationId = await forkClaudeSession({
+        parentSessionId: parent.conversationId,
+        sourceCwd: parent.conversationCwd,
+        title: rootTitle,
+      });
+      if (!newConversationId) {
+        throw new Error('Claude SDK did not return a forked sessionId');
+      }
+      sdkForkJsonl = resolveSessionJsonlPath(parent.conversationCwd, newConversationId);
+      newJsonl = resolveSessionJsonlPath(newConversationCwd, newConversationId);
+      moveJsonlAtomic(sdkForkJsonl, newJsonl);
+    } catch (err) {
+      throw new ForkAbort(
+        'session_fork_failed',
+        `创建 Claude 会话 fork 失败: ${(err as Error).message}`,
+      );
+    }
 
     // 在父话题里贴一条 "🔱 …" 的 top-level 消息作为新话题根。
     // 注意：reply_in_thread=true 在父消息已属于话题时会留在原话题里，所以这里直接用 sendText
     // 发到主聊天区，得到一条非话题消息；再在其上 replyInThread 形成新话题。
-    const rootTitle = buildRootTitle(opts.description, shortId);
     rootMessageId = await feishuClient.sendText(opts.chatId, rootTitle);
     if (!rootMessageId) {
       throw new ForkAbort('feishu_thread_create_failed', '创建新话题根消息失败');
@@ -243,8 +260,11 @@ export async function forkSession(opts: ForkOptions): Promise<ForkResult | ForkE
     // 父工作树状态:正常路径 push+pop 已成对完成,无需回滚;
     // 若进入 CRITICAL 分支(子 apply 成功、父 pop 失败),父 WIP 仍卡在 stash@{0},
     // 由上方 logger.error 提示用户手动 `git stash pop`,此处不再尝试。
-    if (newJsonlCreated) {
+    if (newJsonl) {
       try { unlinkSync(newJsonl); } catch { /* ignore */ }
+    }
+    if (sdkForkJsonl && sdkForkJsonl !== newJsonl) {
+      try { unlinkSync(sdkForkJsonl); } catch { /* ignore */ }
     }
     if (worktreeCreated) {
       try {
