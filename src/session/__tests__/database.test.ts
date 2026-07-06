@@ -642,3 +642,117 @@ describe('SessionDatabase — user_tokens', () => {
     expect(db.getUserToken('ou_user2')!.accessToken).toBe('token-2');
   });
 });
+
+// ============================================================
+// forced_model (/fable) — sessions + thread_sessions
+// ============================================================
+
+describe('SessionDatabase — forced_model', () => {
+  let db: SessionDatabase;
+  let tempDir: string;
+
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), 'session-db-test-'));
+    db = new SessionDatabase(join(tempDir, 'test.db'));
+  });
+
+  afterEach(() => {
+    db.close();
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it('should default forcedModel to undefined for a new session', () => {
+    db.upsert('chat-1:user-1', {
+      chatId: 'chat-1',
+      userId: 'user-1',
+      workingDir: '/tmp',
+      status: 'idle',
+      createdAt: new Date(),
+      lastActiveAt: new Date(),
+    });
+    expect(db.get('chat-1:user-1')!.forcedModel).toBeUndefined();
+  });
+
+  it('should set and read back a session-level forced model', () => {
+    db.upsert('chat-1:user-1', {
+      chatId: 'chat-1',
+      userId: 'user-1',
+      workingDir: '/tmp',
+      status: 'idle',
+      createdAt: new Date(),
+      lastActiveAt: new Date(),
+    });
+
+    db.updateForcedModel('chat-1:user-1', 'claude-fable-5[1m]');
+    expect(db.get('chat-1:user-1')!.forcedModel).toBe('claude-fable-5[1m]');
+
+    // null clears it (revert to default)
+    db.updateForcedModel('chat-1:user-1', null);
+    expect(db.get('chat-1:user-1')!.forcedModel).toBeUndefined();
+  });
+
+  it('should not wipe forcedModel when other columns are updated', () => {
+    db.upsert('chat-1:user-1', {
+      chatId: 'chat-1',
+      userId: 'user-1',
+      workingDir: '/tmp',
+      status: 'idle',
+      createdAt: new Date(),
+      lastActiveAt: new Date(),
+    });
+    db.updateForcedModel('chat-1:user-1', 'claude-fable-5');
+
+    // A targeted update to a different column must preserve forced_model
+    db.updateWorkingDir('chat-1:user-1', '/projects/other');
+
+    const session = db.get('chat-1:user-1')!;
+    expect(session.workingDir).toBe('/projects/other');
+    expect(session.forcedModel).toBe('claude-fable-5');
+  });
+
+  it('should set and read back a thread-level forced model', () => {
+    const now = new Date();
+    db.upsertThreadSession({
+      threadId: 'thread-1',
+      chatId: 'chat-1',
+      userId: 'user-1',
+      workingDir: '/projects/repo-a',
+      createdAt: now,
+      updatedAt: now,
+    });
+    expect(db.getThreadSession('thread-1')!.forcedModel).toBeUndefined();
+
+    db.setThreadForcedModel('thread-1', 'claude-fable-5[1m]');
+    expect(db.getThreadSession('thread-1')!.forcedModel).toBe('claude-fable-5[1m]');
+
+    db.setThreadForcedModel('thread-1', null);
+    expect(db.getThreadSession('thread-1')!.forcedModel).toBeUndefined();
+  });
+
+  it('should preserve thread forcedModel across an upsert conflict', () => {
+    const now = new Date();
+    db.upsertThreadSession({
+      threadId: 'thread-1',
+      chatId: 'chat-1',
+      userId: 'user-1',
+      workingDir: '/projects/repo-a',
+      createdAt: now,
+      updatedAt: now,
+    });
+    db.setThreadForcedModel('thread-1', 'claude-fable-5');
+
+    // Re-upsert (e.g. workspace touch) must not clear forced_model — mirrors fork-field behavior
+    db.upsertThreadSession({
+      threadId: 'thread-1',
+      chatId: 'chat-1',
+      userId: 'user-1',
+      workingDir: '/projects/repo-a',
+      conversationId: 'conv-1',
+      conversationCwd: '/projects/repo-a',
+      createdAt: now,
+      updatedAt: new Date(),
+    });
+
+    expect(db.getThreadSession('thread-1')!.forcedModel).toBe('claude-fable-5');
+  });
+});

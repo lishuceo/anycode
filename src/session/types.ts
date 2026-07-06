@@ -15,6 +15,8 @@ export interface Session {
   conversationCwd?: string;
   /** 创建 conversationId 时的 system prompt hash（用于自动失效检测） */
   systemPromptHash?: string;
+  /** 本会话强制模型（/fable 命令设置），覆盖 agent 配置模型 */
+  forcedModel?: string;
   /** 飞书话题 ID (thread_id) - 每个新会话创建一个话题 */
   threadId?: string;
   /** 话题根消息 ID (创建话题时的第一条消息) */
@@ -56,6 +58,8 @@ export interface ThreadSession {
   conversationCwd?: string;
   /** 创建 conversationId 时的 system prompt hash（用于自动失效检测） */
   systemPromptHash?: string;
+  /** 本话题强制模型（/fable 命令设置），覆盖 agent 配置模型 */
+  forcedModel?: string;
   /** 路由是否已完成（首条消息路由后设为 true） */
   routingCompleted?: boolean;
   /** 路由状态（need_clarification 时非空） */

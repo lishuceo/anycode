@@ -12,6 +12,7 @@ interface ThreadSessionRow {
   conversation_id: string | null;
   conversation_cwd: string | null;
   system_prompt_hash: string | null;
+  forced_model: string | null;
   routing_completed: number | null;
   routing_state: string | null;
   pipeline_context: string | null;
@@ -33,6 +34,7 @@ interface SessionRow {
   conversation_id: string | null;
   conversation_cwd: string | null;
   system_prompt_hash: string | null;
+  forced_model: string | null;
   thread_id: string | null;
   thread_root_message_id: string | null;
   status: string;
@@ -54,6 +56,7 @@ export class SessionDatabase {
   private stmtUpdateWorkingDir: Database.Statement;
   private stmtUpdateStatus: Database.Statement;
   private stmtUpdateConversationId: Database.Statement;
+  private stmtUpdateForcedModel: Database.Statement;
   private stmtUpdateThread: Database.Statement;
   private stmtUpdateLastActive: Database.Statement;
   private stmtResetBusy: Database.Statement;
@@ -74,6 +77,7 @@ export class SessionDatabase {
   private stmtSetThreadPipelineContext: Database.Statement;
   private stmtSetThreadApproved: Database.Statement;
   private stmtSetThreadInplaceEdit: Database.Statement;
+  private stmtSetThreadForcedModel: Database.Statement;
   private stmtTouchThreadSession: Database.Statement;
   private stmtGetAllThreadSessions: Database.Statement;
   private stmtUpsertUserToken: Database.Statement;
@@ -275,6 +279,19 @@ export class SessionDatabase {
       this.db.exec('UPDATE schema_version SET version = 15');
     }
 
+    // Migration v15 → v16: add forced_model column to sessions + thread_sessions (/fable 命令)
+    if (version < 16) {
+      const sessionCols = this.db.prepare("PRAGMA table_info(sessions)").all() as Array<{ name: string }>;
+      if (!sessionCols.some((c) => c.name === 'forced_model')) {
+        this.db.exec('ALTER TABLE sessions ADD COLUMN forced_model TEXT');
+      }
+      const threadCols = this.db.prepare("PRAGMA table_info(thread_sessions)").all() as Array<{ name: string }>;
+      if (!threadCols.some((c) => c.name === 'forced_model')) {
+        this.db.exec('ALTER TABLE thread_sessions ADD COLUMN forced_model TEXT');
+      }
+      this.db.exec('UPDATE schema_version SET version = 16');
+    }
+
     this.stmtUpsert = this.db.prepare(`
       INSERT INTO sessions (key, chat_id, user_id, working_dir, conversation_id, conversation_cwd, thread_id, thread_root_message_id, status, created_at, last_active_at)
       VALUES (@key, @chat_id, @user_id, @working_dir, @conversation_id, @conversation_cwd, @thread_id, @thread_root_message_id, @status, @created_at, @last_active_at)
@@ -307,6 +324,10 @@ export class SessionDatabase {
 
     this.stmtUpdateConversationId = this.db.prepare(
       'UPDATE sessions SET conversation_id = ?, conversation_cwd = ?, system_prompt_hash = ?, last_active_at = ? WHERE key = ?',
+    );
+
+    this.stmtUpdateForcedModel = this.db.prepare(
+      'UPDATE sessions SET forced_model = ?, last_active_at = ? WHERE key = ?',
     );
 
     this.stmtUpdateThread = this.db.prepare(
@@ -411,6 +432,10 @@ export class SessionDatabase {
       'UPDATE thread_sessions SET inplace_edit = ?, updated_at = ? WHERE thread_id = ?',
     );
 
+    this.stmtSetThreadForcedModel = this.db.prepare(
+      'UPDATE thread_sessions SET forced_model = ?, updated_at = ? WHERE thread_id = ?',
+    );
+
     this.stmtTouchThreadSession = this.db.prepare(
       'UPDATE thread_sessions SET updated_at = ? WHERE thread_id = ?',
     );
@@ -483,6 +508,11 @@ export class SessionDatabase {
 
   updateConversationId(key: string, conversationId: string, cwd?: string, systemPromptHash?: string): void {
     this.stmtUpdateConversationId.run(conversationId, cwd ?? null, systemPromptHash ?? null, new Date().toISOString(), key);
+  }
+
+  /** 设置/清除 session 级强制模型（null 清除，恢复默认模型） */
+  updateForcedModel(key: string, model: string | null): void {
+    this.stmtUpdateForcedModel.run(model, new Date().toISOString(), key);
   }
 
   updateThread(key: string, threadId: string, rootMessageId: string): void {
@@ -621,6 +651,11 @@ export class SessionDatabase {
     this.stmtSetThreadInplaceEdit.run(inplaceEdit ? 1 : 0, new Date().toISOString(), threadId);
   }
 
+  /** 设置/清除 thread 级强制模型（null 清除，恢复默认模型） */
+  setThreadForcedModel(threadId: string, model: string | null): void {
+    this.stmtSetThreadForcedModel.run(model, new Date().toISOString(), threadId);
+  }
+
   // ── User Token CRUD ──
 
   upsertUserToken(userId: string, accessToken: string, refreshToken: string, tokenExpiry: number, accountId: string = ''): void {
@@ -687,6 +722,7 @@ export class SessionDatabase {
       conversationId: row.conversation_id ?? undefined,
       conversationCwd: row.conversation_cwd ?? undefined,
       systemPromptHash: row.system_prompt_hash ?? undefined,
+      forcedModel: row.forced_model ?? undefined,
       routingCompleted: !!row.routing_completed,
       routingState,
       pipelineContext,
@@ -709,6 +745,7 @@ export class SessionDatabase {
       conversationId: row.conversation_id ?? undefined,
       conversationCwd: row.conversation_cwd ?? undefined,
       systemPromptHash: row.system_prompt_hash ?? undefined,
+      forcedModel: row.forced_model ?? undefined,
       threadId: row.thread_id ?? undefined,
       threadRootMessageId: row.thread_root_message_id ?? undefined,
       status: validStatus(row.status),

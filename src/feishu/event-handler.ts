@@ -2,6 +2,7 @@ import * as lark from '@larksuiteoapi/node-sdk';
 import { logger } from '../utils/logger.js';
 import { isUserAllowed, containsDangerousCommand, isOwner, autoDetectOwner } from '../utils/security.js';
 import { sessionManager } from '../session/manager.js';
+import { parseFableCommand, resolveForcedModel } from '../session/model-override.js';
 import { forkSession } from '../session/fork.js';
 import { taskQueue } from '../session/queue.js';
 import { claudeExecutor } from '../claude/executor.js';
@@ -1082,11 +1083,16 @@ async function handleSlashCommand(
 
   // /status - 查看状态
   if (trimmed === '/status') {
-    const session = sessionManager.getOrCreate(chatId, userId);
+    const session = sessionManager.getOrCreate(chatId, userId, agentId);
+    const threadForcedModel = effectiveThreadId
+      ? sessionManager.getThreadSession(effectiveThreadId, agentId)?.forcedModel
+      : undefined;
+    const forcedModel = resolveForcedModel(threadForcedModel, session.forcedModel);
     const card = buildStatusCard(
       session.workingDir,
       session.status,
       taskQueue.pendingCountForChat(chatId),
+      forcedModel,
     );
     if (threadReplyMsgId) {
       await feishuClient.replyCardInThread(threadReplyMsgId, card);
@@ -1152,11 +1158,13 @@ async function handleSlashCommand(
     let conversationId: string | undefined;
     let convCwd: string | undefined;
     let workingDir: string;
+    let threadForcedModel: string | undefined;
     if (effectiveThreadId) {
       const ts = sessionManager.getThreadSession(effectiveThreadId, agentId);
       conversationId = ts?.conversationId;
       convCwd = ts?.conversationCwd;
       workingDir = ts?.workingDir ?? session.workingDir;
+      threadForcedModel = ts?.forcedModel;
     } else {
       conversationId = session.conversationId;
       convCwd = session.conversationCwd;
@@ -1176,7 +1184,8 @@ async function handleSlashCommand(
     const { existsSync } = await import('node:fs');
     const cwd = convCwd && existsSync(convCwd) ? convCwd : workingDir;
     const sessionKey = effectiveThreadId ? `${chatId}:${userId}:${effectiveThreadId}` : `${chatId}:${userId}`;
-    const model = agentRegistry.get(agentId)?.model;
+    // /fable 强制模型也应用于压缩查询，保持与正常执行一致
+    const model = resolveForcedModel(threadForcedModel, session.forcedModel) ?? agentRegistry.get(agentId)?.model;
 
     await replyFn('🗜️ 正在压缩对话上下文，请稍候（约需 30–60 秒）…');
 
@@ -1480,6 +1489,57 @@ async function handleSlashCommand(
     return true;
   }
 
+  // /fable [1m|off] - 强制本会话使用 claude-fable-5 模型（OWNER only）
+  if (trimmed === '/fable' || trimmed.startsWith('/fable ')) {
+    const replyFn = async (msg: string) => {
+      if (threadReplyMsgId) await feishuClient.replyTextInThread(threadReplyMsgId, msg);
+      else await feishuClient.replyText(messageId, msg);
+    };
+
+    if (!isOwner(userId)) {
+      await replyFn('⚠️ 只有管理员可以使用 /fable 命令');
+      return true;
+    }
+
+    const rawArgs = trimmed === '/fable' ? '' : trimmed.slice('/fable '.length).trim();
+    const parsed = parseFableCommand(rawArgs);
+    if (!parsed.ok) {
+      await replyFn(parsed.error!);
+      return true;
+    }
+
+    // 确保 chat 级 session 存在
+    sessionManager.getOrCreate(chatId, userId, agentId);
+    // 作用域：话题内且已有 thread session → 绑定该话题；否则绑定 chat 级 session
+    const threadSession = effectiveThreadId
+      ? sessionManager.getThreadSession(effectiveThreadId, agentId)
+      : undefined;
+    const bindToThread = Boolean(effectiveThreadId && threadSession);
+
+    if (parsed.clear) {
+      // 取消强制：清掉两级作用域，确保彻底恢复默认
+      if (bindToThread) sessionManager.setThreadForcedModel(effectiveThreadId!, null, agentId);
+      sessionManager.setForcedModel(chatId, userId, null, agentId);
+      await replyFn('↩️ 已取消强制模型，本会话恢复使用默认模型（从下一条消息生效）。');
+      return true;
+    }
+
+    const model = parsed.model!;
+    if (bindToThread) {
+      sessionManager.setThreadForcedModel(effectiveThreadId!, model, agentId);
+    } else {
+      sessionManager.setForcedModel(chatId, userId, model, agentId);
+    }
+
+    const ctxLabel = parsed.context1m ? '1M 上下文' : '默认上下文';
+    const scopeLabel = bindToThread ? '本话题' : '本会话';
+    await replyFn([
+      `🎯 已强制${scopeLabel}使用 **${model}**（${ctxLabel}），从下一条消息生效。`,
+      '发送 `/fable off` 恢复默认模型；`/fable 1m` 开启 1M 上下文。',
+    ].join('\n'));
+    return true;
+  }
+
   // /help - 帮助
   if (trimmed === '/help') {
     const helpLines: string[] = [
@@ -1493,6 +1553,7 @@ async function handleSlashCommand(
       '`/reset`（`/clear`）— 重置会话，清除对话历史',
       '`/stop` — 中断当前正在执行的任务',
       '`/config` — 查看当前 Agent 配置和人设 🔒',
+      '`/fable [1m|off]` — 强制本会话用 claude-fable-5 模型，`1m` 开启 1M 上下文 🔒',
       '`/help` — 显示此帮助',
       '',
       '**── 工作区 ──**',
@@ -2775,6 +2836,8 @@ export async function executeClaudeTask(
     // 否则回退到 owner 检查（dev agent 中非 owner 也是只读）
     const agentCfg = agentRegistry.get(agentId);
     const readOnly = agentCfg?.readOnly ?? !isOwner(userId);
+    // /fable 强制模型：thread 级优先，其次 chat 级 session，都没有则用 agent 配置模型
+    const forcedModel = resolveForcedModel(threadSession?.forcedModel, session.forcedModel);
     // 自定义 agent 支持 persona（dev agent 没配置时 → undefined → 使用默认 buildWorkspaceSystemPrompt）
     const customSystemPrompt = readPersonaFile(agentId);
     const knowledgeContent = loadKnowledgeContent(agentId);
@@ -2797,7 +2860,7 @@ export async function executeClaudeTask(
       prompt: effectivePrompt,
       workingDir,
       readOnly,
-      model: agentCfg?.model,
+      model: forcedModel ?? agentCfg?.model,
       maxTurns: agentCfg?.maxTurns,
       ...(agentCfg ? { maxBudgetUsd: agentCfg.maxBudgetUsd } : {}),
       settingSources: agentCfg?.settingSources,
@@ -2948,7 +3011,7 @@ export async function executeClaudeTask(
         prompt: restartPromptWithImageHints,
         workingDir: result.newWorkingDir,
         readOnly,
-        model: agentCfg?.model,
+        model: forcedModel ?? agentCfg?.model,
         maxTurns: agentCfg?.maxTurns,
         ...(agentCfg ? { maxBudgetUsd: agentCfg.maxBudgetUsd } : {}),
         settingSources: agentCfg?.settingSources,
@@ -3359,12 +3422,15 @@ export async function executeDirectTask(
     // AskUserQuestion 回调（与 executeClaudeTask 共享逻辑）
     const onAskUserDirect = createAskUserHandler(chatId, () => threadReplyMsgId);
 
+    // /fable 强制模型：thread 级优先，其次 chat 级 session
+    const forcedModel = resolveForcedModel(threadSession?.forcedModel, session.forcedModel);
+
     const result = await claudeExecutor.execute({
       sessionKey,
       prompt: effectivePrompt,
       workingDir,
       readOnly: agentCfg.readOnly,
-      model: agentCfg.model,
+      model: forcedModel ?? agentCfg.model,
       maxTurns: agentCfg.maxTurns,
       maxBudgetUsd: agentCfg.maxBudgetUsd,
       toolAllow: agentCfg.toolAllow,
