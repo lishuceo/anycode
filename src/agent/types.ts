@@ -47,8 +47,8 @@ export interface AgentConfig {
   readOnly: boolean;
   /** 加载哪些 settings 源 */
   settingSources: ('user' | 'project')[];
-  /** 单次 query 最大花费 (USD) */
-  maxBudgetUsd: number;
+  /** 单次 query 最大花费 (USD)。省略表示不向 SDK 传 maxBudgetUsd */
+  maxBudgetUsd?: number;
   /** 单次 query 最大轮次 */
   maxTurns: number;
   /** 是否需要写权限审批（non-owner 场景） */

@@ -226,6 +226,25 @@ describe('ClaudeExecutor', () => {
       expect(opts.maxTurns).toBe(5);
       expect(opts.maxBudgetUsd).toBe(0.5);
     });
+
+    it('should omit maxBudgetUsd when config disables it', async () => {
+      const { config } = await import('../../config.js');
+      const prevBudget = config.claude.maxBudgetUsd;
+      config.claude.maxBudgetUsd = undefined;
+      try {
+        await executor.execute(makeInput());
+        const opts = mockQuery.mock.calls[0][0].options;
+        expect(opts).not.toHaveProperty('maxBudgetUsd');
+      } finally {
+        config.claude.maxBudgetUsd = prevBudget;
+      }
+    });
+
+    it('should omit maxBudgetUsd when caller explicitly disables it', async () => {
+      await executor.execute(makeInput({ maxBudgetUsd: undefined }));
+      const opts = mockQuery.mock.calls[0][0].options;
+      expect(opts).not.toHaveProperty('maxBudgetUsd');
+    });
   });
 
   describe('killSessionsForChat', () => {

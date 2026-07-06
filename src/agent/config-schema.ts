@@ -23,6 +23,9 @@ const ToolPolicyDetailedSchema = z.object({
 
 /** toolPolicy 支持两种格式 */
 export const ToolPolicySchema = z.union([ToolPolicySimpleSchema, ToolPolicyDetailedSchema]);
+/** 单次 query 最大花费 (USD)；null 表示不向 SDK 传 maxBudgetUsd */
+const MaxBudgetUsdSchema = z.number().positive().max(1000).nullable();
+
 
 // ─── 飞书账号 ────────────────────────────────────────────────
 
@@ -66,7 +69,7 @@ export const AgentConfigInputSchema = z.object({
   /** Settings 源 */
   settingSources: z.array(z.enum(['user', 'project'])).optional(),
   /** 单次 query 最大花费 (USD)，上限 1000 */
-  maxBudgetUsd: z.number().positive().max(1000).optional(),
+  maxBudgetUsd: MaxBudgetUsdSchema.optional(),
   /** 单次 query 最大轮次，上限 10000 */
   maxTurns: z.number().int().positive().max(10000).optional(),
   /** 是否需要写权限审批 */
@@ -91,7 +94,7 @@ export const AgentDefaultsSchema = z.object({
   model: z.string().optional(),
   toolPolicy: ToolPolicySchema.optional(),
   settingSources: z.array(z.enum(['user', 'project'])).optional(),
-  maxBudgetUsd: z.number().positive().max(1000).optional(),
+  maxBudgetUsd: MaxBudgetUsdSchema.optional(),
   maxTurns: z.number().int().positive().max(10000).optional(),
   requiresApproval: z.boolean().optional(),
   replyMode: z.enum(['direct', 'thread']).optional(),

@@ -1444,7 +1444,7 @@ async function handleSlashCommand(
       `**工具策略**: ${agentCfg?.toolPolicy ?? '(默认)'}`,
       `**回复模式**: ${agentCfg?.replyMode ?? '(默认)'}`,
       `**需要审批**: ${agentCfg?.requiresApproval ? '是' : '否'}`,
-      `**预算**: $${agentCfg?.maxBudgetUsd ?? '?'} / ${agentCfg?.maxTurns ?? '?'} turns`,
+      `**预算**: ${agentCfg ? (agentCfg.maxBudgetUsd === undefined ? '关闭' : '$' + agentCfg.maxBudgetUsd) : '?'} / ${agentCfg?.maxTurns ?? '?'} turns`,
     ];
 
     if (agentCfg?.editablePathPatterns?.length) {
@@ -2799,7 +2799,7 @@ export async function executeClaudeTask(
       readOnly,
       model: agentCfg?.model,
       maxTurns: agentCfg?.maxTurns,
-      maxBudgetUsd: agentCfg?.maxBudgetUsd,
+      ...(agentCfg ? { maxBudgetUsd: agentCfg.maxBudgetUsd } : {}),
       settingSources: agentCfg?.settingSources,
       toolAllow: agentCfg?.toolAllow,
       toolDeny: agentCfg?.toolDeny,
@@ -2950,7 +2950,7 @@ export async function executeClaudeTask(
         readOnly,
         model: agentCfg?.model,
         maxTurns: agentCfg?.maxTurns,
-        maxBudgetUsd: agentCfg?.maxBudgetUsd,
+        ...(agentCfg ? { maxBudgetUsd: agentCfg.maxBudgetUsd } : {}),
         settingSources: agentCfg?.settingSources,
         toolAllow: agentCfg?.toolAllow,
         toolDeny: agentCfg?.toolDeny,

@@ -75,6 +75,16 @@ function resolveToolPolicy(policy: ToolPolicyValue | undefined): {
 }
 
 // ─── Merge 逻辑 ────────────────────────────────────────────
+function resolveMaxBudgetUsd(input: AgentConfigInput, defaults: AgentDefaults): number | undefined {
+  if (input.maxBudgetUsd !== undefined) {
+    return input.maxBudgetUsd === null ? undefined : input.maxBudgetUsd;
+  }
+  if (defaults.maxBudgetUsd !== undefined) {
+    return defaults.maxBudgetUsd === null ? undefined : defaults.maxBudgetUsd;
+  }
+  return config.claude.maxBudgetUsd;
+}
+
 
 /**
  * 合并单个 agent 配置：input → defaults → 内置默认值
@@ -92,7 +102,7 @@ function mergeAgentConfig(input: AgentConfigInput, defaults: AgentDefaults): Age
     toolPolicy,
     readOnly,
     settingSources: (input.settingSources ?? defaults.settingSources ?? BUILTIN_DEFAULTS.settingSources!) as ('user' | 'project')[],
-    maxBudgetUsd: input.maxBudgetUsd ?? defaults.maxBudgetUsd ?? config.claude.maxBudgetUsd,
+    maxBudgetUsd: resolveMaxBudgetUsd(input, defaults),
     maxTurns: input.maxTurns ?? defaults.maxTurns ?? config.claude.maxTurns,
     requiresApproval: input.requiresApproval ?? defaults.requiresApproval ?? BUILTIN_DEFAULTS.requiresApproval!,
     replyMode: input.replyMode ?? defaults.replyMode ?? BUILTIN_DEFAULTS.replyMode! as 'direct' | 'thread',

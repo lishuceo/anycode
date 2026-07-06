@@ -648,6 +648,9 @@ export class ClaudeExecutor {
       readOnly, images, documents,
     } = input;
 
+    const hasMaxBudgetUsdOverride = Object.prototype.hasOwnProperty.call(input, 'maxBudgetUsd');
+    const effectiveMaxBudgetUsd = hasMaxBudgetUsdOverride ? maxBudgetUsd : config.claude.maxBudgetUsd;
+
     const startTime = Date.now();
     const abortController = new AbortController();
     const idleTimeoutMs = (input.timeoutSeconds ?? config.claude.timeoutSeconds) * 1000;
@@ -1041,7 +1044,7 @@ export class ClaudeExecutor {
 
         // 预算和限制 — 默认值从 config 读取，调用方可覆盖
         maxTurns: maxTurns ?? config.claude.maxTurns,
-        maxBudgetUsd: maxBudgetUsd ?? config.claude.maxBudgetUsd,
+        ...(effectiveMaxBudgetUsd !== undefined ? { maxBudgetUsd: effectiveMaxBudgetUsd } : {}),
 
         // 会话续接
         ...(effectiveResumeId ? { resume: effectiveResumeId } : {}),

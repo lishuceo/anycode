@@ -49,6 +49,24 @@ describe('config', () => {
       const { config } = await loadConfig();
       expect(config.claude.toolTimeoutSeconds).toBe(1200);
     });
+
+    it('should parse CLAUDE_MAX_BUDGET_USD as a number', async () => {
+      vi.stubEnv('CLAUDE_MAX_BUDGET_USD', '12.5');
+      const { config } = await loadConfig();
+      expect(config.claude.maxBudgetUsd).toBe(12.5);
+    });
+
+    it('should disable CLAUDE_MAX_BUDGET_USD when set to off', async () => {
+      vi.stubEnv('CLAUDE_MAX_BUDGET_USD', 'off');
+      const { config } = await loadConfig();
+      expect(config.claude.maxBudgetUsd).toBeUndefined();
+    });
+
+    it('should disable CLAUDE_MAX_BUDGET_USD when set to 0', async () => {
+      vi.stubEnv('CLAUDE_MAX_BUDGET_USD', '0');
+      const { config } = await loadConfig();
+      expect(config.claude.maxBudgetUsd).toBeUndefined();
+    });
   });
 
   describe('defaults', () => {

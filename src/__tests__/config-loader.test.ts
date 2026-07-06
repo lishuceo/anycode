@@ -71,6 +71,13 @@ describe('AgentConfigFileSchema', () => {
     expect(result.success).toBe(false);
   });
 
+  it('accepts null maxBudgetUsd to disable budget', () => {
+    const result = AgentConfigFileSchema.safeParse({
+      defaults: { maxBudgetUsd: null },
+      agents: [{ id: 'test', maxBudgetUsd: null }],
+    });
+    expect(result.success).toBe(true);
+  });
   it('rejects zero maxTurns', () => {
     const result = AgentConfigFileSchema.safeParse({
       agents: [{ id: 'test', maxTurns: 0 }],

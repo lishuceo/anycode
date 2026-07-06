@@ -91,7 +91,7 @@ export interface CompactResult {
 export interface ExecuteOptions {
   /** 覆盖默认 maxTurns (默认 50) */
   maxTurns?: number;
-  /** 覆盖默认 maxBudgetUsd (默认 5) */
+  /** 覆盖默认 maxBudgetUsd；显式传 undefined 表示不向 SDK 传预算限制 */
   maxBudgetUsd?: number;
   /** 不注入 setup_workspace MCP tool (restart 时使用) */
   disableWorkspaceTool?: boolean;

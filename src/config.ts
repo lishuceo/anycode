@@ -13,6 +13,26 @@ export function parsePositiveInt(raw: string | undefined, fallback: number): num
   return Number.isFinite(n) && n > 0 ? n : fallback;
 }
 
+/**
+ * CLAUDE_MAX_BUDGET_USD 解析：
+ * - 未设置/空字符串：使用 fallback
+ * - off/false/none/disabled/0：关闭 SDK maxBudgetUsd，不向 SDK 传该字段
+ * - 正数：启用预算熔断
+ */
+export function parseOptionalMaxBudgetUsd(raw: string | undefined, fallback: number): number | undefined {
+  const value = raw?.trim();
+  if (!value) return fallback;
+
+  const normalized = value.toLowerCase();
+  if (['off', 'false', 'none', 'disabled', 'disable'].includes(normalized)) {
+    return undefined;
+  }
+
+  const n = Number(value);
+  if (n === 0) return undefined;
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+
 function parseGroupConfigs(raw?: string): Record<string, GroupConfig> {
   if (!raw?.trim()) return {};
   try {
@@ -91,8 +111,8 @@ export const config = {
     effort: (process.env.CLAUDE_EFFORT || 'xhigh') as 'low' | 'medium' | 'high' | 'xhigh' | 'max',
     /** 单次 query 最大轮次 (Agent ↔ Tool 来回次数)，兜底防死循环 */
     maxTurns: parseInt(process.env.CLAUDE_MAX_TURNS || '500', 10),
-    /** 单次 query 最大花费 (美元)，真正的费用熔断 */
-    maxBudgetUsd: parseFloat(process.env.CLAUDE_MAX_BUDGET_USD || '50'),
+    /** 单次 query 最大花费 (美元)。设置 CLAUDE_MAX_BUDGET_USD=off/false/none/disabled/0 可关闭 */
+    maxBudgetUsd: parseOptionalMaxBudgetUsd(process.env.CLAUDE_MAX_BUDGET_USD, 50),
   },
 
   // 工作区配置

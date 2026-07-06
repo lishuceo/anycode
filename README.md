@@ -130,6 +130,7 @@ See `config/agents.example.json` for the full schema. Key fields:
       "model": "claude-sonnet-4-6",
       "toolPolicy": "readonly",
       "replyMode": "direct",       // reply in-place
+      "maxBudgetUsd": null,       // disable SDK budget limit; use a number to cap cost
       "persona": "./personas/assistant.md",
       "knowledge": ["team.md"]
     },
@@ -156,6 +157,7 @@ All options are documented in `.env.example`. Key ones:
 | `ANTHROPIC_API_KEY` | Yes | Anthropic API key |
 | `FEISHU_EVENT_MODE` | No | `websocket` (default) or `webhook` |
 | `DEFAULT_WORK_DIR` | No | Root directory for projects (default: parent of cwd) |
+| `CLAUDE_MAX_BUDGET_USD` | No | Per-query SDK budget in USD; set `off`, `false`, `none`, `disabled`, or `0` to omit it |
 | `ALLOWED_USER_IDS` | No | Comma-separated Feishu open_ids (empty = allow all) |
 | `OWNER_USER_ID` | No | Admin user with full permissions |
 | `MEMORY_ENABLED` | No | Enable long-term memory system |
