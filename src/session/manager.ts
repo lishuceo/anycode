@@ -105,6 +105,15 @@ export class SessionManager {
   }
 
   /**
+   * 设置/清除 chat 级会话的强制模型（/fable 命令）。null 表示清除，恢复默认模型。
+   */
+  setForcedModel(chatId: string, userId: string, model: string | null, agentId: string = 'dev'): void {
+    const key = this.makeKey(chatId, userId, agentId);
+    this.db.updateForcedModel(key, model);
+    logger.info({ chatId, userId, agentId, model }, 'Session forced model updated');
+  }
+
+  /**
    * 重置会话
    */
   reset(chatId: string, userId: string, agentId: string = 'dev'): void {
@@ -173,6 +182,14 @@ export class SessionManager {
    */
   setThreadInplaceEdit(threadId: string, inplaceEdit: boolean, agentId: string = 'dev'): void {
     this.db.setThreadInplaceEdit(this.makeThreadKey(threadId, agentId), inplaceEdit);
+  }
+
+  /**
+   * 设置/清除 thread 级强制模型（/fable 命令）。null 表示清除，恢复默认模型。
+   */
+  setThreadForcedModel(threadId: string, model: string | null, agentId: string = 'dev'): void {
+    this.db.setThreadForcedModel(this.makeThreadKey(threadId, agentId), model);
+    logger.info({ threadId, agentId, model }, 'Thread forced model updated');
   }
 
   /**
