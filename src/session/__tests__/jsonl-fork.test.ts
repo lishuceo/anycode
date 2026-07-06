@@ -6,6 +6,7 @@ import {
   encodeProjectDir,
   resolveSessionJsonlPath,
   copyJsonlAtomic,
+  moveJsonlAtomic,
   jsonlFingerprint,
 } from '../jsonl-fork.js';
 
@@ -78,6 +79,38 @@ describe('copyJsonlAtomic', () => {
     copyJsonlAtomic(src, dst);
     const leftover = readdirSync(workDir).filter((f) => f.includes('.tmp.'));
     expect(leftover).toEqual([]);
+  });
+});
+
+describe('moveJsonlAtomic', () => {
+  let workDir: string;
+
+  beforeEach(() => {
+    workDir = mkdtempSync(join(tmpdir(), 'jsonl-move-test-'));
+  });
+
+  afterEach(() => {
+    rmSync(workDir, { recursive: true, force: true });
+  });
+
+  it('moves through a temp file in the target directory', () => {
+    const src = join(workDir, 'src.jsonl');
+    const dst = join(workDir, 'target', 'dst.jsonl');
+    writeFileSync(src, 'official fork');
+
+    moveJsonlAtomic(src, dst);
+
+    expect(existsSync(src)).toBe(false);
+    expect(readFileSync(dst, 'utf8')).toBe('official fork');
+  });
+
+  it('is a no-op when source and target are the same file', () => {
+    const src = join(workDir, 'same.jsonl');
+    writeFileSync(src, 'same');
+
+    moveJsonlAtomic(src, src);
+
+    expect(readFileSync(src, 'utf8')).toBe('same');
   });
 });
 

@@ -42,6 +42,23 @@ export function copyJsonlAtomic(srcPath: string, dstPath: string): void {
   }
 }
 
+/**
+ * 把 SDK 生成的 fork JSONL 放到目标 cwd 对应的 project 目录。
+ *
+ * src/dst 往往位于 ~/.claude/projects 下的不同子目录。为了避免跨设备 rename 失败，
+ * 这里先 copy 到目标目录临时文件，再 rename 成目标文件，最后删除源文件。
+ */
+export function moveJsonlAtomic(srcPath: string, dstPath: string): void {
+  if (srcPath === dstPath) {
+    if (!existsSync(srcPath)) {
+      throw new Error(`source JSONL not found: ${srcPath}`);
+    }
+    return;
+  }
+  copyJsonlAtomic(srcPath, dstPath);
+  unlinkSync(srcPath);
+}
+
 /** 计算 JSONL 末尾签名（size + mtime），P2 fork_point 字段用。 */
 export function jsonlFingerprint(jsonlPath: string): string | undefined {
   if (!existsSync(jsonlPath)) return undefined;

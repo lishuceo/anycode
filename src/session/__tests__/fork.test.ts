@@ -9,11 +9,12 @@ vi.mock('../../utils/logger.js', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 
-const { sendTextMock, replyInThreadMock, getThreadSessionMock, createForkedThreadSessionMock } = vi.hoisted(() => ({
+const { sendTextMock, replyInThreadMock, getThreadSessionMock, createForkedThreadSessionMock, forkClaudeSessionMock } = vi.hoisted(() => ({
   sendTextMock: vi.fn(),
   replyInThreadMock: vi.fn(),
   getThreadSessionMock: vi.fn(),
   createForkedThreadSessionMock: vi.fn(),
+  forkClaudeSessionMock: vi.fn(),
 }));
 vi.mock('../../feishu/client.js', () => ({
   feishuClient: {
@@ -26,6 +27,9 @@ vi.mock('../manager.js', () => ({
     getThreadSession: getThreadSessionMock,
     createForkedThreadSession: createForkedThreadSessionMock,
   },
+}));
+vi.mock('../claude-session-fork.js', () => ({
+  forkClaudeSession: forkClaudeSessionMock,
 }));
 
 // config 里只用到 claude.defaultWorkDir,vi.mock 会被 hoist 到顶部,
@@ -53,6 +57,7 @@ const CHAT_ID = 'oc_chat_test';
 const USER_ID = 'ou_user_test';
 const PARENT_THREAD_ID = 'omt_parent_thread';
 const TRIGGER_MSG_ID = 'om_trigger';
+let forkCounter = 0;
 
 function makeParentSession(overrides: { workingDir?: string; conversationId?: string | null; conversationCwd?: string | null; approved?: boolean } = {}) {
   return {
@@ -77,6 +82,16 @@ function seedParentJsonl(): string {
   return path;
 }
 
+function mockOfficialForkJsonl() {
+  forkClaudeSessionMock.mockImplementation(async ({ sourceCwd }: { sourceCwd: string }) => {
+    const id = `fork-conv-id-${++forkCounter}`;
+    const path = resolveSessionJsonlPath(sourceCwd, id);
+    mkdirSync(join(path, '..'), { recursive: true });
+    writeFileSync(path, `{"sessionId":"${id}","type":"summary","summary":"official fork"}\n`);
+    return id;
+  });
+}
+
 describe('forkSession', () => {
   let parentJsonl: string;
 
@@ -85,6 +100,9 @@ describe('forkSession', () => {
     replyInThreadMock.mockReset();
     getThreadSessionMock.mockReset();
     createForkedThreadSessionMock.mockReset();
+    forkClaudeSessionMock.mockReset();
+    forkCounter = 0;
+    mockOfficialForkJsonl();
     parentJsonl = seedParentJsonl();
   });
 
@@ -94,7 +112,7 @@ describe('forkSession', () => {
     if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
   });
 
-  it('成功路径:复制 JSONL、创建话题、写入血缘字段', async () => {
+  it('成功路径:官方 fork JSONL、创建话题、写入血缘字段', async () => {
     getThreadSessionMock.mockReturnValue(makeParentSession());
     sendTextMock.mockResolvedValue('om_new_root');
     replyInThreadMock.mockResolvedValue({ messageId: 'om_reply', threadId: 'omt_new_thread' });
@@ -114,7 +132,12 @@ describe('forkSession', () => {
     expect(result.shortId).toMatch(/^[0-9a-f]{4}$/);
     expect(result.workingDir).toBe(TEST_DEFAULT_DIR);
 
-    // 新 JSONL 应已落盘
+    // SDK fork 应使用父 session/cwd,新 JSONL 应已落盘
+    expect(forkClaudeSessionMock).toHaveBeenCalledWith({
+      parentSessionId: PARENT_CONV_ID,
+      sourceCwd: TEST_DEFAULT_DIR,
+      title: expect.stringContaining(result.shortId),
+    });
     const newJsonl = resolveSessionJsonlPath(TEST_DEFAULT_DIR, result.newConversationId);
     expect(existsSync(newJsonl)).toBe(true);
 
@@ -165,7 +188,23 @@ describe('forkSession', () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.reason).toBe('parent_jsonl_missing');
+    expect(forkClaudeSessionMock).not.toHaveBeenCalled();
     expect(sendTextMock).not.toHaveBeenCalled();
+  });
+
+  it('session_fork_failed:官方 fork 失败时不创建飞书话题', async () => {
+    getThreadSessionMock.mockReturnValue(makeParentSession());
+    forkClaudeSessionMock.mockRejectedValue(new Error('invalid transcript'));
+
+    const result = await forkSession({
+      parentThreadId: PARENT_THREAD_ID, chatId: CHAT_ID, userId: USER_ID, triggerMessageId: TRIGGER_MSG_ID,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toBe('session_fork_failed');
+    expect(result.message).toContain('invalid transcript');
+    expect(sendTextMock).not.toHaveBeenCalled();
+    expect(createForkedThreadSessionMock).not.toHaveBeenCalled();
   });
 
   it('feishu_thread_create_failed:sendText 返回 undefined,JSONL 应回滚', async () => {
@@ -292,6 +331,9 @@ describe('forkSession - 场景 A (worktree + WIP)', () => {
     replyInThreadMock.mockReset();
     getThreadSessionMock.mockReset();
     createForkedThreadSessionMock.mockReset();
+    forkClaudeSessionMock.mockReset();
+    forkCounter = 0;
+    mockOfficialForkJsonl();
     sendTextMock.mockResolvedValue('om_new_root');
     replyInThreadMock.mockResolvedValue({ messageId: 'om_reply', threadId: 'omt_new_thread' });
 
@@ -351,8 +393,12 @@ describe('forkSession - 场景 A (worktree + WIP)', () => {
       { cwd: parentWorkdir, encoding: 'utf8' });
     expect(parentStatusAfter).toBe(parentStatusBefore);
 
-    // DB 写入的 workingDir 是新 worktree 路径
-    expect(createForkedThreadSessionMock.mock.calls[0][0].workingDir).toBe(result.workingDir);
+    // DB 写入的 workingDir/conversationCwd 是新 worktree 路径,JSONL 已移动到新 project 目录
+    const dbArgs = createForkedThreadSessionMock.mock.calls[0][0];
+    expect(dbArgs.workingDir).toBe(result.workingDir);
+    expect(dbArgs.conversationCwd).toBe(result.workingDir);
+    expect(existsSync(resolveSessionJsonlPath(result.workingDir, result.newConversationId))).toBe(true);
+    expect(existsSync(resolveSessionJsonlPath(parentWorkdir, result.newConversationId))).toBe(false);
   });
 
   it('--clean 跳过 WIP 继承:子 worktree 是纯 HEAD,无未提交改动', async () => {
