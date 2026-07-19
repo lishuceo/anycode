@@ -2291,7 +2291,9 @@ async function formatHistoryMessages(
   }
 
   const USER_MSG_MAX = 500;
-  const SELF_BOT_MSG_MAX = 150;   // resume 上下文里有完整版，这里只需定位
+  // noResume agent 不 resume，历史注入是唯一的自我记忆来源，需保留较完整的自身回复；
+  // resume 场景下 SDK 已有完整版，这里偏大也只是少量冗余（受 historyMaxChars 硬顶约束）
+  const SELF_BOT_MSG_MAX = 1500;
   const OTHER_BOT_MSG_MAX = 4000; // 其他 bot 的回复需要较完整保留
   const parentMsgCount = options?.parentMsgCount ?? 0;
   const hasStructuredSections = parentMsgCount > 0;
@@ -2570,6 +2572,31 @@ export function buildBotIdentityContext(chatId: string, agentId?: string): strin
 }
 
 /**
+ * 判断是否可以 resume 上一轮 SDK session。
+ *
+ * 三种情况不能 resume（改为全新会话 + 注入最近 N 条历史）：
+ * - 无 activeConversationId：本会话还没有可续的 SDK session
+ * - cwd 变更：workspace 切换后 Agent SDK 不支持跨 cwd resume（会 exit 1）
+ * - agent 配置 noResume：强制每条消息全新会话，避免长会话逐轮累积把上下文
+ *   推到数十万 token、成本失控
+ *
+ * 抽成纯函数便于单测。afterMsgId 增量去重也以此为准：只有真正 resume 时
+ * SDK 端才存有前序 turn，此时才做"只注入新消息"的增量；否则注入完整最近 N 条。
+ */
+export function canResumeSession(params: {
+  activeConversationId?: string;
+  activeConversationCwd?: string;
+  workingDir: string;
+  noResume?: boolean;
+}): boolean {
+  const { activeConversationId, activeConversationCwd, workingDir, noResume } = params;
+  if (!activeConversationId) return false;
+  if (activeConversationCwd && activeConversationCwd !== workingDir) return false;
+  if (noResume) return false;
+  return true;
+}
+
+/**
  * 执行 Claude Agent SDK 任务
  * 支持 workspace 变更后自动 restart：第一次 query 触发 setup_workspace 后，
  * 自动以新 cwd 发起第二次 query，确保 CLAUDE.md 正确加载。
@@ -2647,6 +2674,14 @@ export async function executeClaudeTask(
   const activeConversationCwd = threadId
     ? threadSession?.conversationCwd
     : session.conversationCwd;
+  const agentCfg = agentRegistry.get(agentId);
+  // resume 开关：无会话 / cwd 变更 / agent noResume → 全新会话（注入最近 N 条历史）
+  const canResume = canResumeSession({
+    activeConversationId,
+    activeConversationCwd,
+    workingDir,
+    noResume: agentCfg?.noResume,
+  });
 
   // 构建历史上下文
   // Pipeline context → system prompt (historySummaries)，聊天历史 → user prompt 前缀
@@ -2687,7 +2722,8 @@ export async function executeClaudeTask(
     const selfBotOpenIds = accountManager.getAllBotOpenIds();
     if (feishuClient.botOpenId) selfBotOpenIds.add(feishuClient.botOpenId);
 
-    const afterMsgId = activeConversationId ? _historyDedup.get(sessionKey) : undefined;
+    // 仅在真正 resume 时做增量去重；不 resume（含 noResume/cwd 变更）时注入完整最近 N 条
+    const afterMsgId = canResume ? _historyDedup.get(sessionKey) : undefined;
     const history = await buildChatHistoryContext(chatId, threadId, messageId, afterMsgId, selfBotOpenIds);
     if (history.historyImagePaths?.length) {
       restartImagePaths.push(...history.historyImagePaths);
@@ -2699,8 +2735,9 @@ export async function executeClaudeTask(
       _historyDedup.set(sessionKey, history.newestMsgId);
     }
     // Resume 时跳过历史文件附件：SDK 会重放所有前序 turn，文件已在对话中，
-    // 重复附加会导致 payload 累积膨胀（N turns × PDF size → 超 30MB 限制）
-    if (activeConversationId) {
+    // 重复附加会导致 payload 累积膨胀（N turns × PDF size → 超 30MB 限制）。
+    // 不 resume（含 noResume/cwd 变更）时 SDK 端无对话记忆，须正常合并历史文件。
+    if (canResume) {
       if (history.topicRootImages?.length || history.documents?.length) {
         logger.info(
           { topicRootImages: history.topicRootImages?.length ?? 0, historyDocs: history.documents?.length ?? 0 },
@@ -2820,21 +2857,18 @@ export async function executeClaudeTask(
   };
 
   try {
-    // Resume 策略：activeConversationId/activeConversationCwd 已在上方提前计算
+    // Resume 策略：canResume/activeConversationId/activeConversationCwd 已在上方提前计算
     const activePromptHash = threadId ? threadSession?.systemPromptHash : session.systemPromptHash;
-    const canResume = activeConversationId
-      && (!activeConversationCwd || activeConversationCwd === workingDir);
     if (activeConversationId && !canResume) {
       logger.info(
-        { sessionKey, threadId, sessionId: activeConversationId, sessionCwd: activeConversationCwd, currentCwd: workingDir },
-        'Skipping resume: cwd mismatch (workspace switched), starting fresh session',
+        { sessionKey, threadId, sessionId: activeConversationId, sessionCwd: activeConversationCwd, currentCwd: workingDir, noResume: agentCfg?.noResume },
+        'Skipping resume: cwd mismatch (workspace switched) or agent noResume, starting fresh session',
       );
     }
     // NOTE: 图片消息（AsyncIterable prompt）也支持 resume，SDK 的 resume 是 CLI 参数与 prompt 投递方式正交
 
     // readOnly: agent 配置优先，如果 agent 是 readonly 则强制只读；
-    // 否则回退到 owner 检查（dev agent 中非 owner 也是只读）
-    const agentCfg = agentRegistry.get(agentId);
+    // 否则回退到 owner 检查（dev agent 中非 owner 也是只读）；agentCfg 已在上方提前取得
     const readOnly = agentCfg?.readOnly ?? !isOwner(userId);
     // /fable 强制模型：thread 级优先，其次 chat 级 session，都没有则用 agent 配置模型
     const forcedModel = resolveForcedModel(threadSession?.forcedModel, session.forcedModel);
@@ -3306,8 +3340,13 @@ export async function executeDirectTask(
       ? threadSession?.conversationCwd
       : session.conversationCwd;
     const activePromptHash = eventThreadId ? threadSession?.systemPromptHash : session.systemPromptHash;
-    const canResume = activeConversationId
-      && (!activeConversationCwd || activeConversationCwd === workingDir);
+    // resume 开关：无会话 / cwd 变更 / agent noResume → 全新会话（注入最近 N 条历史）
+    const canResume = canResumeSession({
+      activeConversationId,
+      activeConversationCwd,
+      workingDir,
+      noResume: agentCfg.noResume,
+    });
     const resumeSessionId = canResume ? activeConversationId : undefined;
 
     // 群聊/话题中标注发送者身份，避免多用户共享 session 时模型混淆对话对象
@@ -3324,9 +3363,10 @@ export async function executeDirectTask(
     if (feishuClient.botOpenId) selfBotOpenIds.add(feishuClient.botOpenId);
 
     let effectivePrompt = promptWithTime;
-    const afterMsgId = activeConversationId ? _historyDedup.get(sessionKey) : undefined;
+    // 仅在真正 resume 时做增量去重；不 resume（含 noResume/cwd 变更）时注入完整最近 N 条
+    const afterMsgId = canResume ? _historyDedup.get(sessionKey) : undefined;
     logger.info(
-      { sessionKey, afterMsgId, hasConversationId: !!activeConversationId, currentMessageId: messageId, rootId },
+      { sessionKey, afterMsgId, hasConversationId: !!activeConversationId, canResume, currentMessageId: messageId, rootId },
       'History dedup state before buildDirectTaskHistory',
     );
     const history = await buildDirectTaskHistory(chatId, eventThreadId, messageId, afterMsgId, selfBotOpenIds);
