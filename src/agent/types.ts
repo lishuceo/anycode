@@ -55,6 +55,12 @@ export interface AgentConfig {
   requiresApproval: boolean;
   /** 默认回复模式 */
   replyMode: ReplyMode;
+  /**
+   * 关闭 SDK session resume：每条消息都用全新会话（不 resume 上一轮）。
+   * 配合注入的"最近 N 条聊天历史"提供上下文，避免长会话逐轮累积把上下文
+   * 推到数十万 token、成本失控。适合高频闲聊型 agent（如 pm）。
+   */
+  noResume?: boolean;
   /** 人格提示词文件路径（每次 query 重新读取，支持热更新）。有 persona → replace 模式；无 → append 模式 */
   persona?: string;
   /** 知识文件列表（相对于 knowledgeDir 的文件名，每次 query 重新读取） */

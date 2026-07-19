@@ -75,12 +75,12 @@ describe('formatHistoryMessages with parentMsgCount (structured sections)', () =
   });
 
   it('omits parent section when all parent messages are truncated by budget', async () => {
-    // 用大量话题消息填满 8000 字符预算（每条被截断至 500 字符 ≈ 530 字符/行），
+    // 用大量话题消息填满 16000 字符预算（每条被截断至 500 字符 ≈ 530 字符/行），
     // 使所有父群消息都被挤出预算
     const parentMsgs = Array.from({ length: 5 }, (_, i) =>
       makeMsg({ content: `parent msg ${i}`, createTime: '1711900000000' }),
     );
-    const threadMsgs = Array.from({ length: 20 }, (_, i) =>
+    const threadMsgs = Array.from({ length: 40 }, (_, i) =>
       makeMsg({ content: `thread msg ${i} ${'z'.repeat(500)}`, createTime: '1711910000000' }),
     );
     const messages = [...parentMsgs, ...threadMsgs];
@@ -140,8 +140,8 @@ describe('formatHistoryMessages with parentMsgCount (structured sections)', () =
   });
 
   it('shows truncation notice in parent section when some parent messages dropped', async () => {
-    // 生成足够多的消息让部分父群消息被截断（每条约 220 字符，50 条 ≈ 11000 > 8000 预算）
-    const parentMsgs = Array.from({ length: 50 }, (_, i) =>
+    // 生成足够多的消息让部分父群消息被截断（每条约 220 字符，90 条 ≈ 20000 > 16000 预算）
+    const parentMsgs = Array.from({ length: 90 }, (_, i) =>
       makeMsg({ content: `parent ${i} ${'y'.repeat(200)}`, createTime: '1711900000000' }),
     );
     const threadMsgs = [

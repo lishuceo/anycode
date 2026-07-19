@@ -4,10 +4,11 @@
  * Tests for the formatHistoryMessages logic that applies different truncation
  * limits based on message sender type:
  * - User messages: 500 chars
- * - Self bot messages: 150 chars (resume context has full version)
+ * - Self bot messages: 1500 chars (noResume agents rely on history as their only
+ *   self-memory; resume context still has the full version)
  * - Other bot messages: 4000 chars (need fuller context)
  *
- * Total budget: 8000 chars (CHAT_HISTORY_MAX_CHARS default)
+ * Total budget: 16000 chars (CHAT_HISTORY_MAX_CHARS default)
  */
 // @ts-nocheck — test file
 import { describe, it, expect } from 'vitest';
@@ -24,9 +25,9 @@ type SimpleMessage = {
   msgType: string;
 };
 
-const TOTAL_BUDGET = 8000;
+const TOTAL_BUDGET = 16000;
 const USER_MSG_MAX = 500;
-const SELF_BOT_MSG_MAX = 150;
+const SELF_BOT_MSG_MAX = 1500;
 const OTHER_BOT_MSG_MAX = 4000;
 
 function formatHistory(
@@ -110,13 +111,22 @@ describe('formatHistoryMessages differentiated truncation', () => {
       expect(result).not.toContain('u'.repeat(501));
     });
 
-    it('truncates self bot messages at 150 chars', () => {
-      const msg = makeBotMsg('m1', 's'.repeat(300), SELF_BOT_ID);
+    it('truncates self bot messages at 1500 chars', () => {
+      const msg = makeBotMsg('m1', 's'.repeat(2000), SELF_BOT_ID);
       const result = formatHistory([msg], selfBotIds);
 
       expect(result).toContain('[Bot(self)]');
-      expect(result).toContain('s'.repeat(150) + '...');
-      expect(result).not.toContain('s'.repeat(151));
+      expect(result).toContain('s'.repeat(1500) + '...');
+      expect(result).not.toContain('s'.repeat(1501));
+    });
+
+    it('preserves self bot messages under 1500 chars (noResume 场景需较完整自身回复)', () => {
+      const msg = makeBotMsg('m1', 's'.repeat(800), SELF_BOT_ID);
+      const result = formatHistory([msg], selfBotIds);
+
+      // 800 < 1500 → 不截断（旧的 150 上限会把它砍掉，回归点）
+      expect(result).toContain('s'.repeat(800));
+      expect(result).not.toContain('...');
     });
 
     it('truncates other bot messages at 4000 chars', () => {
@@ -178,7 +188,7 @@ describe('formatHistoryMessages differentiated truncation', () => {
     });
   });
 
-  describe('total budget guard (8000 chars)', () => {
+  describe('total budget guard (16000 chars)', () => {
     it('keeps all messages when within budget', () => {
       const msgs = [
         makeUserMsg('m1', 'hello'),
@@ -193,34 +203,33 @@ describe('formatHistoryMessages differentiated truncation', () => {
       expect(result).not.toContain('已省略');
     });
 
-    it('drops oldest messages when total exceeds 8000 chars', () => {
-      // 20 user messages with ~500 chars each (after truncation) → ~10000+ chars, should drop some
-      const msgs = Array.from({ length: 20 }, (_, i) =>
+    it('drops oldest messages when total exceeds 16000 chars', () => {
+      // 40 user messages ~500 chars each (after truncation) → ~20000+ chars, should drop some
+      const msgs = Array.from({ length: 40 }, (_, i) =>
         makeUserMsg(`m${i}`, `msg-${i}-${'x'.repeat(490)}`),
       );
       const result = formatHistory(msgs, selfBotIds);
 
       expect(result).toBeDefined();
-      expect(result).toContain('msg-19-'); // most recent kept
+      expect(result).toContain('msg-39-'); // most recent kept
       expect(result).toContain('已省略');   // drop indicator
     });
 
     it('self bot messages use less budget than other bot messages', () => {
-      // Self bot with 1000 chars → truncated to 150, leaves room for others
-      // Other bot with 1000 chars → kept at 1000, uses more budget
-      const selfBotLong = makeBotMsg('m1', 'S'.repeat(1000), SELF_BOT_ID);
-      const otherBotLong = makeBotMsg('m2', 'O'.repeat(1000), OTHER_BOT_ID);
+      // 内容同时超过两者上限：self 截到 1500，other 截到 4000 → self 行更短
+      const selfBotLong = makeBotMsg('m1', 'S'.repeat(5000), SELF_BOT_ID);
+      const otherBotLong = makeBotMsg('m2', 'O'.repeat(5000), OTHER_BOT_ID);
       const userMsg = makeUserMsg('m3', 'user question');
 
       const resultSelf = formatHistory([selfBotLong, userMsg], selfBotIds);
       const resultOther = formatHistory([otherBotLong, userMsg], selfBotIds);
 
-      // Self bot line should be much shorter
+      // Self bot line should be much shorter (1500 vs 4000)
       const selfLine = resultSelf!.split('\n').find(l => l.includes('[Bot(self)]'))!;
       const otherLine = resultOther!.split('\n').find(l => l.includes('[Bot]'))!;
       expect(selfLine.length).toBeLessThan(otherLine.length);
-      expect(selfLine.length).toBeLessThan(200); // ~150 + role prefix
-      expect(otherLine.length).toBeGreaterThan(900); // ~1000 + role prefix
+      expect(selfLine.length).toBeLessThan(1520); // ~1500 + role prefix + "..."
+      expect(otherLine.length).toBeGreaterThan(3900); // ~4000 + role prefix
     });
   });
 
@@ -242,9 +251,9 @@ describe('formatHistoryMessages differentiated truncation', () => {
       expect(result).toContain('[Bot]');
       expect(result).toContain('好的，那就按这个方案来');
 
-      // Self bot should be truncated more aggressively
+      // Self bot should be truncated more aggressively than other bot (1500 vs 4000)
       const selfLine = result!.split('\n').find(l => l.includes('[Bot(self)]'))!;
-      expect(selfLine.length).toBeLessThanOrEqual(150 + '[Bot(self)]: '.length + 3); // +3 for "..."
+      expect(selfLine.length).toBeLessThanOrEqual(SELF_BOT_MSG_MAX + '[Bot(self)]: '.length + 3); // +3 for "..."
     });
 
     it('returns undefined for empty messages', () => {

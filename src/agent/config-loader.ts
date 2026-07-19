@@ -106,6 +106,7 @@ function mergeAgentConfig(input: AgentConfigInput, defaults: AgentDefaults): Age
     maxTurns: input.maxTurns ?? defaults.maxTurns ?? config.claude.maxTurns,
     requiresApproval: input.requiresApproval ?? defaults.requiresApproval ?? BUILTIN_DEFAULTS.requiresApproval!,
     replyMode: input.replyMode ?? defaults.replyMode ?? BUILTIN_DEFAULTS.replyMode! as 'direct' | 'thread',
+    noResume: input.noResume ?? defaults.noResume,
     persona: input.persona ?? defaults.persona,
     knowledge: input.knowledge ?? defaults.knowledge,
     toolAllow,
