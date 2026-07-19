@@ -76,6 +76,8 @@ export const AgentConfigInputSchema = z.object({
   requiresApproval: z.boolean().optional(),
   /** 默认回复模式 */
   replyMode: z.enum(['direct', 'thread']).optional(),
+  /** 关闭 SDK resume：每条消息全新会话（配合最近 N 条历史注入），用于降低长会话累积成本 */
+  noResume: z.boolean().optional(),
   /** 人格提示词文件路径（每次 query 重新读取）。有 persona → replace 模式；无 → append 模式 */
   persona: z.string().optional(),
   /** 知识文件列表（相对于 knowledgeDir 的文件名）。agent 级完整覆盖 defaults */
@@ -98,6 +100,7 @@ export const AgentDefaultsSchema = z.object({
   maxTurns: z.number().int().positive().max(10000).optional(),
   requiresApproval: z.boolean().optional(),
   replyMode: z.enum(['direct', 'thread']).optional(),
+  noResume: z.boolean().optional(),
   persona: z.string().optional(),
   knowledge: z.array(z.string()).optional(),
   editablePathPatterns: z.array(z.string()).optional(),

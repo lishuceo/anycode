@@ -21,6 +21,7 @@
       },
       "model": "claude-opus-4-6",
       "replyMode": "direct",
+      "noResume": true,
       "toolPolicy": {
         "profile": "readonly",
         "allow": ["Skill", "Bash"]
