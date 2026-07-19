@@ -2268,8 +2268,8 @@ export const _testClearTopicRootCache = () => topicRootImagesCache.clear();
  * 格式化历史消息为上下文文本（共享逻辑）。
  *
  * 保护策略：
- * 1. 单条消息截断：用户消息 500 字符，自己的 bot 150 字符（resume 里有完整版），其他 bot 4000 字符
- * 2. 总字符数超 CHAT_HISTORY_MAX_CHARS（默认 8000）时，从最旧的消息开始丢弃
+ * 1. 单条消息截断：用户消息 500 字符，自己的 bot 1500 字符（noResume 下历史是唯一自我记忆），其他 bot 4000 字符
+ * 2. 总字符数超 CHAT_HISTORY_MAX_CHARS（默认 16000）时，从最旧的消息开始丢弃
  *
  * 当前 @bot 的消息不在 history 中（调用前已过滤），rawPrompt 始终完整保留。
  *
