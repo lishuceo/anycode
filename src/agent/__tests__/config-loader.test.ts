@@ -341,6 +341,60 @@ describe('editablePathPatterns', () => {
   });
 });
 
+describe('noResume', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    mkdirSync(KNOWLEDGE_DIR, { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(TEST_DIR, { recursive: true, force: true });
+  });
+
+  async function setup(configObj: Record<string, unknown>) {
+    writeFileSync(CONFIG_FILE, JSON.stringify(configObj));
+    vi.stubEnv('AGENT_CONFIG_PATH', CONFIG_FILE);
+    vi.doMock('../../config.js', () => ({
+      config: {
+        agent: { configPath: CONFIG_FILE },
+        claude: { model: 'claude-sonnet-4-6', maxBudgetUsd: 5, maxTurns: 100 },
+      },
+    }));
+    const loader = await import('../config-loader.js');
+    const result = loader.loadAgentConfig();
+    expect(result.loaded).toBe(true);
+    return loader;
+  }
+
+  it('should pass agent-level noResume through to registry', async () => {
+    await setup({ agents: [{ id: 'pm', noResume: true }] });
+
+    const { agentRegistry } = await import('../registry.js');
+    expect(agentRegistry.get('pm')!.noResume).toBe(true);
+  });
+
+  it('should inherit noResume from defaults', async () => {
+    await setup({ defaults: { noResume: true }, agents: [{ id: 'pm' }] });
+
+    const { agentRegistry } = await import('../registry.js');
+    expect(agentRegistry.get('pm')!.noResume).toBe(true);
+  });
+
+  it('should let agent-level noResume override defaults', async () => {
+    await setup({ defaults: { noResume: true }, agents: [{ id: 'dev', noResume: false }] });
+
+    const { agentRegistry } = await import('../registry.js');
+    expect(agentRegistry.get('dev')!.noResume).toBe(false);
+  });
+
+  it('should be undefined when not configured (resume 默认开启)', async () => {
+    await setup({ agents: [{ id: 'dev' }] });
+
+    const { agentRegistry } = await import('../registry.js');
+    expect(agentRegistry.get('dev')!.noResume).toBeUndefined();
+  });
+});
+
 describe('maxBudgetUsd / maxTurns fallback', () => {
   beforeEach(() => {
     vi.resetModules();

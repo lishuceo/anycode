@@ -1300,3 +1300,48 @@ describe('queue key construction for parallel execution', () => {
     expect(key1).toBe(key2);
   });
 });
+
+// ============================================================
+// canResumeSession — resume 开关判定（含 per-agent noResume）
+// ============================================================
+
+const { canResumeSession } = await import('../event-handler.js');
+
+describe('canResumeSession', () => {
+  const WORK = '/tmp/work';
+
+  it('无 activeConversationId 时不能 resume（全新会话）', () => {
+    expect(canResumeSession({ workingDir: WORK })).toBe(false);
+    expect(canResumeSession({ activeConversationId: undefined, workingDir: WORK })).toBe(false);
+    expect(canResumeSession({ activeConversationId: '', workingDir: WORK })).toBe(false);
+  });
+
+  it('有会话且 cwd 一致时可以 resume', () => {
+    expect(canResumeSession({ activeConversationId: 'sess-1', workingDir: WORK })).toBe(true);
+    expect(canResumeSession({
+      activeConversationId: 'sess-1', activeConversationCwd: WORK, workingDir: WORK,
+    })).toBe(true);
+  });
+
+  it('cwd 变更（workspace 切换）时不能 resume', () => {
+    expect(canResumeSession({
+      activeConversationId: 'sess-1', activeConversationCwd: '/tmp/other', workingDir: WORK,
+    })).toBe(false);
+  });
+
+  it('agent noResume=true 时强制不 resume，即使会话与 cwd 都满足', () => {
+    expect(canResumeSession({
+      activeConversationId: 'sess-1', activeConversationCwd: WORK, workingDir: WORK, noResume: true,
+    })).toBe(false);
+  });
+
+  it('noResume=false / 省略 时不影响正常 resume', () => {
+    expect(canResumeSession({ activeConversationId: 'sess-1', workingDir: WORK, noResume: false })).toBe(true);
+    expect(canResumeSession({ activeConversationId: 'sess-1', workingDir: WORK })).toBe(true);
+  });
+
+  it('noResume 优先级：即使无会话也返回 false（不改变最终结果）', () => {
+    // 无会话本就 false，noResume 叠加仍 false —— 确认不会因 noResume 逻辑抛错
+    expect(canResumeSession({ workingDir: WORK, noResume: true })).toBe(false);
+  });
+});
