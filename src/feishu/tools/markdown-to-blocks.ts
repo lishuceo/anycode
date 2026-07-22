@@ -24,6 +24,8 @@ export const BLOCK_TYPE = {
   QUOTE: 15,
   TODO: 17,
   DIVIDER: 22,
+  TABLE: 31,
+  TABLE_CELL: 32,
 } as const;
 
 // Map language names to Feishu's language enum values
@@ -175,11 +177,95 @@ export function parseInlineMarkdown(text: string): TextElement[] {
   return elements;
 }
 
-/** Convert Markdown text to an array of Feishu document blocks. */
-export function markdownToBlocks(markdown: string): FeishuBlock[] {
+/** A parsed Markdown table, normalized so every row has `columnSize` cells. */
+export interface TableData {
+  /** Cell text in row-major order; row 0 is the header when `hasHeader` is true. */
+  rows: string[][];
+  rowSize: number;
+  columnSize: number;
+  hasHeader: boolean;
+}
+
+/** A converted Markdown segment: either a run of flat blocks or a native table. */
+export type MarkdownSegment =
+  | { type: 'blocks'; blocks: FeishuBlock[] }
+  | { type: 'table'; table: TableData };
+
+/** Split a single Markdown table row into trimmed cell strings. */
+function splitTableRow(line: string): string[] {
+  let s = line.trim();
+  if (s.startsWith('|')) s = s.slice(1);
+  if (s.endsWith('|')) s = s.slice(0, -1);
+  return s.split('|').map((c) => c.trim());
+}
+
+/** A separator row looks like |---|:--:|--:| — dashes with optional leading/trailing colons. */
+function isTableSeparator(cells: string[]): boolean {
+  return cells.length > 0 && cells.every((c) => /^:?-+:?$/.test(c.replace(/\s/g, '')));
+}
+
+/**
+ * Parse collected Markdown table lines into normalized {@link TableData}.
+ * Returns null if the lines don't form a usable table.
+ */
+export function parseMarkdownTable(tableLines: string[]): TableData | null {
+  const rawRows = tableLines.map(splitTableRow);
+  let hasHeader = false;
+  let dataRows: string[][];
+
+  // GFM tables put the alignment separator on the second line.
+  if (rawRows.length >= 2 && isTableSeparator(rawRows[1])) {
+    hasHeader = true;
+    dataRows = [rawRows[0], ...rawRows.slice(2)];
+  } else {
+    dataRows = rawRows.filter((r) => !isTableSeparator(r));
+  }
+
+  // Drop fully-empty rows (e.g. produced by a trailing pipe-only line).
+  dataRows = dataRows.filter((r) => !(r.length === 1 && r[0] === ''));
+  if (dataRows.length === 0) return null;
+
+  const columnSize = Math.max(...dataRows.map((r) => r.length));
+  if (columnSize === 0) return null;
+
+  const rows = dataRows.map((r) => {
+    const cells = r.slice(0, columnSize);
+    while (cells.length < columnSize) cells.push('');
+    return cells;
+  });
+
+  return { rows, rowSize: rows.length, columnSize, hasHeader };
+}
+
+/** Render raw table lines as a plaintext code block (fallback for the flat-block API). */
+function tableToCodeBlock(tableLines: string[]): FeishuBlock {
+  const chunks = splitLongContent(tableLines.join('\n'));
+  return {
+    block_type: BLOCK_TYPE.CODE,
+    code: {
+      elements: chunks.map((c) => ({ text_run: { content: c } })),
+      language: 1, // plaintext
+    },
+  };
+}
+
+/**
+ * Convert Markdown into ordered segments. Flat blocks (headings, lists, text…) are
+ * grouped together; each Markdown table becomes its own `table` segment so callers
+ * can render it as a native Feishu table via `documentBlockDescendant.create`.
+ */
+export function markdownToSegments(markdown: string): MarkdownSegment[] {
   const lines = markdown.split('\n');
-  const blocks: FeishuBlock[] = [];
+  const segments: MarkdownSegment[] = [];
+  let flat: FeishuBlock[] = [];
   let i = 0;
+
+  const flushFlat = () => {
+    if (flat.length > 0) {
+      segments.push({ type: 'blocks', blocks: flat });
+      flat = [];
+    }
+  };
 
   while (i < lines.length) {
     const line = lines[i];
@@ -197,7 +283,7 @@ export function markdownToBlocks(markdown: string): FeishuBlock[] {
       if (i < lines.length) i++; // skip closing ``` only if found
       const content = codeLines.join('\n');
       const chunks = splitLongContent(content);
-      blocks.push({
+      flat.push({
         block_type: BLOCK_TYPE.CODE,
         code: {
           elements: chunks.map((c) => ({ text_run: { content: c } })),
@@ -207,7 +293,7 @@ export function markdownToBlocks(markdown: string): FeishuBlock[] {
       continue;
     }
 
-    // --- Table (render as code block since Feishu API doesn't support inline table creation) ---
+    // --- Table → its own segment (native Feishu table) ---
     if (line.includes('|') && line.trim().startsWith('|')) {
       const tableLines: string[] = [line];
       i++;
@@ -215,15 +301,14 @@ export function markdownToBlocks(markdown: string): FeishuBlock[] {
         tableLines.push(lines[i]);
         i++;
       }
-      const content = tableLines.join('\n');
-      const tableChunks = splitLongContent(content);
-      blocks.push({
-        block_type: BLOCK_TYPE.CODE,
-        code: {
-          elements: tableChunks.map((c) => ({ text_run: { content: c } })),
-          language: 1, // plaintext
-        },
-      });
+      const table = parseMarkdownTable(tableLines);
+      if (table) {
+        flushFlat();
+        segments.push({ type: 'table', table });
+      } else {
+        // Not a usable table — preserve old behavior (plaintext code block).
+        flat.push(tableToCodeBlock(tableLines));
+      }
       continue;
     }
 
@@ -234,7 +319,7 @@ export function markdownToBlocks(markdown: string): FeishuBlock[] {
       const text = headingMatch[2].trim();
       const blockType = BLOCK_TYPE.HEADING1 + level - 1;
       const key = `heading${level}`;
-      blocks.push({
+      flat.push({
         block_type: blockType,
         [key]: { elements: parseInlineMarkdown(text) },
       });
@@ -244,7 +329,7 @@ export function markdownToBlocks(markdown: string): FeishuBlock[] {
 
     // --- Horizontal rule ---
     if (/^(-{3,}|\*{3,}|_{3,})\s*$/.test(line)) {
-      blocks.push({ block_type: BLOCK_TYPE.DIVIDER, divider: {} });
+      flat.push({ block_type: BLOCK_TYPE.DIVIDER, divider: {} });
       i++;
       continue;
     }
@@ -254,7 +339,7 @@ export function markdownToBlocks(markdown: string): FeishuBlock[] {
     if (todoMatch) {
       const done = todoMatch[2].toLowerCase() === 'x';
       const text = todoMatch[3].trim();
-      blocks.push({
+      flat.push({
         block_type: BLOCK_TYPE.TODO,
         todo: {
           elements: parseInlineMarkdown(text),
@@ -269,7 +354,7 @@ export function markdownToBlocks(markdown: string): FeishuBlock[] {
     const bulletMatch = line.match(/^(\s*)[-*+]\s+(.*)/);
     if (bulletMatch) {
       const text = bulletMatch[2].trim();
-      blocks.push({
+      flat.push({
         block_type: BLOCK_TYPE.BULLET,
         bullet: { elements: parseInlineMarkdown(text) },
       });
@@ -281,7 +366,7 @@ export function markdownToBlocks(markdown: string): FeishuBlock[] {
     const orderedMatch = line.match(/^(\s*)\d+[.)]\s+(.*)/);
     if (orderedMatch) {
       const text = orderedMatch[2].trim();
-      blocks.push({
+      flat.push({
         block_type: BLOCK_TYPE.ORDERED,
         ordered: { elements: parseInlineMarkdown(text) },
       });
@@ -297,7 +382,7 @@ export function markdownToBlocks(markdown: string): FeishuBlock[] {
         i++;
       }
       const quoteText = quoteLines.join('\n').trim();
-      blocks.push({
+      flat.push({
         block_type: BLOCK_TYPE.TEXT,
         text: { elements: parseInlineMarkdown(quoteText) },
       });
@@ -332,14 +417,86 @@ export function markdownToBlocks(markdown: string): FeishuBlock[] {
     }
     const paraText = paraLines.join('\n').trim();
     if (paraText) {
-      blocks.push({
+      flat.push({
         block_type: BLOCK_TYPE.TEXT,
         text: { elements: parseInlineMarkdown(paraText) },
       });
     }
   }
 
+  flushFlat();
+  return segments;
+}
+
+/**
+ * Convert Markdown to a flat array of Feishu blocks (for `documentBlockChildren.create`).
+ * Tables are rendered as plaintext code blocks here because the flat API can't nest;
+ * use {@link markdownToSegments} + the descendant API for native tables.
+ */
+export function markdownToBlocks(markdown: string): FeishuBlock[] {
+  const blocks: FeishuBlock[] = [];
+  for (const seg of markdownToSegments(markdown)) {
+    if (seg.type === 'blocks') {
+      blocks.push(...seg.blocks);
+    } else {
+      const lines = seg.table.rows.map((r) => `| ${r.join(' | ')} |`);
+      blocks.push(tableToCodeBlock(lines));
+    }
+  }
   return blocks;
+}
+
+/**
+ * Build a `documentBlockDescendant.create` payload for a single native Feishu table.
+ * Produces the nested `table` → `table_cell` → `text` structure with client-side temp
+ * block IDs (unique within one request); Feishu assigns real IDs on creation.
+ */
+export function buildTableDescendants(table: TableData): {
+  childrenId: string[];
+  descendants: FeishuBlock[];
+} {
+  const tableId = 'tbl';
+  const cellIds: string[] = [];
+  const cellBlocks: FeishuBlock[] = [];
+  const textBlocks: FeishuBlock[] = [];
+
+  for (let r = 0; r < table.rows.length; r++) {
+    for (let c = 0; c < table.columnSize; c++) {
+      const cellId = `c_${r}_${c}`;
+      const textId = `t_${r}_${c}`;
+      cellIds.push(cellId);
+      const content = table.rows[r][c] ?? '';
+      cellBlocks.push({
+        block_id: cellId,
+        block_type: BLOCK_TYPE.TABLE_CELL,
+        table_cell: {},
+        children: [textId],
+      });
+      textBlocks.push({
+        block_id: textId,
+        block_type: BLOCK_TYPE.TEXT,
+        // Feishu rejects a text block with an empty `elements` array (1770001), so empty
+        // cells still get one empty-content text_run — which is what parseInlineMarkdown('')
+        // returns, so no special-casing is needed here.
+        text: { elements: parseInlineMarkdown(content) },
+      });
+    }
+  }
+
+  const tableBlock: FeishuBlock = {
+    block_id: tableId,
+    block_type: BLOCK_TYPE.TABLE,
+    table: {
+      property: {
+        row_size: table.rowSize,
+        column_size: table.columnSize,
+        header_row: table.hasHeader,
+      },
+    },
+    children: cellIds,
+  };
+
+  return { childrenId: [tableId], descendants: [tableBlock, ...cellBlocks, ...textBlocks] };
 }
 
 /**
