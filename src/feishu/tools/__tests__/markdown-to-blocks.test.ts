@@ -507,7 +507,7 @@ describe('buildTableDescendants', () => {
     expect(elements[0].text_run.text_element_style?.bold).toBe(true);
   });
 
-  it('should use an empty elements array for empty cells', () => {
+  it('should give empty cells a single empty-content text_run (Feishu rejects empty elements)', () => {
     const table = parseMarkdownTable([
       '| A | B |',
       '| --- | --- |',
@@ -515,7 +515,10 @@ describe('buildTableDescendants', () => {
     ])!;
     const { descendants } = buildTableDescendants(table);
     const emptyCellText = descendants.find((b) => b.block_id === 't_1_1')!;
-    expect((emptyCellText.text as { elements: unknown[] }).elements).toEqual([]);
+    // Verified against the live Feishu API: `elements: []` returns 1770001 invalid param.
+    expect((emptyCellText.text as { elements: unknown[] }).elements).toEqual([
+      { text_run: { content: '' } },
+    ]);
   });
 });
 

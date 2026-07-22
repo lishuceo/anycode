@@ -475,8 +475,10 @@ export function buildTableDescendants(table: TableData): {
       textBlocks.push({
         block_id: textId,
         block_type: BLOCK_TYPE.TEXT,
-        // Empty cells use an empty elements array (Feishu rejects empty text_run content).
-        text: { elements: content ? parseInlineMarkdown(content) : [] },
+        // Feishu rejects a text block with an empty `elements` array (1770001), so empty
+        // cells still get one empty-content text_run — which is what parseInlineMarkdown('')
+        // returns, so no special-casing is needed here.
+        text: { elements: parseInlineMarkdown(content) },
       });
     }
   }
