@@ -2,6 +2,9 @@ import { describe, it, expect } from 'vitest';
 import {
   parseInlineMarkdown,
   markdownToBlocks,
+  markdownToSegments,
+  parseMarkdownTable,
+  buildTableDescendants,
   batchBlocks,
   BLOCK_TYPE,
   LANGUAGE_MAP,
@@ -349,5 +352,179 @@ describe('batchBlocks', () => {
 
   it('should return empty array for empty input', () => {
     expect(batchBlocks([])).toEqual([]);
+  });
+});
+
+describe('parseMarkdownTable', () => {
+  it('should parse a GFM table with header separator', () => {
+    const table = parseMarkdownTable([
+      '| A | B | C |',
+      '| --- | --- | --- |',
+      '| 1 | 2 | 3 |',
+      '| 4 | 5 | 6 |',
+    ]);
+    expect(table).not.toBeNull();
+    expect(table!.hasHeader).toBe(true);
+    expect(table!.columnSize).toBe(3);
+    expect(table!.rowSize).toBe(3); // header + 2 body rows
+    expect(table!.rows[0]).toEqual(['A', 'B', 'C']);
+    expect(table!.rows[1]).toEqual(['1', '2', '3']);
+    expect(table!.rows[2]).toEqual(['4', '5', '6']);
+  });
+
+  it('should recognize alignment separators (:--, --:, :-:)', () => {
+    const table = parseMarkdownTable([
+      '| L | C | R |',
+      '| :-- | :-: | --: |',
+      '| a | b | c |',
+    ]);
+    expect(table).not.toBeNull();
+    expect(table!.hasHeader).toBe(true);
+    expect(table!.rowSize).toBe(2);
+  });
+
+  it('should pad ragged rows to the widest column count', () => {
+    const table = parseMarkdownTable([
+      '| A | B | C |',
+      '| --- | --- | --- |',
+      '| 1 | 2 |',
+    ]);
+    expect(table!.columnSize).toBe(3);
+    expect(table!.rows[1]).toEqual(['1', '2', '']);
+  });
+
+  it('should treat a table without a separator as headerless', () => {
+    const table = parseMarkdownTable([
+      '| 1 | 2 |',
+      '| 3 | 4 |',
+    ]);
+    expect(table).not.toBeNull();
+    expect(table!.hasHeader).toBe(false);
+    expect(table!.rowSize).toBe(2);
+    expect(table!.rows[0]).toEqual(['1', '2']);
+  });
+
+  it('should return null when there are no data rows', () => {
+    expect(parseMarkdownTable(['| --- | --- |'])).toBeNull();
+  });
+});
+
+describe('markdownToSegments', () => {
+  it('should emit a single blocks segment for flat markdown', () => {
+    const segments = markdownToSegments('# Title\n\nsome text');
+    expect(segments).toHaveLength(1);
+    expect(segments[0].type).toBe('blocks');
+  });
+
+  it('should split flat content and tables into ordered segments', () => {
+    const md = [
+      'intro paragraph',
+      '',
+      '| A | B |',
+      '| --- | --- |',
+      '| 1 | 2 |',
+      '',
+      'outro paragraph',
+    ].join('\n');
+    const segments = markdownToSegments(md);
+    expect(segments.map((s) => s.type)).toEqual(['blocks', 'table', 'blocks']);
+    expect(segments[1].type).toBe('table');
+    if (segments[1].type === 'table') {
+      expect(segments[1].table.columnSize).toBe(2);
+      expect(segments[1].table.hasHeader).toBe(true);
+    }
+  });
+
+  it('should keep two adjacent tables as separate segments', () => {
+    const md = [
+      '| A |',
+      '| --- |',
+      '| 1 |',
+      '',
+      '| B |',
+      '| --- |',
+      '| 2 |',
+    ].join('\n');
+    const segments = markdownToSegments(md);
+    expect(segments.map((s) => s.type)).toEqual(['table', 'table']);
+  });
+
+  it('should fall back to a code block for malformed pipe lines', () => {
+    // Only a separator line — not a usable table.
+    const segments = markdownToSegments('| --- | --- |');
+    expect(segments).toHaveLength(1);
+    expect(segments[0].type).toBe('blocks');
+    if (segments[0].type === 'blocks') {
+      expect(segments[0].blocks[0].block_type).toBe(BLOCK_TYPE.CODE);
+    }
+  });
+});
+
+describe('buildTableDescendants', () => {
+  it('should build a native table structure with correct block types', () => {
+    const table = parseMarkdownTable([
+      '| A | B |',
+      '| --- | --- |',
+      '| 1 | 2 |',
+    ])!;
+    const { childrenId, descendants } = buildTableDescendants(table);
+
+    // Top-level attaches exactly the table block.
+    expect(childrenId).toHaveLength(1);
+    const tableBlock = descendants.find((b) => b.block_id === childrenId[0])!;
+    expect(tableBlock.block_type).toBe(BLOCK_TYPE.TABLE);
+    expect(tableBlock.table).toEqual({
+      property: { row_size: 2, column_size: 2, header_row: true },
+    });
+
+    // row_size * column_size cells, each referenced by the table in row-major order.
+    const cellIds = tableBlock.children as string[];
+    expect(cellIds).toHaveLength(4);
+    for (const id of cellIds) {
+      const cell = descendants.find((b) => b.block_id === id)!;
+      expect(cell.block_type).toBe(BLOCK_TYPE.TABLE_CELL);
+      expect((cell.children as string[]).length).toBe(1);
+    }
+
+    // Every cell has a text child; descendants total = 1 table + 4 cells + 4 texts.
+    expect(descendants).toHaveLength(9);
+    const textBlocks = descendants.filter((b) => b.block_type === BLOCK_TYPE.TEXT);
+    expect(textBlocks).toHaveLength(4);
+  });
+
+  it('should render inline markdown inside cells', () => {
+    const table = parseMarkdownTable([
+      '| **bold** | plain |',
+      '| --- | --- |',
+      '| x | y |',
+    ])!;
+    const { descendants } = buildTableDescendants(table);
+    const headerText = descendants.find((b) => b.block_id === 't_0_0')!;
+    const elements = (headerText.text as { elements: unknown[] }).elements as Array<{
+      text_run: { content: string; text_element_style?: { bold?: boolean } };
+    }>;
+    expect(elements[0].text_run.content).toBe('bold');
+    expect(elements[0].text_run.text_element_style?.bold).toBe(true);
+  });
+
+  it('should use an empty elements array for empty cells', () => {
+    const table = parseMarkdownTable([
+      '| A | B |',
+      '| --- | --- |',
+      '| 1 | |',
+    ])!;
+    const { descendants } = buildTableDescendants(table);
+    const emptyCellText = descendants.find((b) => b.block_id === 't_1_1')!;
+    expect((emptyCellText.text as { elements: unknown[] }).elements).toEqual([]);
+  });
+});
+
+describe('markdownToBlocks (table backward compat)', () => {
+  it('should render tables as a plaintext code block in the flat API', () => {
+    const blocks = markdownToBlocks('| A | B |\n| --- | --- |\n| 1 | 2 |');
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0].block_type).toBe(BLOCK_TYPE.CODE);
+    const code = blocks[0].code as { language: number };
+    expect(code.language).toBe(1); // plaintext
   });
 });
