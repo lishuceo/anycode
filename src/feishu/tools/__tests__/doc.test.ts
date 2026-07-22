@@ -15,6 +15,7 @@ const mockDocxDocumentBlockList = vi.fn();
 const mockDocxDocumentBlockBatchUpdate = vi.fn();
 const mockDocxDocumentBlockChildrenBatchDelete = vi.fn();
 const mockDocxDocumentBlockChildrenCreate = vi.fn();
+const mockDocxDocumentBlockDescendantCreate = vi.fn();
 
 vi.mock('../../client.js', () => ({
   feishuClient: {
@@ -31,6 +32,9 @@ vi.mock('../../client.js', () => ({
         documentBlockChildren: {
           batchDelete: (...args: unknown[]) => mockDocxDocumentBlockChildrenBatchDelete(...args),
           create: (...args: unknown[]) => mockDocxDocumentBlockChildrenCreate(...args),
+        },
+        documentBlockDescendant: {
+          create: (...args: unknown[]) => mockDocxDocumentBlockDescendantCreate(...args),
         },
       },
     },
@@ -334,7 +338,7 @@ describe('feishu_doc tool', () => {
         code: 0,
         data: {
           items: [
-            { block_id: 'page_1', block_type: 1 },
+            { block_id: 'page_1', block_type: 1, children: ['text_1'] },
             { block_id: 'text_1', block_type: 2 },
           ],
         },
@@ -360,7 +364,7 @@ describe('feishu_doc tool', () => {
         code: 0,
         data: {
           items: [
-            { block_id: 'page_1', block_type: 1 },
+            { block_id: 'page_1', block_type: 1, children: ['text_1'] },
             { block_id: 'text_1', block_type: 2 },
           ],
         },
@@ -384,6 +388,62 @@ describe('feishu_doc tool', () => {
       });
       expect(result.isError).toBe(true);
       expect(result.content[0].text).toContain('99999');
+    });
+
+    it('deletes by page direct-children count, not the flat block total (doc with a native table)', async () => {
+      // documentBlock.list returns a FLAT list: the page has 4 DIRECT children
+      // (h1, p1, table, p2), but the table's 4 cells + 4 cell-texts are also listed →
+      // 12 non-page blocks total. batchDelete removes the page's direct children, so
+      // end_index must be 4, not 12 — else a doc containing a native table fails with 1770001.
+      mockDocxDocumentBlockList.mockResolvedValue({
+        code: 0,
+        data: {
+          items: [
+            { block_id: 'page_1', block_type: 1, children: ['h1', 'p1', 'tbl', 'p2'] },
+            { block_id: 'h1', block_type: 3 },
+            { block_id: 'p1', block_type: 2 },
+            { block_id: 'tbl', block_type: 31, children: ['c0', 'c1', 'c2', 'c3'] },
+            { block_id: 'c0', block_type: 32, children: ['t0'] },
+            { block_id: 'c1', block_type: 32, children: ['t1'] },
+            { block_id: 'c2', block_type: 32, children: ['t2'] },
+            { block_id: 'c3', block_type: 32, children: ['t3'] },
+            { block_id: 't0', block_type: 2 },
+            { block_id: 't1', block_type: 2 },
+            { block_id: 't2', block_type: 2 },
+            { block_id: 't3', block_type: 2 },
+            { block_id: 'p2', block_type: 2 },
+          ],
+        },
+      });
+      mockDocxDocumentBlockChildrenBatchDelete.mockResolvedValue({ code: 0 });
+      mockDocxDocumentBlockChildrenCreate.mockResolvedValue({ code: 0 });
+
+      const result = await capturedHandler({
+        action: 'write', doc_token: 'ABC123', content: 'hello',
+      });
+
+      expect(result.content[0].text).toBe('文档已更新');
+      expect(result.isError).toBeUndefined();
+      expect(mockDocxDocumentBlockChildrenBatchDelete).toHaveBeenCalledTimes(1);
+      const delArg = mockDocxDocumentBlockChildrenBatchDelete.mock.calls[0][0];
+      expect(delArg.data.start_index).toBe(0);
+      expect(delArg.data.end_index).toBe(4); // page direct children — NOT 12 flat blocks
+      expect(delArg.path.block_id).toBe('page_1');
+    });
+
+    it('skips batchDelete when the page has no direct children (empty doc)', async () => {
+      mockDocxDocumentBlockList.mockResolvedValue({
+        code: 0,
+        data: { items: [{ block_id: 'page_1', block_type: 1, children: [] }] },
+      });
+      mockDocxDocumentBlockChildrenCreate.mockResolvedValue({ code: 0 });
+
+      const result = await capturedHandler({
+        action: 'write', doc_token: 'ABC123', content: 'hi',
+      });
+
+      expect(result.content[0].text).toBe('文档已更新');
+      expect(mockDocxDocumentBlockChildrenBatchDelete).not.toHaveBeenCalled();
     });
   });
 

@@ -232,29 +232,24 @@ export function feishuDocTool(chatId?: string) {
             });
             if (listResp.code !== 0) throw new Error(`获取 blocks 失败 (${listResp.code}): ${listResp.msg}`);
 
-            // 2. 删除所有子 block (跳过 page block 本身)
-            const blockIds = (listResp.data?.items ?? [])
-              .filter((b) => b.block_type !== 1) // block_type 1 = page
-              .map((b) => b.block_id)
-              .filter((id): id is string => !!id);
+            // 2. 删除 page 的直接子 block。
+            //    documentBlock.list 返回的是扁平化的全部 block（含嵌套的 table_cell 及 cell 内 text），
+            //    而 batchDelete 删的是 page 的**直接子节点** [start_index, end_index)，end_index 必须按
+            //    直接子块数而非扁平总数——否则含原生表格的文档会因 index 越界被拒 (1770001)。
+            const pageBlock = (listResp.data?.items ?? []).find((b) => b.block_type === 1);
+            const pageBlockId = pageBlock?.block_id ?? args.doc_token;
+            const directChildCount = (pageBlock?.children as string[] | undefined)?.length ?? 0;
 
-            if (blockIds.length > 0) {
-              // 获取 page block id
-              const pageBlock = (listResp.data?.items ?? []).find((b) => b.block_type === 1);
-              const pageBlockId = pageBlock?.block_id ?? args.doc_token;
-
+            if (directChildCount > 0) {
               const delResp = await client.docx.documentBlockChildren.batchDelete({
                 path: { document_id: args.doc_token, block_id: pageBlockId },
-                data: { start_index: 0, end_index: blockIds.length },
+                data: { start_index: 0, end_index: directChildCount },
               });
               if (delResp.code !== 0) throw new Error(`删除 blocks 失败 (${delResp.code}): ${delResp.msg}`);
             }
 
             // 3. 将 Markdown 转换为 block 并批量写入
-            const pageBlock2 = (listResp.data?.items ?? []).find((b) => b.block_type === 1);
-            const pageBlockId2 = pageBlock2?.block_id ?? args.doc_token;
-
-            await writeMarkdownContent(client, args.doc_token, pageBlockId2, args.content);
+            await writeMarkdownContent(client, args.doc_token, pageBlockId, args.content);
             return { content: [{ type: 'text' as const, text: '文档已更新' }] };
           }
 
