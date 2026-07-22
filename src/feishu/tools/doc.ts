@@ -4,7 +4,12 @@ import { feishuClient } from '../client.js';
 import { logger } from '../../utils/logger.js';
 import { validateToken } from './validation.js';
 import { grantOwnerPermission, grantChatMembersPermission } from './permissions.js';
-import { markdownToBlocks, batchBlocks, parseInlineMarkdown } from './markdown-to-blocks.js';
+import {
+  markdownToSegments,
+  buildTableDescendants,
+  batchBlocks,
+  parseInlineMarkdown,
+} from './markdown-to-blocks.js';
 
 /** Max lines returned by read before truncation (matches Claude Code's Read tool default) */
 const READ_LINE_LIMIT = 2000;
@@ -14,16 +19,16 @@ const BLOCK_TYPE_NAMES: Record<number, string> = {
   1: 'page', 2: 'text', 3: 'heading1', 4: 'heading2', 5: 'heading3',
   6: 'heading4', 7: 'heading5', 8: 'heading6', 9: 'heading7',
   10: 'heading8', 11: 'heading9', 12: 'bullet', 13: 'ordered',
-  14: 'code', 15: 'quote', 16: 'todo', 17: 'bitable', 18: 'callout',
-  19: 'chat_card', 20: 'diagram', 21: 'divider', 22: 'file',
-  23: 'grid', 24: 'grid_column', 25: 'iframe', 26: 'image',
-  27: 'isv', 28: 'mindnote', 29: 'sheet', 30: 'table',
-  31: 'table_cell', 32: 'view', 33: 'undefined', 999: 'virtual_merge',
-  34: 'quote_container', 40: 'task', 41: 'okr',
+  14: 'code', 15: 'quote', 17: 'todo', 18: 'bitable', 19: 'callout',
+  20: 'chat_card', 21: 'diagram', 22: 'divider', 23: 'file',
+  24: 'grid', 25: 'grid_column', 26: 'iframe', 27: 'image',
+  28: 'isv', 29: 'mindnote', 30: 'sheet', 31: 'table',
+  32: 'table_cell', 33: 'view', 34: 'quote_container',
+  40: 'task', 41: 'okr',
   42: 'okr_objective', 43: 'okr_key_result', 44: 'okr_progress',
   46: 'add_ons', 48: 'jira_issue', 49: 'wiki_catalog',
   51: 'board', 52: 'agenda', 53: 'agenda_item',
-  54: 'agenda_item_content',
+  54: 'agenda_item_content', 999: 'undefined',
 };
 
 /**
@@ -59,6 +64,58 @@ function extractBlockText(block: Record<string, unknown>): string {
 }
 
 /**
+ * 将 Markdown 内容写入文档指定父 block，支持渲染原生飞书表格。
+ *
+ * 普通 block 走 `documentBlockChildren.create`（分批）；每个 Markdown 表格通过
+ * `documentBlockDescendant.create` 创建为原生 `table`。segment 按顺序写入，当传入
+ * `startIndex` 时，插入位置按已写入的顶层 block 数量递增，从而保证混排内容的顺序。
+ *
+ * @returns 写入的顶层 block 数量。
+ */
+async function writeMarkdownContent(
+  client: typeof feishuClient.raw,
+  documentId: string,
+  parentBlockId: string,
+  markdown: string,
+  startIndex?: number,
+): Promise<number> {
+  const segments = markdownToSegments(markdown);
+  let index = startIndex;
+  let written = 0;
+
+  for (const seg of segments) {
+    if (seg.type === 'blocks') {
+      for (const batch of batchBlocks(seg.blocks)) {
+        const resp = await client.docx.documentBlockChildren.create({
+          path: { document_id: documentId, block_id: parentBlockId },
+          data: { children: batch, ...(index != null ? { index } : {}) },
+        });
+        if (resp.code !== 0) throw new Error(`写入 blocks 失败 (${resp.code}): ${resp.msg}`);
+        if (index != null) index += batch.length;
+        written += batch.length;
+      }
+    } else {
+      const { childrenId, descendants } = buildTableDescendants(seg.table);
+      const resp = await client.docx.documentBlockDescendant.create({
+        path: { document_id: documentId, block_id: parentBlockId },
+        data: {
+          children_id: childrenId,
+          descendants: descendants as unknown as NonNullable<
+            Parameters<typeof client.docx.documentBlockDescendant.create>[0]
+          >['data']['descendants'],
+          ...(index != null ? { index } : {}),
+        },
+      });
+      if (resp.code !== 0) throw new Error(`写入表格失败 (${resp.code}): ${resp.msg}`);
+      if (index != null) index += childrenId.length;
+      written += childrenId.length;
+    }
+  }
+
+  return written;
+}
+
+/**
  * 飞书文档 MCP 工具
  *
  * 支持操作: read / write / append / create / list_blocks / read_blocks / update_block / insert_blocks / delete_blocks
@@ -80,7 +137,7 @@ export function feishuDocTool(chatId?: string) {
       '- insert_blocks: 在指定位置插入新 block (需要 block_id 作为父 block，index 指定位置)',
       '- delete_blocks: 删除指定 block (需要 block_id)',
       '',
-      'write/append/insert_blocks 支持的 Markdown 语法: 标题(#)、加粗(**)、斜体(*)、删除线(~~)、行内代码(`)、链接、无序列表(-)、有序列表(1.)、代码块(```)、待办(- [ ])、分隔线(---)。',
+      'write/append/insert_blocks 支持的 Markdown 语法: 标题(#)、加粗(**)、斜体(*)、删除线(~~)、行内代码(`)、链接、无序列表(-)、有序列表(1.)、代码块(```)、待办(- [ ])、分隔线(---)、表格(| 列1 | 列2 |，会转换为原生飞书表格，首行为表头)。',
       '',
       '读取文档的推荐流程: read (自动截断大文档) → 如需查看被截断部分，用 list_blocks 定位 → read_blocks 按需读取',
       '编辑他人文档的推荐流程: list_blocks → 找到目标 block_id → update_block/insert_blocks/delete_blocks',
@@ -197,15 +254,7 @@ export function feishuDocTool(chatId?: string) {
             const pageBlock2 = (listResp.data?.items ?? []).find((b) => b.block_type === 1);
             const pageBlockId2 = pageBlock2?.block_id ?? args.doc_token;
 
-            const blocks = markdownToBlocks(args.content);
-            const batches = batchBlocks(blocks);
-            for (const batch of batches) {
-              const createResp1 = await client.docx.documentBlockChildren.create({
-                path: { document_id: args.doc_token, block_id: pageBlockId2 },
-                data: { children: batch },
-              });
-              if (createResp1.code !== 0) throw new Error(`写入 blocks 失败 (${createResp1.code}): ${createResp1.msg}`);
-            }
+            await writeMarkdownContent(client, args.doc_token, pageBlockId2, args.content);
             return { content: [{ type: 'text' as const, text: '文档已更新' }] };
           }
 
@@ -220,15 +269,7 @@ export function feishuDocTool(chatId?: string) {
             const pageBlock3 = (listResp2.data?.items ?? []).find((b) => b.block_type === 1);
             const pageBlockId3 = pageBlock3?.block_id ?? args.doc_token;
 
-            const appendBlocks = markdownToBlocks(args.content);
-            const appendBatches = batchBlocks(appendBlocks);
-            for (const batch of appendBatches) {
-              const createResp2 = await client.docx.documentBlockChildren.create({
-                path: { document_id: args.doc_token, block_id: pageBlockId3 },
-                data: { children: batch },
-              });
-              if (createResp2.code !== 0) throw new Error(`追加 blocks 失败 (${createResp2.code}): ${createResp2.msg}`);
-            }
+            await writeMarkdownContent(client, args.doc_token, pageBlockId3, args.content);
             return { content: [{ type: 'text' as const, text: '内容已追加' }] };
           }
 
@@ -248,16 +289,11 @@ export function feishuDocTool(chatId?: string) {
 
               // 如果提供了 content，创建后自动写入，避免空文档
               if (args.content) {
-                const blocks = markdownToBlocks(args.content);
-                const batches = batchBlocks(blocks);
-                for (const batch of batches) {
-                  const writeResp = await client.docx.documentBlockChildren.create({
-                    path: { document_id: doc.document_id, block_id: doc.document_id },
-                    data: { children: batch },
-                  });
-                  if (writeResp.code !== 0) {
-                    logger.warn({ code: writeResp.code, msg: writeResp.msg }, 'create: 写入内容失败，文档已创建但为空');
-                  }
+                try {
+                  await writeMarkdownContent(client, doc.document_id, doc.document_id, args.content);
+                } catch (writeErr) {
+                  const wmsg = writeErr instanceof Error ? writeErr.message : String(writeErr);
+                  logger.warn({ err: wmsg }, 'create: 写入内容失败，文档已创建但内容可能不完整');
                 }
               }
             }
@@ -344,7 +380,7 @@ export function feishuDocTool(chatId?: string) {
                 const typeId = block.block_type as number;
                 const typeName = BLOCK_TYPE_NAMES[typeId] ?? `type_${typeId}`;
                 const text = extractBlockText(block);
-                if (text || typeId === 21 /* divider */) {
+                if (text || typeId === 22 /* divider */) {
                   blockTexts.push(`[${typeName}] ${text}`);
                 }
               }
@@ -376,21 +412,10 @@ export function feishuDocTool(chatId?: string) {
             if (!args.doc_token) throw new Error('insert_blocks 操作需要 doc_token');
             if (!args.block_id) throw new Error('insert_blocks 操作需要 block_id (父 block)');
             if (!args.content) throw new Error('insert_blocks 操作需要 content');
-            const insertedBlocks = markdownToBlocks(args.content);
-            const insertBatches = batchBlocks(insertedBlocks);
-            let currentIndex = args.index;
-            for (const batch of insertBatches) {
-              const createResp3 = await client.docx.documentBlockChildren.create({
-                path: { document_id: args.doc_token, block_id: args.block_id },
-                data: {
-                  children: batch,
-                  ...(currentIndex != null ? { index: currentIndex } : {}),
-                },
-              });
-              if (createResp3.code !== 0) throw new Error(`插入 blocks 失败 (${createResp3.code}): ${createResp3.msg}`);
-              if (currentIndex != null) currentIndex += batch.length;
-            }
-            return { content: [{ type: 'text' as const, text: `已插入 ${insertedBlocks.length} 个 block` }] };
+            const insertedCount = await writeMarkdownContent(
+              client, args.doc_token, args.block_id, args.content, args.index,
+            );
+            return { content: [{ type: 'text' as const, text: `已插入 ${insertedCount} 个 block` }] };
           }
 
           case 'delete_blocks': {
