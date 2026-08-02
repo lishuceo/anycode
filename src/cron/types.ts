@@ -44,9 +44,13 @@ export interface CronJob {
   skipWeekends: boolean;
 
   // 执行配置
+  //
+  // 注意：预算（maxBudgetUsd）不在此处配置 —— 定时任务复用 agent 级配置
+  // （config/agents.json 的 maxBudgetUsd，见 agent/config-loader.ts）。
+  // 历史上这里有过 maxBudgetUsd 字段，但 scheduler 从未把它传给 executor，
+  // 属于「设了以为生效」的死字段，已移除。
   timeoutSeconds: number;
   model?: string;
-  maxBudgetUsd: number;
   agentId: string;
   /** 飞书 bot 账号标识（多 bot 模式下用于路由到正确的 feishu client） */
   accountId: string;
@@ -81,7 +85,6 @@ export interface CronJobCreate {
 
   timeoutSeconds?: number;
   model?: string;
-  maxBudgetUsd?: number;
   agentId?: string;
   accountId?: string;
 
@@ -100,7 +103,6 @@ export interface CronJobPatch {
   skipWeekends?: boolean;
   timeoutSeconds?: number;
   model?: string;
-  maxBudgetUsd?: number;
   threadId?: string | null;
   threadRootMessageId?: string | null;
   contextSnapshot?: string | null;
