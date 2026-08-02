@@ -47,6 +47,10 @@ const DEFAULT_PRICING = MODEL_PRICING['claude-opus-4-6']!;
  *
  * 当 usage 和 modelUsage 一致时（无 subagent、非首次 resume），计算结果 ≈ total_cost_usd。
  * 当出现累计偏差时，本函数返回更合理的单次费用。
+ *
+ * 注意：错误型 result（如 error_max_budget_usd）的顶层 usage 全为 0，本函数会算出 0，
+ * 此时真实花费只存在于 modelUsage 里。调用方需用 isUsageEmpty() 判断并回退，
+ * 否则超预算这类最该记账的场景反而记成 0。
  */
 function calculateCostFromUsage(
   usage: { input_tokens: number; output_tokens: number; cache_creation_input_tokens: number; cache_read_input_tokens: number },
@@ -83,6 +87,28 @@ function calculateCostFromUsage(
     (usage.output_tokens * pricing.output) / M +
     (usage.cache_creation_input_tokens * pricing.cacheWrite) / M +
     (usage.cache_read_input_tokens * pricing.cacheRead) / M
+  );
+}
+
+/**
+ * 顶层 usage 是否为空（四个 token 计数全为 0）。
+ *
+ * SDK 对错误型 result（error_max_budget_usd / error_during_execution 等）不填顶层 usage，
+ * 于是按 usage 计算的费用是 0，而真实消耗只体现在 modelUsage / total_cost_usd 上。
+ * 实测一次超预算的定时任务：usage 全 0，但 modelUsage 记录 output 21 万 token、
+ * cacheRead 926 万 token，实际 $18.61 —— 若不回退，这笔钱记账为 0。
+ */
+function isUsageEmpty(usage: {
+  input_tokens: number;
+  output_tokens: number;
+  cache_creation_input_tokens: number;
+  cache_read_input_tokens: number;
+}): boolean {
+  return (
+    usage.input_tokens === 0 &&
+    usage.output_tokens === 0 &&
+    usage.cache_creation_input_tokens === 0 &&
+    usage.cache_read_input_tokens === 0
   );
 }
 
@@ -1319,8 +1345,13 @@ export class ClaudeExecutor {
       // SDK 的 total_cost_usd / modelUsage / durationApiMs 在 resume 首次 query 时
       // 会包含整个 session 的历史累计值，导致简单问题显示天价费用。
       // 改用顶层 usage 字段（仅包含本次 query 的 token 用量）自行计算费用。
-      const queryCostUsd = (resultMessage.usage && resultMessage.modelUsage)
-        ? calculateCostFromUsage(resultMessage.usage as Parameters<typeof calculateCostFromUsage>[0], resultMessage.modelUsage)
+      // 例外：错误型 result（error_max_budget_usd 等）的顶层 usage 全为 0，
+      // 按它算出来的费用是 0，真实花费只在 total_cost_usd / modelUsage 里。
+      // 这类场景恰恰最该记账（超预算），因此回退到 SDK 的累计值。
+      const usageForCost = resultMessage.usage as Parameters<typeof calculateCostFromUsage>[0] | undefined;
+      const costFallbackToSessionTotal = !!usageForCost && isUsageEmpty(usageForCost) && (resultMessage.total_cost_usd ?? 0) > 0;
+      const queryCostUsd = (usageForCost && resultMessage.modelUsage && !costFallbackToSessionTotal)
+        ? calculateCostFromUsage(usageForCost, resultMessage.modelUsage)
         : resultMessage.total_cost_usd;
 
       // terminal_reason: SDK 0.2.91+ 暴露 query 终止原因
@@ -1332,6 +1363,8 @@ export class ClaudeExecutor {
         terminalReason,
         sdkTotalCostUsd: resultMessage.total_cost_usd,
         queryCostUsd,
+        // true 表示 queryCostUsd 用的是会话累计口径（顶层 usage 为空时的回退）
+        costFallbackToSessionTotal,
         numTurns: resultMessage.num_turns,
         durationMs: resultMessage.duration_ms,
         durationApiMs: resultMessage.duration_api_ms,
