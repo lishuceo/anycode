@@ -247,6 +247,104 @@ describe('ClaudeExecutor', () => {
     });
   });
 
+  // 回归：错误型 result 的顶层 usage 全为 0，若照它算费用会得到 0，
+  // 而真实花费只在 total_cost_usd / modelUsage 里 —— 超预算恰恰是最该记账的场景。
+  describe('cost accounting on error results', () => {
+    const EMPTY_USAGE = {
+      input_tokens: 0,
+      output_tokens: 0,
+      cache_creation_input_tokens: 0,
+      cache_read_input_tokens: 0,
+    };
+
+    it('falls back to session total when usage is empty (error_max_budget_usd)', async () => {
+      // 取自线上真实一次超预算执行的字段
+      setupMessages([
+        { type: 'system', subtype: 'init', session_id: 'sess-1', model: 'claude-opus-5', tools: [] },
+        {
+          type: 'result',
+          subtype: 'error_max_budget_usd',
+          session_id: 'sess-1',
+          duration_ms: 14,
+          num_turns: 1,
+          total_cost_usd: 18.606643,
+          usage: EMPTY_USAGE,
+          modelUsage: {
+            'claude-opus-5': {
+              costUSD: 18.606643,
+              inputTokens: 273178,
+              outputTokens: 210030,
+              cacheReadInputTokens: 9259706,
+              cacheCreationInputTokens: 1177624,
+            },
+          },
+        },
+      ]);
+
+      const result = await executor.execute(makeInput());
+
+      expect(result.success).toBe(false);
+      expect(result.costUsd).toBeCloseTo(18.606643, 4);   // 不是 0
+      expect(result.numTurns).toBe(1);
+      expect(result.error).toContain('error_max_budget_usd');
+    });
+
+    it('does not fall back when usage is populated', async () => {
+      // usage 有值时仍按单次用量算，避免 resume 首次 query 把历史累计算进来
+      setupMessages([
+        { type: 'system', subtype: 'init', session_id: 'sess-1', model: 'claude-opus-5', tools: [] },
+        {
+          type: 'result',
+          subtype: 'success',
+          session_id: 'sess-1',
+          result: 'done',
+          duration_ms: 100,
+          total_cost_usd: 99,          // 混入历史累计的假高值
+          usage: {
+            input_tokens: 1000,
+            output_tokens: 500,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 0,
+          },
+          modelUsage: {
+            'claude-opus-5': {
+              costUSD: 99,
+              inputTokens: 900_000,     // 与顶层 usage 不一致 → 走定价计算分支
+              outputTokens: 400_000,
+              cacheReadInputTokens: 0,
+              cacheCreationInputTokens: 0,
+            },
+          },
+        },
+      ]);
+
+      const result = await executor.execute(makeInput());
+
+      expect(result.success).toBe(true);
+      expect(result.costUsd).toBeLessThan(1);   // 按 1500 token 算，远小于 $99
+    });
+
+    it('keeps zero cost when the session genuinely spent nothing', async () => {
+      setupMessages([
+        { type: 'system', subtype: 'init', session_id: 'sess-1', model: 'claude-opus-5', tools: [] },
+        {
+          type: 'result',
+          subtype: 'error_max_budget_usd',
+          session_id: 'sess-1',
+          duration_ms: 14,
+          num_turns: 1,
+          total_cost_usd: 0,
+          usage: EMPTY_USAGE,
+          modelUsage: {},
+        },
+      ]);
+
+      const result = await executor.execute(makeInput());
+
+      expect(result.costUsd).toBe(0);
+    });
+  });
+
   describe('killSessionsForChat', () => {
     it('should kill all session key patterns for a chat', async () => {
       // 直接往 runningQueries 注入 mock entries 来测试 killSessionsForChat
