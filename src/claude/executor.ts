@@ -13,6 +13,8 @@ import { getMemoryStore, getHybridSearch, isMemoryEnabled } from '../memory/init
 import { createCronMcpServer } from '../cron/tool.js';
 import { getCronScheduler } from '../cron/init.js';
 import { createWebSearchMcpServer } from '../websearch/tool.js';
+import { createConfigAdminMcpServer } from '../config-admin/tool.js';
+import { isOwner } from '../utils/security.js';
 import { feishuClientContext } from '../feishu/client.js';
 import { isAutoWorkspacePath, isServiceOwnRepo, isInsideSourceRepo } from '../workspace/isolation.js';
 import { detectRuntime } from '../utils/runtime.js';
@@ -807,6 +809,15 @@ export class ClaudeExecutor {
       mcpServers['web-search'] = createWebSearchMcpServer();
     }
 
+    // Self-config MCP tool（自改自配置）— 仅 owner 可用，非 owner 不创建（工具不可见）
+    {
+      const scKeyParts = sessionKey.split(':');
+      const scUserId = scKeyParts.length >= 4 ? scKeyParts[3] : scKeyParts[1] || '';
+      if (scUserId && isOwner(scUserId)) {
+        mcpServers['self-config'] = createConfigAdminMcpServer({ userId: scUserId });
+      }
+    }
+
     // 合并调用方传入的额外 MCP servers（如 discussion-tools）
     if (input.additionalMcpServers) {
       Object.assign(mcpServers, input.additionalMcpServers);
@@ -1018,6 +1029,11 @@ export class ClaudeExecutor {
             // web-search: 联网搜索，只读操作（不触碰代码仓库），readonly 下允许
             if (toolName.startsWith('mcp__web-search__')) {
               logger.info({ toolName, readOnly }, 'canUseTool allowed — web search tool in read-only mode');
+              return { behavior: 'allow' as const, updatedInput: inputObj };
+            }
+            // self-config: 自改自配置工具，创建时已做 owner 门禁 + 白名单 + 写前校验，readonly 下允许
+            if (toolName.startsWith('mcp__self-config__')) {
+              logger.info({ toolName, readOnly }, 'canUseTool allowed — self-config tool in read-only mode');
               return { behavior: 'allow' as const, updatedInput: inputObj };
             }
             // 所有其他 MCP 工具（含 workspace-manager、未来新增）：deny
