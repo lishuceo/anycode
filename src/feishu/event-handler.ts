@@ -1718,7 +1718,7 @@ async function downloadHistoryImages(
  * 话题首条消息的图片单独 fetch + 下载,作为多模态图片(带标签)注入。
  * 只在话题模式下调用(threadId 有值)。返回的图片自带 label='话题首条消息的图片'。
  *
- * 用 threadId 单独取根消息比依赖历史窗口更稳定 —— 历史窗口在 resume 时可能已经把根消息滑出去了,
+ * 用话题消息列表中的首条 messageId 单独取根消息比依赖历史窗口更稳定 —— 历史窗口在 resume 时可能已经把根消息滑出去了,
  * 而根消息往往承载用户问题的核心图片(如"看这张图有什么问题")。
  *
  * 进程内 LRU 缓存按 threadId 缓存结果,避免每轮 resume 都重复 fetch。
@@ -1726,7 +1726,7 @@ async function downloadHistoryImages(
 const topicRootImagesCache = new Map<string, { rootMessageId: string; images: ImageAttachment[]; savedPaths: string[] }>();
 const TOPIC_ROOT_CACHE_MAX = 100;
 
-async function fetchTopicRootImages(threadId: string): Promise<{
+async function fetchTopicRootImages(threadId: string, rootMessageIdHint?: string): Promise<{
   rootMessageId?: string;
   images: ImageAttachment[];
   savedPaths: string[];
@@ -1753,9 +1753,11 @@ async function fetchTopicRootImages(threadId: string): Promise<{
   };
 
   try {
-    const items = await feishuClient.getMessageById(threadId);
+    const rootMessageIdForFetch = rootMessageIdHint ?? (threadId.startsWith('omt_') ? undefined : threadId);
+    if (!rootMessageIdForFetch) return cacheEmpty();
+    const items = await feishuClient.getMessageById(rootMessageIdForFetch);
     if (!items || items.length === 0) return cacheEmpty();
-    const rootMsg = items.find(m => m.message_id === threadId) ?? items[0];
+    const rootMsg = items.find(m => m.message_id === rootMessageIdForFetch) ?? items[0];
     if (!rootMsg) return cacheEmpty();
 
     const rootMessageId = rootMsg.message_id;
@@ -2049,6 +2051,7 @@ async function buildHistoryContext(
     type HistoryMsg = { messageId: string; senderId: string; senderType: 'user' | 'app'; content: string; msgType: string; createTime?: string; imageRefs?: Array<{ imageKey: string }> };
     let messages: HistoryMsg[];
     let parentMsgCount = 0;
+    let topicRootMessageIdHint: string | undefined;
 
     if (!threadId) {
       messages = await feishuClient.fetchRecentMessages(chatId, 'chat', config.chat.historyMaxCount);
@@ -2057,6 +2060,7 @@ async function buildHistoryContext(
       const filtered = currentMessageId
         ? threadMsgs.filter(m => m.messageId !== currentMessageId)
         : threadMsgs;
+      topicRootMessageIdHint = filtered[0]?.messageId ?? threadMsgs[0]?.messageId;
 
       if (filtered.length === 0) {
         messages = await feishuClient.fetchRecentMessages(chatId, 'chat', config.chat.historyMaxCount);
@@ -2120,7 +2124,7 @@ async function buildHistoryContext(
     // 话题模式下先单独 fetch 话题首条消息的图片(走多模态,带标签),
     // 并把首条 messageId 传给 downloadHistoryImages 用于排重(避免重复下载/落盘)。
     const topicRoot = threadId
-      ? await fetchTopicRootImages(threadId)
+      ? await fetchTopicRootImages(threadId, topicRootMessageIdHint)
       : { rootMessageId: undefined as string | undefined, images: [] as ImageAttachment[], savedPaths: [] as string[] };
 
     const [text, imagesResult, historyFiles] = await Promise.all([
@@ -2594,6 +2598,25 @@ export function canResumeSession(params: {
   if (activeConversationCwd && activeConversationCwd !== workingDir) return false;
   if (noResume) return false;
   return true;
+}
+
+/**
+ * 是否为「SDK resume 初始化失败」（子进程在拿到 sessionId 前就退出）。
+ *
+ * 真正的 resume 初始化失败：无 output 且无 sessionId。
+ * 初始化成功后的 query 失败（超时、预算等）通常已有 sessionId 或 output，
+ * 应走结果卡片展示部分输出，而不是「会话恢复失败」提示。
+ * 图片消息会强制跳过 resume，不视为 resume 初始化失败。
+ */
+export function isResumeInitFailure(params: {
+  success: boolean;
+  canResume: boolean;
+  hasImages?: boolean;
+  output?: string;
+  sessionId?: string;
+}): boolean {
+  const actuallyResumed = params.canResume && !params.hasImages;
+  return !params.success && actuallyResumed && !params.output && !params.sessionId;
 }
 
 /**
@@ -3119,12 +3142,13 @@ export async function executeClaudeTask(
     }
 
     // Resume 失败（非 workspace 变更场景）：报错给用户，保留 session ID 不动
-    // 用 !result.output 区分 resume 失败和正常 query 失败：
-    //   - resume 失败：子进程秒退，无 output
-    //   - 正常失败（超时、预算等）：有 output，应走 sendResultCard 展示部分结果
-    // 图片消息强制跳过 resume，不触发此检查
-    const actuallyResumed = canResume && !images?.length;
-    if (!result.success && actuallyResumed && !result.output) {
+    if (isResumeInitFailure({
+      success: result.success,
+      canResume,
+      hasImages: !!images?.length,
+      output: result.output,
+      sessionId: result.sessionId,
+    })) {
       logger.error(
         { sessionKey, threadId, error: result.error, sessionId: activeConversationId, durationMs: result.durationMs },
         'Resume failed — session ID preserved for user to decide',

@@ -1305,7 +1305,7 @@ describe('queue key construction for parallel execution', () => {
 // canResumeSession — resume 开关判定（含 per-agent noResume）
 // ============================================================
 
-const { canResumeSession } = await import('../event-handler.js');
+const { canResumeSession, isResumeInitFailure } = await import('../event-handler.js');
 
 describe('canResumeSession', () => {
   const WORK = '/tmp/work';
@@ -1343,5 +1343,50 @@ describe('canResumeSession', () => {
   it('noResume 优先级：即使无会话也返回 false（不改变最终结果）', () => {
     // 无会话本就 false，noResume 叠加仍 false —— 确认不会因 noResume 逻辑抛错
     expect(canResumeSession({ workingDir: WORK, noResume: true })).toBe(false);
+  });
+});
+
+// ============================================================
+// isResumeInitFailure — 区分 resume 初始化失败 vs 初始化后的 query 失败
+// ============================================================
+
+describe('isResumeInitFailure', () => {
+  it('resume 初始化失败：无 output 且无 sessionId', () => {
+    expect(isResumeInitFailure({
+      success: false, canResume: true, output: undefined, sessionId: undefined,
+    })).toBe(true);
+    expect(isResumeInitFailure({
+      success: false, canResume: true, output: '', sessionId: '',
+    })).toBe(true);
+  });
+
+  it('初始化后的 query 失败（已有 sessionId）不当作 resume 初始化失败', () => {
+    expect(isResumeInitFailure({
+      success: false, canResume: true, output: undefined, sessionId: 'sess-1',
+    })).toBe(false);
+  });
+
+  it('初始化后的 query 失败（已有 output）不当作 resume 初始化失败', () => {
+    expect(isResumeInitFailure({
+      success: false, canResume: true, output: 'partial', sessionId: undefined,
+    })).toBe(false);
+  });
+
+  it('图片消息强制跳过 resume，不触发此检查', () => {
+    expect(isResumeInitFailure({
+      success: false, canResume: true, hasImages: true,
+    })).toBe(false);
+  });
+
+  it('本就不 resume 时不触发', () => {
+    expect(isResumeInitFailure({
+      success: false, canResume: false,
+    })).toBe(false);
+  });
+
+  it('成功结果不触发', () => {
+    expect(isResumeInitFailure({
+      success: true, canResume: true, output: 'ok', sessionId: 'sess-1',
+    })).toBe(false);
   });
 });
