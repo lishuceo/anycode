@@ -75,7 +75,7 @@ jobs:
 
             ## Step 2: Setup
 
-            1. Read CLAUDE.md to understand the project architecture and conventions.
+            1. Read AGENTS.md to understand the project architecture and conventions.
             2. Run `gh pr view ${{ github.event.pull_request.number }}` to understand the PR intent.
 
             ## Step 3: Review Process
@@ -88,7 +88,7 @@ jobs:
             ## What to Look For
             - **Bugs**: Logic errors, off-by-one, null/undefined access, race conditions, unhandled promise rejections
             - **Security**: Injection risks (command, SQL, XSS), secret exposure, unsafe permissions, missing input validation
-            - **Architecture**: Does the change follow patterns in CLAUDE.md? ESM imports with .js extensions? Proper singleton usage?
+            - **Architecture**: Does the change follow patterns in AGENTS.md? ESM imports with .js extensions? Proper singleton usage?
             - **TypeScript**: Unsafe `any` types, incorrect generics, missing error types, async/await pitfalls
             - **Resource leaks**: Unclosed connections, missing event listener cleanup, timer leaks
 

@@ -44,7 +44,7 @@ argument-hint: "[PR number, PR URL, or empty for local changes]"
 使用 TeamCreate 创建审查团队，启动 **3 个并行 agent**，每个专注一个维度。
 
 给每个 agent 的共同上下文：
-- CLAUDE.md 的内容（项目架构、模式、技术栈）
+- AGENTS.md 的内容（项目架构、模式、技术栈；其他仓库若没有该文件，读取 CLAUDE.md 及其导入内容）
 - 完整的 diff 内容
 - 变更涉及的文件列表
 
@@ -69,7 +69,7 @@ argument-hint: "[PR number, PR URL, or empty for local changes]"
 ### Agent 3: 🏗️ 架构与质量审查 (architecture-reviewer)
 
 检查项：
-- 是否符合 CLAUDE.md 中描述的项目模式（ESM `.js` 后缀、单例模式、两阶段消息等）
+- 是否符合 AGENTS.md 中描述的项目模式（ESM `.js` 后缀、单例模式、两阶段消息等）
 - TypeScript 类型安全（不安全的 `any`、错误的泛型、async/await 陷阱）
 - 模块边界是否清晰，是否有循环依赖
 - 命名一致性、代码组织

@@ -3,10 +3,12 @@ summary: "轻量路由 Agent：在主查询前确定工作目录，支持本地/
 related_paths:
   - src/claude/router.ts
   - src/feishu/thread-context.ts
-last_updated: "2026-04-02"
+last_updated: "2026-09-26"
 ---
 
 # Routing Agent 架构
+
+> 历史设计：前置路由 Agent 已移除，下文的 `CLAUDE.md` 文件名和路由实现保留用于解释旧方案。当前工作区流程见 [Workspace 架构](workspace-cache-and-restart.md)，本仓库规范真源见 [AGENTS.md](../../AGENTS.md)。
 
 轻量 Claude Code 实例（Sonnet），在主查询前决定工作目录。仅 thread 首条消息运行，后续消息直接复用已绑定的 workdir。
 

@@ -39,9 +39,11 @@ argument-hint: "[commit message or description of changes]"
 - 如果变更涉及某个 plan 的 `related_paths`，检查该 plan 的 `status` 和 `last_updated` 是否需要更新
 - 如果 plan 的功能已全部实现，提醒用户将 status 改为 `completed`
 
-#### 3c. CLAUDE.md 一致性
+#### 3c. AGENTS.md 一致性
 
-检查 `CLAUDE.md` 中引用的路径是否仍然有效，以及本次变更是否引入了 CLAUDE.md 应记录但未记录的内容（新目录、新工具、新工作流）。
+检查 `AGENTS.md` 中引用的路径是否仍然有效，以及本次变更是否引入了 AGENTS.md 应记录但未记录的内容（新目录、新工具、新工作流）。
+
+其他仓库若仍以 `CLAUDE.md` 为规范来源，检查其正文及导入内容。本仓库的 `CLAUDE.md` 仅为兼容导入，规范更新应写入 `AGENTS.md`。
 
 #### 3d. 用户指南检查
 

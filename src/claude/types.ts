@@ -97,7 +97,7 @@ export interface ExecuteOptions {
   disableWorkspaceTool?: boolean;
   /** 覆盖模型 (路由 agent 使用 Sonnet) */
   model?: string;
-  /** 覆盖 settingSources (路由 agent 使用 [] 避免加载项目 CLAUDE.md) */
+  /** 覆盖 settingSources；传 [] 禁用文件系统设置来源及项目指引加载 */
   settingSources?: Array<'user' | 'project' | 'local'>;
   /** 只读模式：禁止 Edit/Write/Bash 等修改工具 */
   readOnly?: boolean;

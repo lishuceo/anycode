@@ -2,7 +2,7 @@
 summary: "文档维护体系建设：目录重组 + front matter 规范 + 文档 CI"
 status: in_progress
 owner: lishuceo
-last_updated: "2026-03-10"
+last_updated: "2026-09-26"
 read_when:
   - 新建或修改 docs/ 目录下的文件
   - 配置文档相关的 CI 检查
@@ -125,7 +125,9 @@ read_when:
 | `read_when` | **核心字段**：告诉 agent 在什么场景下应该读这个文档 |
 | `owner` | 负责人的 Git ID |
 
-#### 1.3 在 CLAUDE.md 中添加指引
+#### 1.3 在 AGENTS.md 中添加指引
+
+规范仅维护在 `AGENTS.md`。根目录 `CLAUDE.md` 保留一行 `@AGENTS.md` 兼容旧版 SDK / CLI，不再追加正文。
 
 ```markdown
 ## 开发计划文档
@@ -243,7 +245,7 @@ check-docs:
 // agent 据此决定是否 read 某个计划文件
 ```
 
-在 CLAUDE.md 中加入：
+在 AGENTS.md 中加入：
 
 ```markdown
 开始复杂任务前，先运行 `node scripts/docs-list.mjs` 查看相关计划文档。

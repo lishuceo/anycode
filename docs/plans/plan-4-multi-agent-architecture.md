@@ -2,7 +2,7 @@
 summary: "多 Agent 角色架构：Chat Agent + Dev Agent 分工协作"
 status: in_progress
 owner: lishuceo
-last_updated: "2026-04-02"
+last_updated: "2026-09-26"
 read_when:
   - 修改 Agent 角色定义或 prompt
   - 调整 Chat Agent / Dev Agent 分工
@@ -10,6 +10,8 @@ read_when:
 ---
 
 # Plan 4: 多 Agent 角色架构
+
+项目规范以根目录 `AGENTS.md` 为准；SDK 通过 `CLAUDE.md` 的 `@AGENTS.md` 导入保留兼容，`settingSources` 的选择保持不变。
 
 > 日期: 2026-02-24
 > 状态: **Phase 1 已实现** (PR #52, #56)
@@ -126,7 +128,7 @@ ChatBot 用户对话 → Chat Agent 判断需要开发
 | 工具白名单 | `Read`, `Glob`, `Grep`, `WebSearch`, `WebFetch`, `Task`, `invoke_agent` |
 | 禁止工具 | `Edit`, `Write`, `Bash`, `NotebookEdit`, `Skill` |
 | System Prompt | 方案讨论专用：引导用户明确需求、分析代码架构、制定方案、决定是否需要开发 |
-| 读取 CLAUDE.md | 是（了解项目上下文） |
+| 读取 AGENTS.md | 是（了解项目上下文） |
 | Session 隔离 | 独立 conversationId，key: `chat:{chatId}:{threadId}` |
 
 **核心能力：**
@@ -142,8 +144,8 @@ ChatBot 用户对话 → Chat Agent 判断需要开发
 | 飞书身份 | 独立 Bot 应用 (DevBot) |
 | 默认 Model | Opus 4.6（代码开发需要强能力） |
 | 工具白名单 | 全部工具 + `setup_workspace` MCP tool |
-| System Prompt | 当前的开发 agent prompt（含 CLAUDE.md） |
-| 读取 CLAUDE.md | 是 |
+| System Prompt | 当前的开发 agent prompt（含 AGENTS.md） |
+| 读取 AGENTS.md | 是 |
 | Session 隔离 | 独立 conversationId，key: `dev:{chatId}:{threadId}` |
 
 **触发方式：**
