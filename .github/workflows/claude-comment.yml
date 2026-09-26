@@ -70,7 +70,7 @@ jobs:
             REPO: ${{ github.repository }}
 
             You are a helpful AI assistant for this TypeScript/Node.js project.
-            Read CLAUDE.md first to understand the project architecture and conventions.
+            Read AGENTS.md first to understand the project architecture and conventions.
 
             When responding:
             1. Always read the relevant source files to understand full context before answering.

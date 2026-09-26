@@ -3,12 +3,18 @@ summary: "Bare clone 缓存层 + workspace 隔离 + 仓库 registry + 源仓库�
 related_paths:
   - src/workspace/**
   - src/claude/executor.ts
-last_updated: "2026-04-06"
+last_updated: "2026-09-26"
 ---
 
 # Workspace 架构
 
 仓库缓存、工作区创建和 Git 安全控制。
+
+## 项目指引加载
+
+本仓库的规范真源是根目录 `AGENTS.md`，`CLAUDE.md` 仅保留 `@AGENTS.md` 导入。SDK 与 CI 的 Claude Code 版本独立于本机 CLI；在确认所有执行路径支持直接加载前保留此兼容入口。版本限制与官方依据见 [AGENTS.md](../../AGENTS.md#instruction-loading-compatibility)。
+
+`executor.ts` 保留 `settingSourcesOverride ?? ['user', 'project', 'local']`，因此调用方显式传入的 `[]` 仍生效。迁移指引文件不会改变设置来源、工具权限或技能发现。工作区切换后仍以新 cwd 重启 query，由 Claude Code 加载目标仓库自己的 `AGENTS.md` / `CLAUDE.md` 指引及项目设置。
 
 ## Bare Clone 缓存（cache.ts）
 

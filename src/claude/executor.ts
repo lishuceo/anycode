@@ -352,7 +352,7 @@ export function buildWorkspaceSystemPrompt(workingDir?: string, options?: { isRe
 ## 工作区管理
 
 **重要：当用户的请求涉及特定仓库时（无论是阅读代码、修改代码还是查看结构），必须先使用 setup_workspace 切换到该仓库。**
-这样才能正确加载项目的 CLAUDE.md（架构说明、命令约定）、.claude/settings.json（工具权限）、.claude/skills/（项目技能），并让代码搜索工具在正确的范围内工作。
+这样才能正确加载项目的 AGENTS.md / CLAUDE.md（架构说明、命令约定）、.claude/settings.json（工具权限）、.claude/skills/（项目技能），并让代码搜索工具在正确的范围内工作。
 不要直接在 \`${projectsDir}\` 下用绝对路径浏览源仓库 — 这样会丢失项目上下文。
 
 仅当用户的问题是通用性的（不涉及特定仓库，如"JavaScript 闭包是什么"）时，才不需要 setup_workspace。
@@ -361,7 +361,7 @@ export function buildWorkspaceSystemPrompt(workingDir?: string, options?: { isRe
 
 很多时候用户不会明确说"切到 X 仓库"，而是**隐式**引用。你必须主动识别以下模式并触发 setup_workspace：
 
-1. **提到某个项目的文件** — 如 "X 项目的 CLAUDE.md"、"Y 的 package.json"、"看看 Z 的配置"
+1. **提到某个项目的文件** — 如 "X 项目的 AGENTS.md / CLAUDE.md"、"Y 的 package.json"、"看看 Z 的配置"
 2. **讨论某个项目的架构/代码** — 根据上下文和 registry 关键词判断属于哪个仓库
 3. **引用外部报告中的具体代码片段** — 如用户贴了一段来自某仓库的代码或错误日志
 4. **问题涉及某项目特有的技术栈/概念** — 结合 registry 中的 techStack 和 keywords 匹配
@@ -399,11 +399,11 @@ export function buildWorkspaceSystemPrompt(workingDir?: string, options?: { isRe
 
 **不要跳过搜索步骤直接问用户要 URL。** 先尝试自己找到仓库。
 
-**重要：\`${cacheDir}\` 下的是 bare clone（无文件树），仅用于定位仓库 URL。不要在 bare repo 中直接工作（\`git show\`/\`git grep\` 等）。** 找到仓库后，如果项目不在 \`${projectsDir}\` 下，必须调用 setup_workspace 创建完整工作区，这样才能正确加载 CLAUDE.md、使用搜索工具、获得完整的代码上下文。
+**重要：\`${cacheDir}\` 下的是 bare clone（无文件树），仅用于定位仓库 URL。不要在 bare repo 中直接工作（\`git show\`/\`git grep\` 等）。** 找到仓库后，如果项目不在 \`${projectsDir}\` 下，必须调用 setup_workspace 创建完整工作区，这样才能正确加载 AGENTS.md / CLAUDE.md、使用搜索工具、获得完整的代码上下文。
 
 **setup_workspace 后不要再次调用，除非发现进错了仓库。** 当前工作区已经配置好了正确的权限，直接在当前目录工作即可。
 
-**重要：调用 setup_workspace 后，系统将自动重启以加载项目配置（CLAUDE.md 等）。
+**重要：调用 setup_workspace 后，系统将自动重启以加载项目配置（AGENTS.md / CLAUDE.md 等）。
 请在调用后仅输出简短确认（如"工作区已就绪，正在重新加载项目配置..."），不要继续执行后续任务。**`;
   }
 
@@ -1056,7 +1056,8 @@ export class ClaudeExecutor {
           ? promptAppend
           : { type: 'preset', preset: 'claude_code', append: promptAppend },
 
-        // 加载项目设置 (CLAUDE.md 等)；路由 agent 传 [] 避免加载
+        // 加载项目设置及指引；本仓库通过 CLAUDE.md 导入 AGENTS.md 兼容 SDK CLI
+        // 调用方可传 [] 禁用文件系统设置来源
         // 'local' 加载 .claude/settings.local.json（优先级最高，覆盖 project）
         settingSources: settingSourcesOverride ?? ['user', 'project', 'local'],
 

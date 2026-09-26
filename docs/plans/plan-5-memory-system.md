@@ -2,7 +2,7 @@
 summary: "Agent 记忆系统：跨会话持久化记忆 + 自动提取注入"
 status: in_progress
 owner: lishuceo
-last_updated: "2026-04-02"
+last_updated: "2026-09-26"
 read_when:
   - 修改记忆存储、搜索、提取逻辑
   - 开发记忆相关 MCP 工具
@@ -10,6 +10,8 @@ read_when:
 ---
 
 # Plan 5: Agent 记忆系统
+
+本文中的项目规范指根目录 `AGENTS.md`；SDK 通过 `CLAUDE.md` 的 `@AGENTS.md` 导入加载，保留现有 `settingSources` 配置。
 
 > 日期: 2026-02-27
 > 状态: **Phase 0 ✅ | Phase 1 ✅** | Phase 2 待实施
@@ -345,7 +347,7 @@ LLM 调用 (Haiku，成本最低):
    只提取明确的、有长期价值的信息。不要提取：
    - 临时的调试过程
    - 通用知识（不特定于此用户/项目）
-   - 已在 CLAUDE.md 中记录的项目约定"
+   - 已在 AGENTS.md 中记录的项目约定"
   ↓
 返回结构化 JSON array
   ↓
@@ -420,7 +422,7 @@ System Prompt 结构:
   │ Agent 基础人设           │  ← 固定
   │ (chat.ts / dev.ts)      │
   ├─────────────────────────┤
-  │ CLAUDE.md 项目上下文     │  ← 固定 (settingSources)
+  │ AGENTS.md 项目上下文     │  ← 固定 (settingSources)
   ├─────────────────────────┤
   │ 用户记忆片段             │  ← 动态注入 ★
   │ (本方案新增)             │
@@ -429,7 +431,7 @@ System Prompt 结构:
   └─────────────────────────┘
 ```
 
-注入方式：通过 `systemPromptBuilder(ctx)` 中追加记忆片段。记忆片段放在 CLAUDE.md 之后、对话之前，确保 Agent 同时有项目上下文和用户上下文。
+注入方式：通过 `systemPromptBuilder(ctx)` 中追加记忆片段。记忆片段放在 AGENTS.md 之后、对话之前，确保 Agent 同时有项目上下文和用户上下文。
 
 ### 7.3 Token 预算
 
@@ -479,16 +481,16 @@ async function memoryMaintenance(): Promise<void> {
 }
 ```
 
-### 8.3 记忆与 CLAUDE.md 的边界
+### 8.3 记忆与 AGENTS.md 的边界
 
 | 信息类型 | 存储位置 | 理由 |
 |---------|---------|------|
-| 项目架构、编码规范 | CLAUDE.md | 全团队共享，版本控制 |
+| 项目架构、编码规范 | AGENTS.md | 全团队共享，版本控制 |
 | 用户个人偏好 | memories | per-user，不适合放公共文件 |
 | 项目事实（运行时发现的） | memories | 动态变化，自动抽取 |
 | Agent 配置、工具策略 | agent registry | 代码/配置管理 |
 
-原则：CLAUDE.md 是**人为维护的项目知识**，memories 是**对话中自动积累的用户/项目知识**。两者互补不冲突。
+原则：AGENTS.md 是**人为维护的项目知识**，memories 是**对话中自动积累的用户/项目知识**。两者互补不冲突。
 
 ---
 
@@ -657,7 +659,7 @@ TTL: 2 小时                  TTL: 按类型 (天~永久)
 
 ## 提取规则
 - 只提取明确的、有长期价值的信息
-- 不要提取: 临时调试过程、通用知识、CLAUDE.md 中已有的信息
+- 不要提取: 临时调试过程、通用知识、AGENTS.md 中已有的信息
 - preference 的 confidence 基于表达强度: "我习惯用"=0.8, "试试看"=0.4, "必须用"=1.0
 - state 必须估计 ttl (会话级/天级/周级/月级)
 - fact 的 confidence 通常为 1.0，除非用户表达不确定 ("好像是")

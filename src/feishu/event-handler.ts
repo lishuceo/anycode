@@ -2599,7 +2599,7 @@ export function canResumeSession(params: {
 /**
  * 执行 Claude Agent SDK 任务
  * 支持 workspace 变更后自动 restart：第一次 query 触发 setup_workspace 后，
- * 自动以新 cwd 发起第二次 query，确保 CLAUDE.md 正确加载。
+ * 自动以新 cwd 发起第二次 query，确保项目指引正确加载。
  *
  * Resume 策略：优先使用 thread_sessions 表（threadId → conversationId 映射），
  * 每个 thread 独立管理自己的 conversationId，互不干扰。
@@ -2922,7 +2922,7 @@ export async function executeClaudeTask(
       ...(customSystemPrompt ? { systemPromptOverride: customSystemPrompt } : {}),
     });
 
-    // 检测是否需要 restart（workspace 变更后重新执行以加载 CLAUDE.md）
+    // 检测是否需要 restart（workspace 变更后重新执行以加载项目指引）
     // 优先级高于 resume 失败检查：即使 query 失败，只要 workspace 已变更就应重启
     if (result.needsRestart && result.newWorkingDir) {
       logger.info(
@@ -3030,7 +3030,7 @@ export async function executeClaudeTask(
         );
       }
 
-      // 第二次 query：以新 cwd 执行，CLAUDE.md 正确加载
+      // 第二次 query：以新 cwd 执行，正确加载项目指引
       // - 不传 resumeSessionId（Agent SDK 不支持跨 cwd resume，会 exit code 1）
       // - 不传 onWorkspaceChanged（不触发二次 restart）
       // - disableWorkspaceTool: 完全移除 setup_workspace MCP tool，防止无限循环

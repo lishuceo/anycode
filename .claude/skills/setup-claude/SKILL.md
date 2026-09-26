@@ -340,7 +340,7 @@ Use `gh pr diff` for the full diff, `gh pr view` for PR intent.
 Use TeamCreate to create a review team with **3 parallel agents**, each focused on one dimension.
 
 Shared context for all agents:
-- Content of CLAUDE.md (if it exists — read it first and include it if present)
+- Content of AGENTS.md (read it first if present; otherwise read CLAUDE.md and its imports)
 - Full diff content
 - List of changed files
 
@@ -365,7 +365,7 @@ Checks:
 ### Agent 3: Architecture & Quality Reviewer (architecture-reviewer)
 
 Checks:
-- If CLAUDE.md exists, verify changes follow the project patterns described there
+- Verify changes follow the project patterns in AGENTS.md, or CLAUDE.md and its imports in legacy repositories
 - Check project conventions: consistent import style, module patterns, code organization
 - Language-specific: type safety, idiomatic patterns, proper use of language features
 - Clean module boundaries, no circular dependencies
@@ -500,7 +500,7 @@ jobs:
 
             ## Step 2: Setup
 
-            1. Read CLAUDE.md if it exists to understand the project architecture and conventions.
+            1. Read AGENTS.md if it exists to understand the project architecture and conventions; otherwise read CLAUDE.md and its imports.
             2. Run `gh pr view ${{ github.event.pull_request.number }}` to understand the PR intent.
 
             ## Step 3: Review Process
@@ -513,7 +513,7 @@ jobs:
             ## What to Look For
             - **Bugs**: Logic errors, off-by-one, null/undefined access, race conditions, unhandled promise rejections
             - **Security**: Injection risks (command, SQL, XSS), secret exposure, unsafe permissions, missing input validation
-            - **Architecture**: Does the change follow patterns in CLAUDE.md (if it exists)? Are conventions consistent?
+            - **Architecture**: Does the change follow the project guidance read during setup? Are conventions consistent?
             - **Language-specific**: Type safety, idiomatic patterns, proper use of language features
             - **Resource leaks**: Unclosed connections, missing event listener cleanup, timer leaks
 
@@ -604,7 +604,7 @@ jobs:
             REPO: ${{ github.repository }}
 
             You are a helpful AI assistant for this project.
-            Read CLAUDE.md if it exists to understand the project architecture and conventions.
+            Read AGENTS.md if it exists to understand the project architecture and conventions; otherwise read CLAUDE.md and its imports.
 
             When responding:
             1. Always read the relevant source files to understand full context before answering.

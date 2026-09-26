@@ -165,6 +165,9 @@ All options are documented in `.env.example`. Key ones:
 
 ## Development
 
+Read [AGENTS.md](AGENTS.md) for project architecture, conventions, and the documentation workflow.
+Edit that file when updating project guidance. `CLAUDE.md` contains only an `@AGENTS.md` import for Claude Code / Agent SDK compatibility.
+
 ```bash
 npm run dev          # Start with auto-reload
 npm run build        # Compile TypeScript

@@ -1,6 +1,6 @@
 ---
 name: doc-health
-description: "Set up or audit documentation health for any repo. Use 'init' to bootstrap a docs/ structure (plans/, design/, research/) with YAML front matter, agent discovery scripts, and anti-rot mechanisms. Use 'audit' to detect stale design docs, undistilled completed plans, broken internal links, and CLAUDE.md drift. Use when: 'set up docs', 'doc health', 'check documentation', 'audit docs', 'bootstrap documentation', 'prevent doc rot'."
+description: "Set up or audit documentation health for any repo. Use 'init' to bootstrap a docs/ structure (plans/, design/, research/) with YAML front matter, agent discovery scripts, and anti-rot mechanisms. Use 'audit' to detect stale design docs, undistilled completed plans, broken internal links, and AGENTS.md drift. Use when: 'set up docs', 'doc health', 'check documentation', 'audit docs', 'bootstrap documentation', 'prevent doc rot'."
 argument-hint: "<init | audit>"
 ---
 
@@ -26,7 +26,7 @@ Bootstrap a documentation structure. Idempotent — skips anything that already 
 - Identify the main source directory: check `src/`, `lib/`, `app/`, or project root for code directories
 - List top-level module directories (e.g., `src/auth/`, `src/api/`, `src/utils/`)
 - Check which of these already exist: `docs/`, `docs/plans/`, `docs/design/`, `docs/research/`
-- Check if `CLAUDE.md` exists and whether it already has a documentation section
+- Check if `AGENTS.md` exists and whether it already has a documentation section
 - Check if `scripts/docs-list.mjs` exists
 - Note the current date for `last_updated` fields
 
@@ -57,7 +57,7 @@ last_updated: "<today>"
 > TODO: Describe current architecture and key design decisions when next modifying this module.
 ```
 
-**How to infer the summary**: Read the module's `index.ts` (or main file) exports, or check README/CLAUDE.md for mentions. If nothing is available, use the directory name as-is.
+**How to infer the summary**: Read the module's `index.ts` (or main file) exports, or check README/AGENTS.md for mentions. If nothing is available, use the directory name as-is.
 
 ### Step 4: Create scripts/docs-list.mjs
 
@@ -170,9 +170,11 @@ if (jsonOutput) {
 }
 ```
 
-### Step 5: Update CLAUDE.md
+### Step 5: Update AGENTS.md
 
-If CLAUDE.md does not exist, create it with a minimal project header and the documentation section below. If it exists but has no documentation section, **append** the section. If a documentation section already exists, **skip**.
+If AGENTS.md does not exist, create it with a minimal project header and the documentation section below. If it exists but has no documentation section, **append** the section. If a documentation section already exists, **skip**.
+
+If a repository still keeps its guidance in `CLAUDE.md`, read that guidance first and preserve it when establishing `AGENTS.md` as the source of truth. Keep a `CLAUDE.md` containing `@AGENTS.md` when its Claude Code / Agent SDK consumers need compatibility. Never append project documentation to an import-only stub or maintain duplicate guidance in both files.
 
 Detect an existing section by searching for headings containing "Documentation", "Docs", or the Chinese equivalent.
 
@@ -235,7 +237,7 @@ Doc Health Init Complete:
   [created] docs/design/api.md (stub)
   [skipped] docs/design/utils.md (already exists)
   [created] scripts/docs-list.mjs
-  [updated] CLAUDE.md (appended Documentation section)
+  [updated] AGENTS.md (appended Documentation section)
 
 Next steps:
   - Fill in design doc stubs when working on each module
@@ -285,11 +287,11 @@ Scan all `.md` files in `docs/` for:
 - Code path references in backticks like `` `src/module/file.ts` `` — verify the file exists using Glob
 - Skip external URLs (http/https), anchors (#), and mailto links
 
-### Check 5: CLAUDE.md Module Drift
+### Check 5: AGENTS.md Module Drift
 
-If CLAUDE.md exists and lists module descriptions (look for file paths like `src/*/`):
+If AGENTS.md exists and lists module descriptions (look for file paths like `src/*/`):
 - Check that every listed path still exists on disk
-- Check that major source directories have at least a mention in CLAUDE.md
+- Check that major source directories have at least a mention in AGENTS.md
 - Report unlisted modules and phantom references
 
 ### Report
@@ -311,16 +313,16 @@ Aggregate all findings into a structured report:
 ### Broken Internal Links (N found)
 - docs/design/X.md:15 — references `src/old/file.ts` which does not exist
 
-### CLAUDE.md Drift (N found)
-- CLAUDE.md mentions `src/routing/` but directory does not exist
-- `src/cron/` exists but is not mentioned in CLAUDE.md
+### AGENTS.md Drift (N found)
+- AGENTS.md mentions `src/routing/` but directory does not exist
+- `src/cron/` exists but is not mentioned in AGENTS.md
 
 ### Summary
 - N stale design docs
 - N undistilled plans
 - N stale plans
 - N broken links
-- N CLAUDE.md drift issues
+- N AGENTS.md drift issues
 ```
 
 If everything is clean, output: "Doc health: all clear."

@@ -3,7 +3,7 @@ summary: "Thread 级会话绑定：threadId → workdir/conversationId 持久化
 related_paths:
   - src/session/**
   - src/feishu/thread-context.ts
-last_updated: "2026-04-02"
+last_updated: "2026-09-26"
 ---
 
 # Session 架构
@@ -26,7 +26,7 @@ interface ThreadSession {
   workingDir: string;            // 路由阶段绑定
   conversationId?: string;       // Claude Code session_id（用于 resume）
   conversationCwd?: string;      // 创建 conversationId 时的 cwd
-  systemPromptHash?: string;     // system prompt hash（变化时自动重置 session）
+  systemPromptHash?: string;     // system prompt hash（变化时记录诊断日志）
   routingCompleted?: boolean;    // 路由是否完成
   routingState?: RoutingState;   // need_clarification 时保存
   pipelineContext?: PipelineContext;  // pipeline 执行后保存（用于后续 history 注入）
@@ -68,7 +68,7 @@ SQLite 持久化，13 次 migration 演化：
 查找 ThreadSession
   ├── 无记录 → 运行 Routing Agent → 绑定 workdir → 创建 ThreadSession
   ├── routingState = pending_clarification → 拼接上下文重新路由
-  ├── 有 workdir + conversationId → 检查 cwd 和 systemPromptHash 匹配 → resume
+  ├── 有 workdir + conversationId → 检查 cwd，记录 prompt hash 变化 → resume
   └── 有 workdir 无 conversationId → 新建 Claude Code session
   ↓
 执行 Claude Code query
@@ -76,9 +76,9 @@ SQLite 持久化，13 次 migration 演化：
 保存 conversationId（用于后续 resume）
 ```
 
-### System Prompt Hash 自动重置
+### System Prompt Hash 诊断
 
-`systemPromptHash` 记录创建 session 时的 prompt hash。当 agent 配置或 CLAUDE.md 变化导致 hash 不同时，自动清空 `conversationId`，强制创建新 session（避免 resume 到旧 prompt 的 session）。
+`systemPromptHash` 对 executor 构造的静态 prompt（knowledge + persona/workspace prompt）计算哈希。它不包含 `AGENTS.md` / `CLAUDE.md` 的文件内容，变化时仅记录诊断日志，不再清空 `conversationId`。本仓库的项目规范由 `CLAUDE.md` 导入 `AGENTS.md`，通过 Claude Code 的项目指引加载机制读取。
 
 ## 文件
 
@@ -95,5 +95,5 @@ SQLite 持久化，13 次 migration 演化：
 | Thread 级而非 Chat 级 session | 同一群聊可能有多个并行话题，需要独立 workdir |
 | SQLite 持久化 | 服务重启后不丢失 session 绑定 |
 | 原子 CAS 锁 | 防止同一 chat 并发执行多个 query |
-| systemPromptHash 自动重置 | 配置变化后不 resume 到过期的 session |
+| systemPromptHash 仅用于诊断 | prompt 变化时继续 resume 并传入更新后的 systemPrompt，避免无谓丢失会话 |
 | Agent 前缀在 key 中 | 多 agent 场景下同一 thread 不同 agent 需要独立 session |
