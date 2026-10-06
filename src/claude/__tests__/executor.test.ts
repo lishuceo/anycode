@@ -800,6 +800,33 @@ describe('ClaudeExecutor', () => {
         vi.useRealTimers();
       }
     });
+
+    it('doubles the idle window when resuming a session (large JSONL load)', async () => {
+      vi.useFakeTimers();
+      try {
+        setupHangingAfter([INIT_MSG]);
+        const p = executor.execute(makeInput({
+          timeoutSeconds: 1,
+          toolTimeoutSeconds: 30,
+          resumeSessionId: 'sess-old',
+        }));
+
+        // 1.2s：普通 idle 窗口已过，resume 翻倍后仍应继续等待
+        await vi.advanceTimersByTimeAsync(1200);
+        const ac = mockQuery.mock.calls[0][0].options.abortController as AbortController;
+        expect(ac.signal.aborted).toBe(false);
+
+        // 再过 1s，达到 2× idle 窗口后才 abort
+        await vi.advanceTimersByTimeAsync(1000);
+        const result = await p;
+
+        expect(ac.signal.aborted).toBe(true);
+        expect(result.success).toBe(false);
+        expect(result.error).toMatch(/idle timeout/i);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 });
 

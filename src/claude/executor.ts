@@ -669,12 +669,12 @@ export class ClaudeExecutor {
 
     // 滑动窗口 idle 超时：每收到一条 SDK 消息就重置计时器
     // 只在某一步长时间无活动时才 abort，不限制总执行时长
-    // 当 agent 有过工具活动时，使用 2 倍超时（API 处理大上下文后思考下一步可能较慢）
+    // 当 agent 有过工具活动或 resume 大历史时，使用 2 倍超时（API 处理大上下文/长 JSONL 可能较慢）
     let idleTimer: ReturnType<typeof setTimeout> = undefined!;
     let lastResetSource = 'init';
     // pendingToolCalls 在下方声明（消息循环作用域），这里用闭包延迟读取其 size 作为 in-flight 信号
     const inFlightToolCount = () => pendingToolCalls.size;
-    const baseIdleTimeout = () => (hasToolActivity ? idleTimeoutMs * 2 : idleTimeoutMs);
+    const baseIdleTimeout = () => ((hasToolActivity || resumeSessionId) ? idleTimeoutMs * 2 : idleTimeoutMs);
     const resetIdleTimer = (source?: string, overrideMs?: number) => {
       clearTimeout(idleTimer);
       if (source) lastResetSource = source;

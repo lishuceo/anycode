@@ -199,4 +199,37 @@ describe('fetchTopicRootImages', () => {
     expect(res.images).toHaveLength(1);
     expect(res.savedPaths).toHaveLength(1);
   });
+
+  it('does not treat omt_ threadId as a message id when no hint is given', async () => {
+    const res = await fetchTopicRootImages('omt_197a3379c4cf1bb7');
+
+    expect(res.rootMessageId).toBeUndefined();
+    expect(res.images).toHaveLength(0);
+    expect(mockGetMessageById).not.toHaveBeenCalled();
+  });
+
+  it('fetches by rootMessageId hint when threadId is omt_', async () => {
+    mockGetMessageById.mockResolvedValue([
+      { message_id: 'om_root_msg', msg_type: 'image', body: { content: '{"image_key":"ik_hint"}' } },
+    ]);
+
+    const res = await fetchTopicRootImages('omt_197a3379c4cf1bb7', 'om_root_msg');
+
+    expect(mockGetMessageById).toHaveBeenCalledWith('om_root_msg');
+    expect(res.rootMessageId).toBe('om_root_msg');
+    expect(res.images).toHaveLength(1);
+    expect(mockDownloadMessageImage).toHaveBeenCalledWith('om_root_msg', 'ik_hint');
+  });
+
+  it('still fetches by threadId when it is not an omt_ id (legacy / message-id callers)', async () => {
+    mockGetMessageById.mockResolvedValue([
+      { message_id: 'om_legacy', msg_type: 'image', body: { content: '{"image_key":"ik_legacy"}' } },
+    ]);
+
+    const res = await fetchTopicRootImages('om_legacy');
+
+    expect(mockGetMessageById).toHaveBeenCalledWith('om_legacy');
+    expect(res.rootMessageId).toBe('om_legacy');
+    expect(res.images).toHaveLength(1);
+  });
 });

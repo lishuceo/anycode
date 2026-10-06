@@ -18,9 +18,11 @@ argument-hint: "[PR number, default: current branch's PR]"
 3. **获取当前分支**: `git branch --show-current`
 4. **读取 PR 信息**: `gh pr view PR_NUMBER` 了解 PR 意图
 
-## 主循环
+## 主循环（cron 驱动，非阻塞）
 
 重复以下步骤，直到所有 CI checks 通过且 review 问题解决。**最多 5 轮**，超过后提醒用户手动介入。
+
+**关键：等待 CI 绝不原地阻塞轮询。** 阻塞轮询（`for` 循环里反复 `gh pr checks` + 内联 `sleep`/`echo`）会把每隔几秒的进度行不断回灌进上下文，单轮数分钟 × 多轮极度浪费 token；且本平台一旦返回结果，子进程（含后台任务 / Monitor）就被回收，无法跨轮等待。改用「**单次检查 + cron 一次性回检**」把循环异步化：每次进入（用户首次调用或 cron 触发）只做一次状态检查 + 一轮力所能及的修复；需要等 CI 时排一个 cron 一次性任务在预计完成后自动回来，并**立即结束本轮**、让出会话。轮次计数 N 由 cron 回检 prompt 携带（每排一次 +1），到第 5 轮仍未干净则停下提醒用户。
 
 ---
 
@@ -53,52 +55,45 @@ git rebase origin/BASE_BRANCH
 ```
 3. 如果 rebase **成功**（无冲突）：
    - `git push --force-with-lease` 更新 PR
-   - 输出 "🔄 已自动 rebase 解决冲突，等待 CI 重新运行..."
-   - 回到 Step 1
+   - 按 Step 1 的「排定回检」排一个 cron 一次性回检（rebase 触发了新一轮 CI），输出 "🔄 已自动 rebase，已排定约 4 分钟后回检新一轮 CI"，然后**结束本轮**
 4. 如果 rebase **失败**（有无法自动解决的冲突）：
    - `git rebase --abort` 取消
    - 输出冲突文件列表，提示用户手动解决
    - **停止循环**，不要尝试自动合并冲突
 
-### Step 1: 等待所有 CI checks 完成
+### Step 1: 检查 CI 状态（单次检查 + cron 回检，不阻塞）
 
-轮询 PR 的所有 status checks：
-
-```bash
-gh pr checks PR_NUMBER --json name,state,description,link
-```
-
-**注意**: 如果 `gh pr checks` 不支持 `--json`，改用：
+**一次性**查询所有 status checks（不要放进等待循环）：
 
 ```bash
-gh pr checks PR_NUMBER
+gh pr checks PR_NUMBER 2>&1
 ```
 
-输出格式为 `NAME\tSTATUS\tDURATION\tLINK`，其中 STATUS 为 pass/fail/pending。
+输出 `NAME\tSTATUS\tDURATION\tLINK`，STATUS 为 pass/fail/pending/skipping（`gh pr checks` 退出码：全 pass=0、有 pending=8、有 fail≠0，可参考，但以文本为准）。
 
-轮询逻辑：
-- 如果有任何 check 状态为 `pending`（或 `in_progress`），**等待 60 秒后重试**，最多等待 20 分钟
-- 当所有 checks 都完成后（无 pending），进入下一步判断
+判断：
 
-**重要：轮询时不要使用 `sleep` 命令等待，改用 Bash 的 `timeout` 参数设置超时：**
+- **仍有 `pending`/`in_progress`** → **排 cron 一次性回检后立即结束本轮**（见下「排定回检」），不要原地等待。
+- **无 pending**（全部 pass/fail/skipping，`skipping` 不算阻塞）→ 进入 Step 2。
+
+**排定回检（用 cron 调度工具，如 `manage_cron`）：**
+
+1. 估算回检时间：一般 `+4 分钟`；若 pending 的是外部 AI review（如 Greptile，常需 5-7 分钟）取 `+5 分钟`。算出绝对时间：
 
 ```bash
-# 错误：会导致空闲超时
-sleep 60
-
-# 正确：在单个命令中完成等待和检查
-for i in $(seq 1 20); do
-  result=$(gh pr checks PR_NUMBER 2>&1)
-  if echo "$result" | grep -q "pending"; then
-    echo "Attempt $i: still pending, waiting 60s..."
-    # 使用子命令内联等待，保持输出活跃
-    for j in $(seq 1 6); do sleep 10 && echo "  ...waiting ($((j*10))s)"; done
-  else
-    echo "$result"
-    break
-  fi
-done
+date -d "+4 minutes" "+%Y-%m-%dT%H:%M:%S"
 ```
+
+2. 创建一次性任务（`manage_cron`）：
+   - `action: "add"`、`schedule_kind: "at"`、`at: "<上一步算出的时间>"`
+   - `name: "pr-fixup-recheck-<PR_NUMBER>"`
+   - `prompt:` 必须自包含、能让回检回合从头跑通本流程并携带轮次 N，例如：
+     `"[后台定时回检] 请重新调用 pr-fixup 技能继续处理 PR #<PR_NUMBER>（<OWNER/REPO>），这是第 <N> 轮 CI 回检：若 CI 仍 pending 就再排一次回检；若已完成则处理 CI 失败与 review 反馈、修复推送后再排回检；若全部通过且无未解决反馈则输出完成汇总并停止；已是第 5 轮仍未干净则停下提醒用户手动介入。"`
+
+3. 给用户输出一行状态后**结束本次回复**（不要继续等待）：
+   `⏳ CI 运行中（<n> 项 pending），已排定约 4 分钟后自动回检（第 N 轮），先让出会话。`
+
+> **为什么用 cron 而非阻塞轮询 / Monitor**：阻塞轮询每隔几秒回灌进度行、单轮数分钟 × 多轮，极费 token；而本平台一旦返回结果，子进程（含 Monitor 和后台任务）即被回收，Monitor 无法跨越 5 分钟以上的等待。cron 一次性任务每次 fire 都是一个廉价的新回合，只做一次状态检查，零轮询回灌。
 
 ### Step 2: 检查 CI 失败
 
@@ -212,7 +207,7 @@ gh pr view PR_NUMBER --json comments -q '.comments[] | select(.author.login != "
 - **本轮内存记录**：在当前 `/pr-fixup` 执行流程中维护一个集合（如条目正文的前 50 字符 hash），处理过的 3c 条目下一轮直接跳过
 - **镜像到顶层 comment**：处理完 3c 条目后调用 `gh pr comment` 写一条 "Addressed (3c): <条目摘要>" 到 PR 主时间线，让后续轮次靠 3b 的 `LAST_PUSH` 过滤自动跳过
 
-推荐第一种（更便宜，不污染 PR 时间线）。
+**cron 模式下推荐第二种（镜像到顶层 comment）**：cron 每次回检都是全新回合，「本轮内存记录」无法跨回合保留，只有写到 PR 时间线才能让后续回合靠 3b 的 `LAST_PUSH` 过滤自动跳过。仅当在同一回合内同步处理完所有 3c 条目时才用第一种。
 
 如果没有 CI 失败（Step 2 已全部通过）且 3a/3b/3c 都没有未处理的反馈 → 输出 "✅ 所有 CI checks 通过，PR review 无阻塞问题" 并结束循环。
 
@@ -298,8 +293,7 @@ gh api graphql -f query='mutation {
   - `fix: address PR review feedback` (review 问题)
   - `fix: 修复 CI 构建错误并处理 review 反馈` (两者都有)
 - `git push`
-- 输出 "🔄 第 N 轮：修复 X 个 CI 问题 + Y 个 review 问题，反驳 Z 个误报，等待新一轮 checks..."
-- 回到 Step 1
+- 按 Step 1 的「排定回检」排一个 cron 一次性回检（轮次 +1），输出 "🔄 第 N 轮：修复 X 个 CI + Y 个 review，反驳 Z 个误报，已排定约 4 分钟后回检新一轮 CI"，然后**结束本轮**（不要原地等待新 CI）
 
 **如果本轮所有 review 反馈都已处理（inline 已 reply+resolve、3b/3c 已 reply）且无代码修复且 CI 全部通过：**
 - 输出 "✅ 第 N 轮：处理 Y 个 review 反馈（含 Z 个反驳），所有 CI checks 通过"
@@ -329,5 +323,5 @@ gh api graphql -f query='mutation {
 - 反驳评论时给出**具体、有理据的解释**，引用代码上下文，不要笼统地说"这没问题"
 - commit message 遵循项目风格: `fix: <中文描述>`
 - 如果同一个问题反复出现（修了又被报），在第 3 轮后停下来让用户介入
-- **不要使用裸 `sleep` 命令** — 长时间 sleep 会导致 SDK 空闲超时。轮询等待时在循环中保持输出活跃
+- **等 CI 用 cron 一次性回检，不要阻塞轮询、不要裸 `sleep`** — 阻塞轮询费 token，且本平台返回后子进程被回收无法跨轮等待。每次只查一次状态，pending 就排 cron 回检并结束本轮（见 Step 1）
 - 如果 CI 失败是环境/平台问题（非代码可修复），明确告知用户而不是反复重试
