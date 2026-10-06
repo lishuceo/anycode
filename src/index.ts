@@ -143,14 +143,15 @@ async function main(): Promise<void> {
   // 初始化定时任务调度器
   if (config.cron.enabled) {
     await initializeCron({
+      // 返回 TaskOutcome 让 scheduler 能记账并识别「SDK 直接拒绝」这类不抛异常的失败
       executeTask: async (params) => {
         // 用 runWithAccountId 包裹，确保下游 feishuClient 调用路由到正确的 bot 账号
-        await runWithAccountId(params.accountId, async () => {
+        return runWithAccountId(params.accountId, async () => {
           const agentCfg = agentRegistry.get(params.agentId as AgentId);
           const useDirectMode = agentCfg?.replyMode === 'direct';
 
           if (useDirectMode) {
-            await executeDirectTask(
+            return executeDirectTask(
               params.prompt,
               params.chatId,
               params.userId,
@@ -164,7 +165,7 @@ async function main(): Promise<void> {
               { skipQuickAck: true },
             );
           } else {
-            await executeClaudeTask(
+            return executeClaudeTask(
               params.prompt,
               params.chatId,
               params.userId,

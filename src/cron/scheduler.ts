@@ -2,6 +2,7 @@ import { logger } from '../utils/logger.js';
 import { CronStore, computeNextRunAtMs } from './store.js';
 import { shouldSkip } from './holidays/index.js';
 import type { CronJob, CronJobCreate, CronJobPatch } from './types.js';
+import type { TaskOutcome } from '../claude/types.js';
 
 /** 错误退避时间表 */
 const BACKOFF_MS = [
@@ -12,7 +13,13 @@ const BACKOFF_MS = [
   60 * 60_000,   // 5th+ → 1h
 ];
 
-/** 执行 cron job 的回调类型 (由 event-handler 提供) */
+/**
+ * 执行 cron job 的回调类型 (由 event-handler 提供)。
+ *
+ * 返回 TaskOutcome 才能让 scheduler 区分「真的跑完了」和「SDK 直接拒绝了」——
+ * 后者不抛异常，若只看异常就会把超预算的零轮执行记成 ok。
+ * 返回 undefined 表示无法判定，此时按旧行为（不抛错即成功）处理。
+ */
 export type CronTaskExecutor = (params: {
   prompt: string;
   chatId: string;
@@ -22,7 +29,21 @@ export type CronTaskExecutor = (params: {
   threadId?: string;
   agentId: string;
   accountId: string;
-}) => Promise<void>;
+}) => Promise<TaskOutcome | undefined | void>;
+
+/**
+ * 执行器报告 success=false 时抛出，把 outcome 带进统一的失败处理分支
+ * （退避重试、写 run.error、更新 job.state），避免复制一遍那段逻辑。
+ */
+class CronTaskFailure extends Error {
+  constructor(readonly outcome: TaskOutcome) {
+    const turnHint = outcome.numTurns === 0 || outcome.numTurns === 1
+      ? '（几乎零轮执行，通常是 SDK 直接拒绝了请求，例如会话累计花费已超 maxBudgetUsd）'
+      : '';
+    super((outcome.error || 'Task reported failure without an error message') + turnHint);
+    this.name = 'CronTaskFailure';
+  }
+}
 
 /** 发占位消息的回调类型 */
 export type CronMessageSender = (chatId: string, text: string, rootId?: string, accountId?: string) => Promise<string | undefined>;
@@ -187,7 +208,7 @@ export class CronScheduler {
       const prompt = `${contextPrefix}[⏰ 定时任务: ${job.name}]\n\n${job.prompt}`;
 
       // 3. 注入现有流程 —— 和用户 @bot 完全一样
-      await this.deps.executeTask({
+      const outcome = await this.deps.executeTask({
         prompt,
         chatId: job.chatId,
         userId: job.userId,
@@ -198,12 +219,20 @@ export class CronScheduler {
         accountId: job.accountId,
       });
 
-      // 4. 成功
+      // 4. 判定成败 —— 不能只看有没有抛异常。
+      // SDK 因超预算等原因拒绝执行时不抛异常，只在 result 里给 success=false
+      // （实测：numTurns=1、零 token、18 秒返回，一个 turn 都没跑）。
+      // 旧逻辑把这种情况记成 ok，导致任务连续多天空跑而记录显示正常。
+      if (outcome && outcome.success === false) {
+        throw new CronTaskFailure(outcome);
+      }
+
       const endMs = Date.now();
       this.deps.store.updateRun(runId, {
         status: 'ok',
         endedAtMs: endMs,
         durationMs: endMs - startMs,
+        costUsd: outcome?.costUsd,
       });
 
       const nextRunAtMs = computeNextRunAtMs(job.schedule, endMs);
@@ -223,18 +252,24 @@ export class CronScheduler {
       }
 
       logger.info(
-        { jobId: job.id, jobName: job.name, durationMs: endMs - startMs, nextRunAtMs },
+        {
+          jobId: job.id, jobName: job.name, durationMs: endMs - startMs, nextRunAtMs,
+          costUsd: outcome?.costUsd, numTurns: outcome?.numTurns,
+        },
         'cron: job completed',
       );
     } catch (err) {
       const endMs = Date.now();
       const errorStr = err instanceof Error ? err.message : String(err);
+      // 执行器报告的失败仍然花了钱（超预算尤其如此），必须记账
+      const failureOutcome = err instanceof CronTaskFailure ? err.outcome : undefined;
 
       this.deps.store.updateRun(runId, {
         status: 'error',
         endedAtMs: endMs,
         error: errorStr,
         durationMs: endMs - startMs,
+        costUsd: failureOutcome?.costUsd,
       });
 
       const consecutiveErrors = job.state.consecutiveErrors + 1;
@@ -258,7 +293,10 @@ export class CronScheduler {
       }
 
       logger.error(
-        { jobId: job.id, jobName: job.name, err: errorStr, consecutiveErrors, nextBackoffMs: backoffMs },
+        {
+          jobId: job.id, jobName: job.name, err: errorStr, consecutiveErrors, nextBackoffMs: backoffMs,
+          costUsd: failureOutcome?.costUsd, numTurns: failureOutcome?.numTurns,
+        },
         'cron: job failed',
       );
     }

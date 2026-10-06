@@ -46,7 +46,6 @@ interface CronJobRow {
   consecutive_errors: number;
   timeout_seconds: number;
   model: string | null;
-  max_budget_usd: number;
   agent_id: string;
   account_id: string;
   thread_id: string | null;
@@ -93,7 +92,6 @@ function rowToJob(row: CronJobRow): CronJob {
     skipWeekends: !!row.skip_weekends,
     timeoutSeconds: row.timeout_seconds,
     model: row.model ?? undefined,
-    maxBudgetUsd: row.max_budget_usd,
     agentId: row.agent_id,
     accountId: row.account_id,
     threadId: row.thread_id ?? undefined,
@@ -226,7 +224,6 @@ export class CronStore {
         consecutive_errors      INTEGER DEFAULT 0,
         timeout_seconds         INTEGER DEFAULT 300,
         model                   TEXT,
-        max_budget_usd          REAL DEFAULT 5,
         agent_id                TEXT DEFAULT 'dev',
         thread_id               TEXT,
         thread_root_message_id  TEXT,
@@ -242,6 +239,10 @@ export class CronStore {
     } catch {
       // Column already exists — ignore
     }
+
+    // 老库遗留 max_budget_usd 列（REAL DEFAULT 5，可空）不再读写：
+    // 该字段从未被 scheduler 传给 executor，预算统一由 agent 级配置决定。
+    // 保留物理列（不 DROP）以避免对运行中库做不可逆改动；INSERT 不指定它会走默认值。
 
     // Migration: add skip_holidays / skip_weekends columns
     try {
@@ -290,14 +291,14 @@ export class CronStore {
         id, name, chat_id, user_id, prompt, working_dir, repo_url,
         schedule_kind, schedule_expr, schedule_tz, every_ms, at_time,
         enabled, delete_after_run, skip_holidays, skip_weekends, next_run_at_ms,
-        timeout_seconds, model, max_budget_usd, agent_id, account_id,
+        timeout_seconds, model, agent_id, account_id,
         thread_id, thread_root_message_id, context_snapshot,
         created_at, updated_at
       ) VALUES (
         @id, @name, @chat_id, @user_id, @prompt, @working_dir, @repo_url,
         @schedule_kind, @schedule_expr, @schedule_tz, @every_ms, @at_time,
         @enabled, @delete_after_run, @skip_holidays, @skip_weekends, @next_run_at_ms,
-        @timeout_seconds, @model, @max_budget_usd, @agent_id, @account_id,
+        @timeout_seconds, @model, @agent_id, @account_id,
         @thread_id, @thread_root_message_id, @context_snapshot,
         @created_at, @updated_at
       )
@@ -343,7 +344,6 @@ export class CronStore {
         skip_weekends = @skip_weekends,
         timeout_seconds = @timeout_seconds,
         model = @model,
-        max_budget_usd = @max_budget_usd,
         next_run_at_ms = @next_run_at_ms,
         thread_id = @thread_id,
         thread_root_message_id = @thread_root_message_id,
@@ -417,7 +417,6 @@ export class CronStore {
       next_run_at_ms: nextRunAtMs ?? null,
       timeout_seconds: input.timeoutSeconds ?? 300,
       model: input.model ?? null,
-      max_budget_usd: input.maxBudgetUsd ?? 5,
       agent_id: input.agentId ?? 'dev',
       account_id: input.accountId ?? 'default',
       thread_id: input.threadId ?? null,
@@ -468,7 +467,6 @@ export class CronStore {
       skip_weekends: (patch.skipWeekends ?? existing.skipWeekends) ? 1 : 0,
       timeout_seconds: patch.timeoutSeconds ?? existing.timeoutSeconds,
       model: patch.model !== undefined ? (patch.model ?? null) : (existing.model ?? null),
-      max_budget_usd: patch.maxBudgetUsd ?? existing.maxBudgetUsd,
       next_run_at_ms: nextRunAtMs ?? null,
       thread_id: patch.threadId !== undefined ? (patch.threadId ?? null) : (existing.threadId ?? null),
       thread_root_message_id: patch.threadRootMessageId !== undefined

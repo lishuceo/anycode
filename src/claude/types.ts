@@ -65,6 +65,27 @@ export interface ClaudeResult {
 }
 
 /**
+ * 一次任务执行的结果摘要。
+ *
+ * 供 cron 等「发起方不在飞书事件链路上」的调用方判断执行是否真正成功、花了多少钱。
+ * 从 ClaudeResult 提炼，不含 output/sessionId 等大字段。
+ *
+ * 背景：executeDirectTask / executeClaudeTask 原先返回 void，cron scheduler 只能靠
+ * 「有没有抛异常」判断成败。结果是 SDK 因超预算立即拒绝（零 turn）时 cron 仍记 ok，
+ * 定时任务连续多天没真正执行而记录显示一切正常。
+ */
+export interface TaskOutcome {
+  /** 是否执行成功（SDK result.subtype === 'success'） */
+  success: boolean;
+  /** 本次花费 (USD)；错误型 result 下为会话累计口径 */
+  costUsd?: number;
+  /** 失败原因 */
+  error?: string;
+  /** 总轮数 —— 零轮 + 失败通常意味着 SDK 直接拒绝了请求 */
+  numTurns?: number;
+}
+
+/**
  * /compact 上下文压缩结果。
  *
  * 由 ClaudeExecutor.compact() 返回：以裸 "/compact" 透传给 SDK 触发 local slash

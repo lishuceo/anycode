@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import Database from 'better-sqlite3';
 
 vi.mock('../../utils/logger.js', () => ({
   logger: {
@@ -349,6 +350,63 @@ describe('CronStore', () => {
     expect(job.threadId).toBe('thread-123');
     expect(job.threadRootMessageId).toBe('msg-456');
     expect(job.contextSnapshot).toBe('repo: taptap/maker, branch: main');
+  });
+
+  // ── max_budget_usd 死字段移除的回归 ──
+  //
+  // 该字段曾存在于 cron_jobs 表和 CronJob 类型上，但 scheduler 从未把它传给
+  // executor（预算实际由 agent 级配置决定），属于「设了以为生效」的死字段。
+  // 移除后必须保证：① 不再出现在读出的 job 上；② 老库遗留的物理列不阻塞写入。
+
+  it('should not expose maxBudgetUsd on jobs', () => {
+    const job = store.add({
+      name: 'no-budget-job',
+      chatId: 'chat1',
+      userId: 'user1',
+      prompt: 'budget is agent-level',
+      schedule: { kind: 'every', everyMs: 60_000 },
+    });
+
+    expect(job).not.toHaveProperty('maxBudgetUsd');
+    expect(store.get(job.id)).not.toHaveProperty('maxBudgetUsd');
+  });
+
+  it('should add and update jobs on a legacy db that still has max_budget_usd', () => {
+    // 模拟升级前的库：补回遗留列，并用最严格的 NOT NULL 形式
+    const legacyPath = join(tempDir, 'legacy-cron.db');
+    const seed = new CronStore(legacyPath);
+    seed.close();
+    const raw = new Database(legacyPath);
+    raw.exec('ALTER TABLE cron_jobs ADD COLUMN max_budget_usd REAL NOT NULL DEFAULT 5');
+    raw.close();
+
+    const legacy = new CronStore(legacyPath);
+    try {
+      // INSERT 省略 max_budget_usd —— 应走列默认值而非报约束错误
+      const job = legacy.add({
+        name: 'legacy-job',
+        chatId: 'chat1',
+        userId: 'user1',
+        prompt: 'still works',
+        schedule: { kind: 'every', everyMs: 60_000 },
+      });
+      expect(job.name).toBe('legacy-job');
+      expect(job).not.toHaveProperty('maxBudgetUsd');
+
+      // UPDATE 同样不再触碰该列
+      const updated = legacy.update(job.id, { name: 'legacy-job-renamed' });
+      expect(updated!.name).toBe('legacy-job-renamed');
+
+      // 遗留列仍在，值为默认 5，但对上层不可见
+      const rawCheck = new Database(legacyPath, { readonly: true });
+      const row = rawCheck.prepare('SELECT max_budget_usd FROM cron_jobs WHERE id = ?').get(job.id) as
+        | { max_budget_usd: number }
+        | undefined;
+      rawCheck.close();
+      expect(row!.max_budget_usd).toBe(5);
+    } finally {
+      legacy.close();
+    }
   });
 });
 

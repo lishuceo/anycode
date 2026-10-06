@@ -427,4 +427,80 @@ describe('CronScheduler', () => {
 
     expect(executeTask).toHaveBeenCalledTimes(1);
   });
+
+  // ── 执行结果记账与静默失败 ──
+  //
+  // 回归背景：executeTask 原先返回 void，scheduler 只能靠「有没有抛异常」判断成败。
+  // SDK 因会话累计花费超 maxBudgetUsd 而拒绝执行时并不抛异常（实测 numTurns=1、
+  // 零 token、18 秒返回，一个 turn 都没跑），于是 run 被记成 ok 且 cost_usd 为空——
+  // 定时任务连续多天空跑，而记录显示一切正常。
+
+  it('records cost_usd on a successful run', async () => {
+    executeTask = vi.fn(async () => ({ success: true, costUsd: 1.2345, numTurns: 12 })) as unknown as CronTaskExecutor;
+    scheduler = new CronScheduler({ store, executeTask, sendMessage });
+
+    const job = await scheduler.addJob({
+      name: 'billed',
+      chatId: 'chat1',
+      userId: 'user1',
+      prompt: 'work',
+      schedule: { kind: 'every', everyMs: 60_000 },
+    });
+    await scheduler.triggerJob(job.id);
+
+    const [run] = store.getRecentRuns(job.id, 1);
+    expect(run!.status).toBe('ok');
+    expect(run!.costUsd).toBeCloseTo(1.2345, 4);
+    expect(store.get(job.id)!.state.lastStatus).toBe('ok');
+  });
+
+  it('treats a failed outcome as an error and still records its cost', async () => {
+    // 复现 08-02 那次：SDK 拒绝执行，不抛异常，但已经花掉 $18.61
+    executeTask = vi.fn(async () => ({
+      success: false,
+      costUsd: 18.606643,
+      error: 'Query ended with: error_max_budget_usd',
+      numTurns: 1,
+    })) as unknown as CronTaskExecutor;
+    scheduler = new CronScheduler({ store, executeTask, sendMessage });
+
+    const job = await scheduler.addJob({
+      name: 'over-budget',
+      chatId: 'chat1',
+      userId: 'user1',
+      prompt: 'work',
+      schedule: { kind: 'every', everyMs: 60_000 },
+    });
+    await scheduler.triggerJob(job.id);
+
+    const [run] = store.getRecentRuns(job.id, 1);
+    expect(run!.status).toBe('error');                        // 不再静默记 ok
+    expect(run!.costUsd).toBeCloseTo(18.606643, 4);           // 钱要记上
+    expect(run!.error).toContain('error_max_budget_usd');
+
+    const state = store.get(job.id)!.state;
+    expect(state.lastStatus).toBe('error');
+    expect(state.consecutiveErrors).toBe(1);                  // 触发退避
+    // 零轮执行要给出可诊断的提示，而不是只丢一个 subtype
+    expect(state.lastError).toContain('maxBudgetUsd');
+  });
+
+  it('keeps legacy behaviour when the executor returns nothing', async () => {
+    // 老实现（返回 void）不应被判为失败
+    executeTask = vi.fn(async () => undefined) as unknown as CronTaskExecutor;
+    scheduler = new CronScheduler({ store, executeTask, sendMessage });
+
+    const job = await scheduler.addJob({
+      name: 'void-executor',
+      chatId: 'chat1',
+      userId: 'user1',
+      prompt: 'work',
+      schedule: { kind: 'every', everyMs: 60_000 },
+    });
+    await scheduler.triggerJob(job.id);
+
+    const [run] = store.getRecentRuns(job.id, 1);
+    expect(run!.status).toBe('ok');
+    expect(run!.costUsd).toBeUndefined();
+  });
 });

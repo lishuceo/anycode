@@ -7,7 +7,7 @@ import { forkSession } from '../session/fork.js';
 import { taskQueue } from '../session/queue.js';
 import { claudeExecutor } from '../claude/executor.js';
 import { DEFAULT_IMAGE_PROMPT, DEFAULT_DOCUMENT_PROMPT } from '../claude/types.js';
-import type { TurnInfo, ToolCallInfo, ImageAttachment, DocumentAttachment, ConversationTurn, CompactResult } from '../claude/types.js';
+import type { TurnInfo, ToolCallInfo, ImageAttachment, DocumentAttachment, ConversationTurn, CompactResult, TaskOutcome } from '../claude/types.js';
 import { buildStatusCard, buildCancelledCard, buildPipelineCard, buildPipelineConfirmCard, buildCombinedProgressCard, buildAskUserQuestionCard, buildAskUserAnsweredCard } from './message-builder.js';
 import type { AskUserQuestionItem } from './message-builder.js';
 import { TOTAL_PHASES } from '../pipeline/types.js';
@@ -2617,7 +2617,7 @@ export async function executeClaudeTask(
   createTime?: string,
   messageType?: string,
   currentImagePaths?: string[],
-): Promise<void> {
+): Promise<TaskOutcome | undefined> {
   // 1. 解析话题上下文（thread + workingDir + greeting）
   const resolved = await resolveThreadContext({
     prompt: rawPrompt,
@@ -3115,7 +3115,12 @@ export async function executeClaudeTask(
           repository: resolveRepositoryForCwd(result.newWorkingDir!),
         }).catch((err) => logger.warn({ err }, 'Memory extraction failed'));
       }
-      return;
+      return {
+        success: restartResult.success,
+        costUsd: totalCostUsd,
+        error: restartResult.error,
+        numTurns: restartResult.numTurns,
+      };
     }
 
     // Resume 失败（非 workspace 变更场景）：报错给用户，保留 session ID 不动
@@ -3146,7 +3151,12 @@ export async function executeClaudeTask(
       } else {
         await feishuClient.replyText(messageId, errorDetail);
       }
-      return;
+      return {
+        success: false,
+        costUsd: result.costUsd,
+        error: result.error || 'Resume failed',
+        numTurns: result.numTurns,
+      };
     }
 
     // 无 restart，正常流程：保存 session ID 用于下次 resume
@@ -3189,6 +3199,12 @@ export async function executeClaudeTask(
       }).catch((err) => logger.warn({ err }, 'Memory extraction failed'));
     }
 
+    return {
+      success: result.success,
+      costUsd: result.costUsd,
+      error: result.error,
+      numTurns: result.numTurns,
+    };
   } catch (err) {
     logger.error({ err }, 'Error executing Claude Agent SDK query');
     // 合并卡片切换为失败态（best-effort，含 pendingTurn 内容）
@@ -3213,6 +3229,7 @@ export async function executeClaudeTask(
         await feishuClient.replyText(messageId, errorReply);
       }
     }
+    return { success: false, error: (err as Error).message };
   } finally {
     try {
       sessionManager.setStatus(chatId, userId, 'idle', agentId);
@@ -3257,7 +3274,7 @@ export async function executeDirectTask(
   createTime?: string,
   options?: { skipQuickAck?: boolean; forceThread?: boolean },
   messageType?: string,
-): Promise<void> {
+): Promise<TaskOutcome | undefined> {
   const agentCfg = agentRegistry.getOrThrow(agentId);
   const session = sessionManager.getOrCreate(chatId, userId, agentId);
   const workingDir = config.claude.defaultWorkDir;
@@ -3518,6 +3535,12 @@ export async function executeDirectTask(
       }).catch((err) => logger.warn({ err }, 'Memory extraction failed'));
     }
 
+    return {
+      success: result.success,
+      costUsd: result.costUsd,
+      error: result.error,
+      numTurns: result.numTurns,
+    };
   } catch (err) {
     logger.error({ err }, 'Error in executeDirectTask');
     const errorReply = `❌ 执行出错: ${(err as Error).message}`;
@@ -3526,6 +3549,7 @@ export async function executeDirectTask(
     } else {
       await feishuClient.replyText(messageId, errorReply);
     }
+    return { success: false, error: (err as Error).message };
   } finally {
     // 移除话题内的待处理表情回复（无论成功/失败都要清理）
     if (pendingReactionId) {
