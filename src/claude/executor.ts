@@ -29,6 +29,7 @@ import type { ClaudeResult, CompactResult, ExecuteOptions, ProgressCallback, Tur
 // Anthropic API 定价（per million tokens）
 // https://docs.anthropic.com/en/docs/about-claude/pricing
 const MODEL_PRICING: Record<string, { input: number; output: number; cacheWrite: number; cacheRead: number }> = {
+  'claude-opus-5':            { input: 5,   output: 25,  cacheWrite: 6.25,  cacheRead: 0.50 },
   'claude-opus-4-8':          { input: 5,   output: 25,  cacheWrite: 6.25,  cacheRead: 0.50 },
   'claude-opus-4-7':          { input: 5,   output: 25,  cacheWrite: 6.25,  cacheRead: 0.50 },
   'claude-opus-4-6':          { input: 5,   output: 25,  cacheWrite: 6.25,  cacheRead: 0.50 },

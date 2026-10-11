@@ -103,8 +103,8 @@ export const config = {
      * 同时兜底真正挂死的工具(如等待 stdin 的命令)。区别于 timeoutSeconds：工具执行期间不算"空闲"。
      */
     toolTimeoutSeconds: parseInt(process.env.CLAUDE_TOOL_TIMEOUT || '900', 10),
-    /** 模型名称，默认 claude-opus-4-8 (Opus 4.8) */
-    model: process.env.CLAUDE_MODEL || 'claude-opus-4-8',
+    /** 模型名称，默认 claude-opus-5 (Opus 5) */
+    model: process.env.CLAUDE_MODEL || 'claude-opus-5',
     /** thinking 模式: 'adaptive' (自适应思考) | 'disabled' */
     thinking: (process.env.CLAUDE_THINKING || 'adaptive') as 'adaptive' | 'disabled',
     /** effort 等级: 'low' | 'medium' | 'high' | 'xhigh' | 'max'（xhigh: 比 high 更深，Opus 4.7+） */
