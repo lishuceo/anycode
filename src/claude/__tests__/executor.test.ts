@@ -18,6 +18,9 @@ vi.mock('../../config.js', () => ({
     feishu: { tools: { enabled: false, doc: true, wiki: true, drive: true, bitable: true } },
     cron: { enabled: false },
     websearch: { enabled: false, apiKey: '', baseUrl: 'https://api.tavily.com', maxResults: 5, searchDepth: 'basic', timeoutMs: 15000 },
+    // self-config 工具仅 owner 可用；默认 sessionKey(user1) 非 owner，故默认不创建，
+    // 现有断言(mcpServers 仅 workspace-manager / undefined)不受影响。
+    security: { ownerUserId: 'owner-xyz' },
   },
 }));
 
@@ -68,6 +71,12 @@ vi.mock('../../cron/tool.js', () => ({
 }));
 vi.mock('../../cron/init.js', () => ({
   getCronScheduler: vi.fn(() => null),
+}));
+
+// Mock self-config tool module（自改自配置，owner-gated）
+const mockCreateConfigAdminMcpServer = vi.fn(() => ({ type: 'mock-self-config-mcp' }));
+vi.mock('../../config-admin/tool.js', () => ({
+  createConfigAdminMcpServer: (...args: unknown[]) => mockCreateConfigAdminMcpServer(...args),
 }));
 
 import { ClaudeExecutor, buildWorkspaceSystemPrompt, classifyCompactOutcome, shouldExtendIdleTimer } from '../executor.js';
@@ -204,6 +213,22 @@ describe('ClaudeExecutor', () => {
       expect(mockCreateWorkspaceMcpServer).toHaveBeenCalledTimes(1);
       const queryCallOptions = mockQuery.mock.calls[0][0].options;
       expect(queryCallOptions.mcpServers).toHaveProperty('workspace-manager');
+    });
+  });
+
+  describe('self-config MCP tool — owner gating', () => {
+    it('creates self-config server when session user is owner', async () => {
+      await executor.execute(makeInput({ sessionKey: 'agent:pm:chat1:owner-xyz' }));
+      expect(mockCreateConfigAdminMcpServer).toHaveBeenCalledWith({ userId: 'owner-xyz' });
+      const opts = mockQuery.mock.calls[0][0].options;
+      expect(opts.mcpServers).toHaveProperty('self-config');
+    });
+
+    it('does NOT create self-config server for non-owner users', async () => {
+      await executor.execute(makeInput({ sessionKey: 'agent:pm:chat1:user1' }));
+      expect(mockCreateConfigAdminMcpServer).not.toHaveBeenCalled();
+      const opts = mockQuery.mock.calls[0][0].options;
+      if (opts.mcpServers) expect(opts.mcpServers).not.toHaveProperty('self-config');
     });
   });
 
